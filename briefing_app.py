@@ -743,20 +743,30 @@ def _set_confirm_clear(value: bool):
 
 def _render_mobile_input_buffer():
     clear_token = st.session_state.get("client_draft_clear_token", "")
+    raw_clear_token = st.session_state.get("_raw_ls_clear_token", "")
     script = f"""
     <script>
     const root = window.parent.document;
     const clearToken = {json.dumps(clear_token)};
     const clearMarkerKey = 'audio_briefing_client_clear_token';
+    const rawClearToken = {json.dumps(raw_clear_token)};
+    const rawClearMarkerKey = 'audio_briefing_raw_clear_token';
     const fields = [
       {{label: 'Artikel-URLs', key: 'audio_briefing_urls_text'}},
       {{label: 'Paywall-Artikel', key: 'audio_briefing_paywall_text'}},
       {{label: 'Podcast-Zusammenfassungen', key: 'audio_briefing_podcast_text'}},
+      {{label: 'Roh-Transkript', key: 'audio_briefing_raw_inbox'}},
     ];
 
     if (clearToken && localStorage.getItem(clearMarkerKey) !== clearToken) {{
       fields.forEach((field) => localStorage.removeItem(field.key));
       localStorage.setItem(clearMarkerKey, clearToken);
+    }}
+    // Einwurfbox wurde app-seitig geleert (Blöcke sind im Hintergrund) → Puffer
+    // mitleeren, sonst kämen beim nächsten Reload schon verarbeitete Transkripte zurück.
+    if (rawClearToken && localStorage.getItem(rawClearMarkerKey) !== rawClearToken) {{
+      localStorage.removeItem('audio_briefing_raw_inbox');
+      localStorage.setItem(rawClearMarkerKey, rawClearToken);
     }}
 
     function bindField(field) {{
@@ -773,7 +783,10 @@ def _render_mobile_input_buffer():
           textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
         }}
 
-        const save = () => localStorage.setItem(field.key, textarea.value || '');
+        const save = () => {{
+          try {{ localStorage.setItem(field.key, textarea.value || ''); }}
+          catch (e) {{ /* Quota voll — Puffer für dieses Feld dann eben ohne Netz */ }}
+        }};
         textarea.addEventListener('input', save);
         textarea.addEventListener('change', save);
         textarea.dataset.audioBriefingBound = '1';
@@ -2063,6 +2076,7 @@ if st.session_state.get("podcast_text_pending_value") is not None:
 if st.session_state.get("raw_transcript_inbox_clear"):
     st.session_state["raw_transcript_inbox"] = ""
     st.session_state["raw_transcript_inbox_clear"] = False
+    st.session_state["_raw_ls_clear_token"] = datetime.datetime.now().isoformat()
 
 # --- Scroll-to-Bottom per Streamlit components.html ---
 
