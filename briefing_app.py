@@ -184,6 +184,7 @@ _DRAFT_DEFAULTS = {
     "api_auto_repair_enabled": True,
     "quality_check_enabled": True,
     "special_topics_text": "",
+    "auto_briefing_when_done": False,
 }
 
 
@@ -2244,6 +2245,18 @@ with _pw_scroll_col:
 st.markdown('<div id="nav-podcast" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 st.markdown("#### Podcast-Zusammenfassungen")
 
+def _maybe_autostart_briefing(source: str):
+    """🚀 Auto-Start: Wenn die Option an ist und KEINE Podcast-Arbeit mehr offen
+    (keine Runde, keine Hintergrund-Jobs, keine Whisper-Frage/-Arbeit), Briefing zünden."""
+    if not st.session_state.get("auto_briefing_when_done"):
+        return
+    if (st.session_state.get("apple_round") or st.session_state.get("_round_jobs")
+            or st.session_state.get("whisper_running") or st.session_state.get("whisper_queue")):
+        return
+    st.session_state["_auto_run_briefing"] = True
+    st.session_state["_podcast_inbox_last_msg"] = f"🚀 Podcasts fertig ({source}) — das Briefing startet automatisch…"
+
+
 # ── 📡 Episoden-Inbox: neue Folgen aus den OPML-Feeds (Pocket-Casts-Ersatz, optional) ──
 st.markdown('<div id="nav-inbox" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expanded=False):
@@ -2295,6 +2308,12 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
 
         _n_auto = sum(1 for e in _ib_eps if e.get("transcript_url"))
         st.caption(f"**{len(_ib_eps)} neue Folgen** aus {_ib.get('n_feeds', '?')} Feeds — davon {_n_auto} mit 📄 Feed-Transkript (vollautomatisch).")
+        if "_ibx_sel_all_apply" in st.session_state:
+            _apply_v = bool(st.session_state.pop("_ibx_sel_all_apply"))
+            for _e0 in _ib_eps[:60]:
+                st.session_state[f"ibx_{_e0['guid']}"] = _apply_v
+            st.session_state["ibx_select_all"] = _apply_v
+            st.session_state["_ibx_sel_all_prev"] = _apply_v
         _sel_all_ibx = st.checkbox(f"Alle auswählen ({len(_ib_eps[:60])})", key="ibx_select_all",
                                    help="Setzt alle Häkchen auf einmal — danach kannst du einzelne wieder abwählen. Nochmal klicken wählt alle ab.")
         if bool(_sel_all_ibx) != bool(st.session_state.get("_ibx_sel_all_prev", False)):
@@ -2353,7 +2372,8 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                     st.caption("🎙️ via ✨ (lokal)")
                 elif not _e.get("transcript_url"):
                     if st.button("🍎 holen", key=f"ibo_{_e['guid']}", use_container_width=True,
-                                 help="Öffnet die Folge in Apple Podcasts und wartet geduldig auf deinen Transkript-Tipp — mit Knöpfen zum Überspringen oder für die lokale Transkription. (Mini-Runde mit einer Folge.)"):
+                                 disabled=bool(st.session_state.get("apple_round")),
+                                 help="Startet eine EINZEL-Runde nur für diese Folge (Anzeige: Folge 1/1). Für alle angehakten 🍎-Folgen: unten Apple-Runde starten. Gesperrt, solange schon eine Runde läuft."):
                         st.session_state["apple_round"] = {"eps": [_e], "idx": 0, "opened": None, "collected": []}
                         st.rerun()
             with _cols[4]:
@@ -2377,6 +2397,12 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                     st.session_state["podcast_inbox_data"] = _d9
                     st.rerun()
 
+        _sel_all_bottom = st.checkbox(f"Alle auswählen ({len(_ib_eps[:60])})", key="ibx_select_all_bottom",
+                                      help="Wie das Kästchen oben — nur bequem hier unten bei den Knöpfen.")
+        if bool(_sel_all_bottom) != bool(st.session_state.get("_ibx_sel_all_bottom_prev", False)):
+            st.session_state["_ibx_sel_all_bottom_prev"] = bool(_sel_all_bottom)
+            st.session_state["_ibx_sel_all_apply"] = bool(_sel_all_bottom)
+            st.rerun()
         _act1, _act2, _act3 = st.columns(3)
         _sel_guids = [e["guid"] for e in _ib_eps[:60] if st.session_state.get(f"ibx_{e['guid']}")]
         if st.session_state.get("_ibx_sel_persisted") != _sel_guids:
@@ -2438,6 +2464,7 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                     st.session_state["_podcast_inbox_last_msg"] = f"✅ {len(_sums)} Folge(n) zusammengefasst und unten angefügt."
                 if _errs:
                     st.session_state["_podcast_inbox_errors"] = _errs
+                _maybe_autostart_briefing("✨-Zusammenfassen")
                 st.rerun()
         with _act2:
             if st.button(f"🗑️ Ausgewählte archivieren ({len(_sel_guids)})", key="ibx_archive",
@@ -2461,8 +2488,9 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                 st.markdown("Systemeinstellungen → **Datenschutz & Sicherheit** → **Voller Festplattenzugriff** → ➕ → mit **⌘⇧G** diesen Pfad einfügen:\n```\n/Library/Developer/CommandLineTools/usr/bin/python3\n```\nDann aktivieren und die Briefing-App neu starten (Knopf unten in der App oder beim nächsten Mac-Start automatisch). Danach erscheinen hier 🍎-Runde und Nachlese.")
         _act4, _act5 = st.columns(2)
         with _act4:
+            _round_active = bool(st.session_state.get("apple_round"))
             if st.button(f"🍎 Apple-Runde starten ({len(_sel_apple)})", key="ibx_apple_round",
-                         use_container_width=True, disabled=not _sel_apple,
+                         use_container_width=True, disabled=(not _sel_apple) or _round_active,
                          help="Öffnet die ausgewählten 🍎-Folgen NACHEINANDER in Apple Podcasts — du tippst dort jeweils nur aufs Transkript, die App merkt es, öffnet sofort die nächste Folge und fasst am Ende alles in einem Rutsch zusammen. Kein Zeitdruck: pro Folge kannst du auch überspringen oder sie in die lokale Warteschlange legen."):
                 st.session_state["apple_round"] = {"eps": _sel_apple, "idx": 0, "opened": None, "collected": []}
                 st.rerun()
@@ -2472,19 +2500,34 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                          help="Sammelt alle Transkripte ein, die du in den letzten 48h in Apple Podcasts angesehen hast und die noch nicht importiert wurden — fasst sie zusammen und hängt sie unten an. Perfekt, wenn du Transkripte angeschaut hast, während die App nicht zugehört hat."):
                 _box2 = st.empty()
                 _nsums, _nerrs = [], []
-                for _ni, _np in enumerate(_nachlese, 1):
-                    _box2.info(f"🥡 Fasse zusammen: {_ni}/{len(_nachlese)}…")
+
+                def _process_nl(_np):
                     try:
                         _ntxt = apple_ttml_to_text(_np)
                     except Exception as _nex:
-                        _nerrs.append(f"TTML unlesbar: {_nex}")
-                        continue
+                        return (_np, None, f"TTML unlesbar: {str(_nex)[:80]}")
                     _nr = summarize_podcast_transcript_via_cli(_ntxt)
                     if _nr.get("ok"):
-                        _nsums.append(_nr["summary"])
-                        mark_ttml_imported([_np])
-                    else:
-                        _nerrs.append(str(_nr.get("error", "?"))[:120])
+                        return (_np, _nr["summary"], None)
+                    return (_np, None, str(_nr.get("error", "?"))[:120])
+
+                from concurrent.futures import ThreadPoolExecutor as _NlPool, as_completed as _nl_done
+                _box2.info(f"🥡 0/{len(_nachlese)} fertig — zwei parallel…")
+                _ndn = 0
+                with _NlPool(max_workers=2) as _npx:
+                    _nfuts = {_npx.submit(_process_nl, _np9): _np9 for _np9 in _nachlese}
+                    for _nf in _nl_done(_nfuts):
+                        try:
+                            _np9, _sumn, _errn = _nf.result()
+                        except Exception as _nex2:
+                            _np9, _sumn, _errn = _nfuts[_nf], None, str(_nex2)[:120]
+                        _ndn += 1
+                        if _sumn:
+                            _nsums.append(_sumn)
+                            mark_ttml_imported([_np9])
+                        else:
+                            _nerrs.append(_errn)
+                        _box2.info(f"🥡 {_ndn}/{len(_nachlese)} fertig…")
                 _box2.empty()
                 if _nsums:
                     st.session_state["podcast_text_pending_value"] = combine_podcast_field(
@@ -2646,6 +2689,7 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                     if _nok:
                         st.session_state["_podcast_inbox_last_msg"] = f"🎙️✅ Whisper fertig: {_nok} Folge(n) lokal transkribiert, zusammengefasst und unten angefügt."
                     st.session_state["_wq_ok_count"] = 0
+                    _maybe_autostart_briefing("Whisper")
                 st.rerun()
     elif st.session_state.get("podcast_inbox_data") is not None:
         st.caption("Keine neuen Folgen im Zeitfenster (oder alles schon archiviert). 👍")
@@ -2730,6 +2774,7 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             st.session_state["_podcast_inbox_last_msg"] = (
                 f"✅ {len(_new_summaries)} Podcast-Zusammenfassung(en) erstellt und unten ins Podcast-Feld angefügt."
             )
+            _maybe_autostart_briefing("Einwurf")
         if _inbox_errors:
             st.session_state["_podcast_inbox_errors"] = _inbox_errors
         st.rerun()
@@ -2776,24 +2821,38 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             _ttml_errs = []
             _prog2 = st.progress(0)
             _stat2 = st.empty()
-            for _bi, _t in enumerate(_ttml_selected, 1):
-                _tname = _t.get("title") or (_t['preview'] or '?')[:50]
-                _prog2.progress((_bi - 0.5) / len(_ttml_selected))
-                _stat2.caption(f"✨ Fasse zusammen {_bi}/{len(_ttml_selected)}: {_tname[:60]}… (~1-3 Min pro Folge)")
+            def _process_ttml(_t):
+                # Worker-Thread: nur Datei+Subprozess, kein st.*
+                _tn = _t.get("title") or (_t.get("preview") or "?")[:50]
                 try:
                     _txt = apple_ttml_to_text(_t["path"])
                 except Exception as _exc:
-                    _ttml_errs.append(f"{_tname[:40]}: TTML unlesbar ({_exc})")
-                    continue
+                    return (_t, _tn, None, f"TTML unlesbar ({str(_exc)[:80]})")
                 if _t.get("title"):
                     _txt = f"Podcast-Episode: {_t['title']}\n\n{_txt}"
                 _r = summarize_podcast_transcript_via_cli(_txt)
                 if _r.get("ok"):
-                    _new_sums.append(_r["summary"])
-                    mark_ttml_imported([_t["path"]])
-                else:
-                    _ttml_errs.append(f"{_tname[:40]}: {_r.get('error', '?')}")
-                _prog2.progress(_bi / len(_ttml_selected))
+                    return (_t, _tn, _r["summary"], None)
+                return (_t, _tn, None, str(_r.get("error", "?"))[:120])
+
+            from concurrent.futures import ThreadPoolExecutor as _TtmlPool, as_completed as _ttml_done
+            _stat2.caption(f"0/{len(_ttml_selected)} fertig — zwei Folgen laufen parallel (~1-3 Min pro Folge)…")
+            _tdn = 0
+            with _TtmlPool(max_workers=2) as _tpx:
+                _tfuts = {_tpx.submit(_process_ttml, _t): _t for _t in _ttml_selected}
+                for _tf in _ttml_done(_tfuts):
+                    try:
+                        _t, _tn, _sumt, _errt = _tf.result()
+                    except Exception as _tex:
+                        _t, _tn, _sumt, _errt = _tfuts[_tf], "?", None, str(_tex)[:120]
+                    _tdn += 1
+                    if _sumt:
+                        _new_sums.append(_sumt)
+                        mark_ttml_imported([_t["path"]])
+                    else:
+                        _ttml_errs.append(f"{_tn[:40]}: {_errt}")
+                    _prog2.progress(_tdn / len(_ttml_selected))
+                    _stat2.caption(f"{_tdn}/{len(_ttml_selected)} fertig — zuletzt: {_tn[:50]}")
             _prog2.empty()
             _stat2.empty()
             if _new_sums:
@@ -2845,6 +2904,8 @@ def _round_jobs_collector():
     if _got or (not _left and _jobs):
         if _got:
             st.session_state["_podcast_inbox_last_msg"] = f"✅ {_got} Hintergrund-Zusammenfassung(en) eingefügt." + (f" Noch {len(_left)} offen." if _left else " Alle fertig.")
+        if not _left:
+            _maybe_autostart_briefing("Hintergrund-Zusammenfassungen")
         st.rerun(scope="app")
 
 
@@ -2855,6 +2916,11 @@ if st.session_state.get("_podcast_inbox_last_msg"):
 if st.session_state.get("_podcast_inbox_errors"):
     for _e in st.session_state.pop("_podcast_inbox_errors"):
         st.warning(f"⚠️ Nicht zusammengefasst — {_e}")
+st.checkbox(
+    "🚀 Briefing automatisch starten, sobald ALLE Podcast-Zusammenfassungen fertig sind",
+    key="auto_briefing_when_done",
+    help="Für den typischen Schluss-Schritt: Du stößt Runde/✨/Einwurf an, gehst weg — und sobald die letzte Zusammenfassung eingefügt ist (und keine Whisper-Frage offen), startet das Briefing von selbst mit deinen aktuellen Einstellungen. Gilt, solange das Häkchen an ist.",
+)
 podcast_text = st.text_area(
     "Podcast-Zusammenfassungen",
     placeholder='Zusammenfassungen hier einfügen.\nTrennung am Endmarker "Ende der Podcastzusammenfassung." oder mit mmm, Mmmmmm, ---, ===== oder "Artikel Ende".',
@@ -4529,6 +4595,9 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         _cli_token_accumulator["calls"] += 1
 
 
+    _auto_fire = bool(st.session_state.pop("_auto_run_briefing", False)) and _cli_available
+    if _auto_fire:
+        st.info("🚀 Automatisch gestartet — alle Podcast-Zusammenfassungen waren fertig.")
     if st.button(
         "🤖 Briefing automatisch via Claude bauen (kostenlos)",
         key="claude_cli_run_button_main",
@@ -4536,7 +4605,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         type="primary",
         disabled=not _cli_available,
         help="Holt alle Artikel + Wetter, schickt sie an Claude, baut Voll-PDF + Kompaktfassung. ~5–10 Min Wartezeit. Nutzt dein Max-Abo, keine API-Kosten.",
-    ):
+    ) or _auto_fire:
         if not (urls_text.strip() or paywall_text.strip() or podcast_text.strip() or include_weather):
             st.warning("Mindestens ein Feld ausfüllen oder Wetter aktivieren.")
         elif _cli_direct_genius_only and not _cli_genius_enabled:
