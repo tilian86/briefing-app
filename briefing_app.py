@@ -64,6 +64,7 @@ from briefing_core import (
     suggest_missing_topics_via_cli,
     append_special_topic,
     attach_inbox_translations,
+    find_cached_ttml_for,
     download_feed_transcript,
     resolve_apple_episode_url,
     open_in_apple_podcasts,
@@ -2559,6 +2560,33 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                 st.rerun()
             else:
                 _cur = _ar_eps[_ar_i]
+                if _ar.get("_cache_checked_idx") != _ar_i:
+                    # Liegt das Transkript SCHON im Apple-Cache (früher mal angesehen)?
+                    # Dann sofort greifen — ohne Öffnen, ohne Warten.
+                    _ar["_cache_checked_idx"] = _ar_i
+                    _cached9 = find_cached_ttml_for(_cur.get("feed", ""), _cur.get("title", ""))
+                    if _cached9 and _cached9 not in set(st.session_state.get("_round_paths") or []):
+                        _sp9 = set(st.session_state.get("_round_paths") or [])
+                        _sp9.add(_cached9)
+                        st.session_state["_round_paths"] = list(_sp9)
+                        try:
+                            _txtc = apple_ttml_to_text(_cached9)
+                            if st.session_state.get("_sum_pool") is None:
+                                from concurrent.futures import ThreadPoolExecutor as _SumPool2
+                                st.session_state["_sum_pool"] = _SumPool2(max_workers=2)
+                            _futc = st.session_state["_sum_pool"].submit(
+                                summarize_podcast_transcript_via_cli,
+                                f"Podcast: {_cur['feed']} — Episode: {_cur['title']}\n\n{_txtc}")
+                            _jobsc = st.session_state.get("_round_jobs") or []
+                            _jobsc.append({"guid": _cur["guid"], "title": _cur["title"], "path": _cached9, "fut": _futc})
+                            st.session_state["_round_jobs"] = _jobsc
+                            st.session_state["_podcast_inbox_last_msg"] = f"⚡ {_cur['title'][:50]}: Transkript lag schon im Cache — läuft im Hintergrund."
+                        except Exception as _cex9:
+                            st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [f"{_cur['title'][:40]}: TTML unlesbar ({str(_cex9)[:80]})"]
+                        _ar["idx"] = _ar_i + 1
+                        _ar["opened"] = None
+                        st.session_state["apple_round"] = _ar
+                        st.rerun()
                 if not _ar.get("opened"):
                     _aurl = resolve_apple_episode_url(_cur["feed"], _cur["title"])
                     _ar["open_failed"] = not (_aurl and open_in_apple_podcasts(_aurl))

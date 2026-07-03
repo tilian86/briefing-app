@@ -13573,6 +13573,32 @@ def mark_ttml_imported(paths: List[str]) -> None:
     _podcast_inbox_state_save(state)
 
 
+def find_cached_ttml_for(feed: str, title: str) -> Optional[str]:
+    """Liegt das Transkript dieser Episode SCHON in Apples Cache? Titel-Abgleich über
+    die Bibliotheks-DB — erspart in der Runde das Warten auf eine neue Datei (die nie
+    kommt, wenn die Folge früher schon mal angesehen wurde)."""
+    import glob as _glob
+    try:
+        paths = _glob.glob(os.path.join(APPLE_PODCAST_TTML_DIR, "**", "*.ttml"), recursive=True)
+        imported = set((_podcast_inbox_state_load().get("imported_ttml") or {}).keys())
+        paths = [p for p in paths if p not in imported]
+        if not paths:
+            return None
+        titles = apple_transcript_titles(paths)
+        _t = (title or "").lower().strip()
+        _f = (feed or "").lower().strip()
+        for p, full in titles.items():
+            full_l = full.lower()
+            pod, _sep, ep = full_l.partition(" — ")
+            t_match = _t[:22] in full_l or (ep and ep[:22] in _t)
+            f_match = (not _f) or _f[:14] in pod or pod[:14] in _f
+            if t_match and f_match:
+                return p
+    except Exception as exc:
+        print(f"[ttml-cache] Abgleich fehlgeschlagen: {exc}", file=sys.stderr)
+    return None
+
+
 def wait_for_new_apple_ttml(since_ts: float, timeout_s: int = 180, poll_s: float = 3.0) -> Optional[str]:
     """Wartet, bis Apple Podcasts ein NEUES Transkript cached (mtime > since_ts).
     Für den Ein-Klick-Flow: 🍎 öffnen → Florian tippt aufs Transkript → wir schnappen
