@@ -2248,6 +2248,15 @@ with _pw_scroll_col:
 st.markdown('<div id="nav-podcast" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 st.markdown("#### Podcast-Zusammenfassungen")
 
+def _bg_feed_summarize(_ep):
+    """Worker-Thread für den 🚀-Kombi-Knopf: Feed-Transkript laden + zusammenfassen.
+    Gibt dasselbe Ergebnis-Format wie summarize_podcast_transcript_via_cli zurück."""
+    _txt = download_feed_transcript(_ep["transcript_url"], _ep.get("transcript_type"))
+    if not _txt or len(_txt) < 500:
+        return {"ok": False, "error": "Transkript-Download leer"}
+    return summarize_podcast_transcript_via_cli(f"Podcast: {_ep['feed']} — Episode: {_ep['title']}\n\n{_txt}")
+
+
 def _maybe_autostart_briefing(source: str):
     """🚀 Auto-Start: Wenn die Option an ist und KEINE Podcast-Arbeit mehr offen
     (keine Runde, keine Hintergrund-Jobs, keine Whisper-Frage/-Arbeit), Briefing zünden."""
@@ -2315,16 +2324,7 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
             _apply_v = bool(st.session_state.pop("_ibx_sel_all_apply"))
             for _e0 in _ib_eps[:60]:
                 st.session_state[f"ibx_{_e0['guid']}"] = _apply_v
-            st.session_state["ibx_select_all"] = _apply_v
             st.session_state["_ibx_sel_all_prev"] = _apply_v
-        _sel_all_ibx = st.checkbox(f"Alle auswählen ({len(_ib_eps[:60])})", key="ibx_select_all",
-                                   help="Setzt alle Häkchen auf einmal — danach kannst du einzelne wieder abwählen. Nochmal klicken wählt alle ab.")
-        if bool(_sel_all_ibx) != bool(st.session_state.get("_ibx_sel_all_prev", False)):
-            # Umschalten wirkt auf die echten Zeilen-Häkchen (sichtbar!) — Werte werden
-            # VOR der Instanziierung der Zeilen-Checkboxen gesetzt, das erlaubt Streamlit.
-            for _e0 in _ib_eps[:60]:
-                st.session_state[f"ibx_{_e0['guid']}"] = bool(_sel_all_ibx)
-            st.session_state["_ibx_sel_all_prev"] = bool(_sel_all_ibx)
         if not st.session_state.get("_ibx_sel_seeded"):
             # Gespeicherte Auswahl wiederherstellen (überlebt Reload/Deploy) —
             # nur einmal pro Session, damit bewusstes Abwählen nicht überschrieben wird.
@@ -2405,6 +2405,27 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
         if bool(_sel_all_bottom) != bool(st.session_state.get("_ibx_sel_all_bottom_prev", False)):
             st.session_state["_ibx_sel_all_bottom_prev"] = bool(_sel_all_bottom)
             st.session_state["_ibx_sel_all_apply"] = bool(_sel_all_bottom)
+            st.rerun()
+        _round_active0 = bool(st.session_state.get("apple_round"))
+        _sel_eps0 = [e for e in _ib_eps[:60] if st.session_state.get(f"ibx_{e['guid']}")]
+        _auto0 = [e for e in _sel_eps0 if e.get("transcript_url")]
+        _apple0 = [e for e in _sel_eps0 if not e.get("transcript_url")] if _apple_ok else []
+        if st.button(f"🚀 Alles verarbeiten — {len(_auto0)} 📄 im Hintergrund + {len(_apple0)} 🍎 in der Runde", key="ibx_process_all",
+                     use_container_width=True, type="primary", disabled=(not _sel_eps0) or _round_active0,
+                     help="EIN Klick für die ganze Auswahl: Folgen mit Feed-Transkript laufen sofort im Hintergrund (2 parallel, Ergebnisse erscheinen automatisch unten), parallel startet für die 🍎-Folgen die Apple-Runde. Mit 🚀-Häkchen unten startet danach sogar das Briefing von selbst."):
+            if st.session_state.get("_sum_pool") is None:
+                from concurrent.futures import ThreadPoolExecutor as _SumPool3
+                st.session_state["_sum_pool"] = _SumPool3(max_workers=2)
+            _jobs0 = st.session_state.get("_round_jobs") or []
+            for _fe in _auto0:
+                _jobs0.append({"guid": _fe["guid"], "title": _fe["title"], "path": None,
+                               "fut": st.session_state["_sum_pool"].submit(_bg_feed_summarize, dict(_fe))})
+            st.session_state["_round_jobs"] = _jobs0
+            _msg0 = f"🚀 {len(_auto0)} 📄-Folge(n) laufen im Hintergrund."
+            if _apple0:
+                st.session_state["apple_round"] = {"eps": _apple0, "idx": 0, "opened": None, "collected": []}
+                _msg0 += f" Die 🍎-Runde ({len(_apple0)}) startet jetzt."
+            st.session_state["_podcast_inbox_last_msg"] = _msg0
             st.rerun()
         _act1, _act2, _act3 = st.columns(3)
         _sel_guids = [e["guid"] for e in _ib_eps[:60] if st.session_state.get(f"ibx_{e['guid']}")]
@@ -2598,7 +2619,9 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                     st.warning(f"🍎 Folge {_ar_i + 1}/{len(_ar_eps)}: **{_cur['title'][:60]}** ließ sich nicht automatisch öffnen — in Apple Podcasts manuell suchen und aufs Transkript tippen, oder unten entscheiden.")
                 else:
                     st.info(f"🍎 Folge {_ar_i + 1}/{len(_ar_eps)}: **{_cur['title'][:60]}** — in Apple Podcasts aufs Transkript tippen, ich erkenne es automatisch. (Warte seit {_wait_s}s, kein Zeitlimit.)")
-                _rc1, _rc2, _rc3 = st.columns(3)
+                if _wait_s > 45:
+                    st.caption("💡 Transkript offen, aber nichts passiert? Apple speichert manchmal erst beim SCHLIESSEN der Transkript-Ansicht — einmal zurück tippen und kurz warten, oder unten „🔄 Jetzt prüfen“. Bei Kurzfolgen ist 🎙️ (lokal, 1-2 Min) oft am schnellsten.")
+                _rc1, _rc2, _rc3, _rc4 = st.columns(4)
                 with _rc1:
                     if st.button("⏭️ Überspringen", key=f"ar_skip_{_ar_i}", use_container_width=True,
                                  help="Weiter zur nächsten Folge — diese bleibt unangetastet in der Liste (z.B. später per Nachlese holen)."):
@@ -2618,6 +2641,12 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                         st.session_state["apple_round"] = _ar
                         st.rerun()
                 with _rc3:
+                    if st.button("🔄 Jetzt prüfen", key=f"ar_check_{_ar_i}", use_container_width=True,
+                                 help="Sofort nachsehen: erst im Apple-Cache (Titel-Abgleich), dann nach frisch geschriebenen Transkript-Dateien — falls die automatische Erkennung hakt."):
+                        _ar["_cache_checked_idx"] = None
+                        st.session_state["apple_round"] = _ar
+                        st.rerun()
+                with _rc4:
                     if st.button("⏹️ Runde beenden", key=f"ar_stop_{_ar_i}", use_container_width=True,
                                  help="Restliche Folgen abbrechen — bereits erkannte Transkripte werden noch zusammengefasst."):
                         _ar["eps"] = _ar_eps[:_ar_i]
@@ -2917,7 +2946,8 @@ def _round_jobs_collector():
             if _base is None:
                 _base = st.session_state.get("podcast_text")
             st.session_state["podcast_text_pending_value"] = combine_podcast_field(_base, [_r["summary"]])
-            mark_ttml_imported([_j["path"]])
+            if _j.get("path"):
+                mark_ttml_imported([_j["path"]])
             _d7 = st.session_state.get("podcast_inbox_data") or {}
             _meta7 = [x for x in (_d7.get("episodes") or []) if x.get("guid") == _j["guid"]]
             podcast_inbox_mark([_j["guid"]], "summarized", eps_meta=_meta7)

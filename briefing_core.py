@@ -13287,7 +13287,7 @@ def list_unimported_ttml(max_age_h: int = 48) -> List[str]:
     for p in _glob.glob(os.path.join(APPLE_PODCAST_TTML_DIR, "**", "*.ttml"), recursive=True):
         try:
             st_ = os.stat(p)
-            if p not in imported and st_.st_mtime > cutoff and st_.st_size > 20_000:
+            if p not in imported and st_.st_mtime > cutoff and st_.st_size > 5_000:
                 out.append((st_.st_mtime, p))
         except Exception:
             continue
@@ -13611,7 +13611,7 @@ def wait_for_new_apple_ttml(since_ts: float, timeout_s: int = 180, poll_s: float
                 try:
                     st_ = os.stat(p)
                     # frisch UND fertig geschrieben (2s stabil + plausible Größe)
-                    if st_.st_mtime > since_ts and st_.st_size > 20_000 and (time.time() - st_.st_mtime) > 2:
+                    if st_.st_mtime > since_ts and st_.st_size > 5_000 and (time.time() - st_.st_mtime) > 2:
                         return p
                 except Exception:
                     continue
