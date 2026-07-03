@@ -2975,13 +2975,16 @@ def _round_jobs_collector():
             st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [
                 f"{_j['title'][:40]}: {str(_r.get('error', '?'))[:100]}"]
     st.session_state["_round_jobs"] = _left
+    _done_total = int(st.session_state.get("_bg_done_count") or 0) + _got
+    st.session_state["_bg_done_count"] = _done_total
     if _left:
-        st.caption(f"⏳ {len(_left)} Podcast-Zusammenfassung(en) laufen im Hintergrund — erscheinen automatisch unten…")
-    if _got or (not _left and _jobs):
-        if _got:
-            st.session_state["_podcast_inbox_last_msg"] = f"✅ {_got} Hintergrund-Zusammenfassung(en) eingefügt." + (f" Noch {len(_left)} offen." if _left else " Alle fertig.")
-        if not _left:
-            _maybe_autostart_briefing("Hintergrund-Zusammenfassungen")
+        # Nur die Fragment-Anzeige aktualisieren — KEIN App-weiter Rerun pro Job:
+        # der würde bei vielen Jobs die Seite dauer-umbauen und Klicks verschlucken.
+        st.caption(f"⏳ {len(_left)} laufen noch · ✅ {_done_total} fertig (werden gesammelt eingefügt)…")
+    if not _left and _jobs:
+        st.session_state["_podcast_inbox_last_msg"] = f"✅ Alle {_done_total} Hintergrund-Zusammenfassung(en) fertig und eingefügt."
+        st.session_state["_bg_done_count"] = 0
+        _maybe_autostart_briefing("Hintergrund-Zusammenfassungen")
         st.rerun(scope="app")
 
 
@@ -2995,6 +2998,7 @@ if st.session_state.get("_podcast_inbox_errors"):
 st.checkbox(
     "🚀 Briefing automatisch starten, sobald ALLE Podcast-Zusammenfassungen fertig sind",
     key="auto_briefing_when_done",
+    on_change=_save_draft,
     help="Für den typischen Schluss-Schritt: Du stößt Runde/✨/Einwurf an, gehst weg — und sobald die letzte Zusammenfassung eingefügt ist (und keine Whisper-Frage offen), startet das Briefing von selbst mit deinen aktuellen Einstellungen. Gilt, solange das Häkchen an ist.",
 )
 podcast_text = st.text_area(
