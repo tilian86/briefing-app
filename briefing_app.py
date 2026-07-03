@@ -63,6 +63,7 @@ from briefing_core import (
     combine_podcast_field,
     suggest_missing_topics_via_cli,
     append_special_topic,
+    attach_inbox_translations,
     download_feed_transcript,
     resolve_apple_episode_url,
     open_in_apple_podcasts,
@@ -2254,8 +2255,12 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
     with _ib_c2:
         st.write("")
         if st.button("🔄 Neue Episoden laden", key="podcast_inbox_fetch", use_container_width=True):
-            with st.spinner("Prüfe alle Feeds (parallel, ~15-30s)…"):
+            with st.spinner("Prüfe alle Feeds (parallel, ~15-30s) — englische Titel werden fürs Anzeigen übersetzt…"):
                 st.session_state["podcast_inbox_data"] = fetch_new_podcast_episodes(days=int(_ib_days))
+                try:
+                    attach_inbox_translations(st.session_state["podcast_inbox_data"].get("episodes") or [])
+                except Exception:
+                    pass
                 podcast_inbox_cache_save(st.session_state["podcast_inbox_data"])
     if st.session_state.get("podcast_inbox_data") is None:
         # Frische Session (Browserwechsel/Neustart): letzten Stand von Platte holen —
@@ -2321,11 +2326,20 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                 _desc_html = ""
                 if _e.get("desc"):
                     _desc_html = f"  \n<small style='opacity:.65'>{html.escape(_e['desc'])}</small>"
+                _title_disp = _e.get("title_de") or _e["title"]
+                _desc_disp = _e.get("desc_de") or _e.get("desc")
+                if _desc_disp and _e.get("desc_de"):
+                    _desc_html = f"  \n<small style='opacity:.65'>{html.escape(_desc_disp)}</small>"
                 st.markdown(
-                    f"{_badge} **{html.escape(_e['title'])}**  \n"
+                    f"{_badge} **{html.escape(_title_disp)}**  \n"
                     f"<small>{html.escape(_e['feed'])} · {_age}{_done}</small>{_desc_html}",
                     unsafe_allow_html=True,
                 )
+                if _e.get("title_de"):
+                    with st.popover("🇬🇧 Original", use_container_width=False):
+                        st.markdown(f"**{html.escape(_e['title'])}**")
+                        if _e.get("desc"):
+                            st.caption(_e["desc"])
             with _cols[3]:
                 if not _e.get("transcript_url") and not _apple_ok:
                     st.caption("🎙️ via ✨ (lokal)")

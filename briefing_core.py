@@ -13295,6 +13295,72 @@ def list_unimported_ttml(max_age_h: int = 48) -> List[str]:
     return [p for _, p in out]
 
 
+def _looks_english(text: str) -> bool:
+    t = f" {(text or '').lower()} "
+    en = sum(w in t for w in (" the ", " and ", " of ", " to ", " with ", " how ", " why ",
+                              " what ", " is ", " for ", " on ", " a ", " in the ", " you "))
+    de = sum(w in t for w in (" der ", " die ", " das ", " und ", " mit ", " für ", " ist ",
+                              " von ", " im ", " wie ", " warum ", " ein ", " eine ", " nicht "))
+    return en >= 2 and en > de
+
+
+def attach_inbox_translations(episodes: List[dict], cli_path: Optional[str] = None) -> int:
+    """Übersetzt englische Episoden-Titel/Beschreibungen für die Inbox-Anzeige (haiku, EIN
+    Batch-Call), cached dauerhaft pro guid im State-File. Original bleibt in title/desc —
+    Anzeige nutzt title_de/desc_de. Returns Anzahl frisch übersetzter Folgen."""
+    state = _podcast_inbox_state_load()
+    cache = state.setdefault("translations", {})
+    need = []
+    for e in episodes:
+        g = e.get("guid")
+        if not g:
+            continue
+        if g in cache:
+            e["title_de"] = cache[g].get("title_de") or None
+            e["desc_de"] = cache[g].get("desc_de") or None
+            continue
+        if _looks_english(f"{e.get('title', '')} {e.get('desc', '')}"):
+            need.append(e)
+    if not need:
+        return 0
+    cli = cli_path or _locate_claude_cli()
+    if not cli:
+        return 0
+    need = need[:120]
+    payload = ("Übersetze Titel und Beschreibung dieser Podcast-Episoden idiomatisch ins Deutsche. "
+               "Eigennamen, Podcast- und Produktnamen im Original lassen. Keine Anführungszeichen ergänzen.\n"
+               "ANTWORT NUR ALS JSON: {\"items\": [{\"i\": 0, \"title_de\": \"…\", \"desc_de\": \"…\"}]}\n\n"
+               + json.dumps([{"i": i, "title": e.get("title", ""), "desc": e.get("desc", "")}
+                             for i, e in enumerate(need)], ensure_ascii=False))
+    try:
+        sr = _run_claude_cli_subprocess_streaming(
+            [cli, "--print", "--output-format", "text", "--model", "haiku",
+             "--dangerously-skip-permissions", "--effort", "low",
+             "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."],
+            payload, timeout_seconds=240, expected_duration_s=45.0, label="Titel-Übersetzung")
+        m = re.search(r"\{.*\}", (sr.get("stdout") or ""), re.DOTALL)
+        data = json.loads(m.group(0)) if (sr.get("ok") and m) else {}
+    except Exception as exc:
+        print(f"[übersetzung] fehlgeschlagen: {exc}", file=sys.stderr)
+        return 0
+    n = 0
+    for it in (data.get("items") or []):
+        try:
+            e = need[int(it["i"])]
+        except Exception:
+            continue
+        t_de = str(it.get("title_de") or "").strip()[:200] or None
+        d_de = str(it.get("desc_de") or "").strip()[:260] or None
+        if t_de or d_de:
+            e["title_de"], e["desc_de"] = t_de, d_de
+            cache[e["guid"]] = {"title_de": t_de, "desc_de": d_de}
+            n += 1
+    if n:
+        _podcast_inbox_state_save(state)
+        print(f"[übersetzung] {n} englische Folge(n) für die Anzeige übersetzt.", file=sys.stderr)
+    return n
+
+
 def podcast_listen_list_add(ep: dict) -> None:
     """Merkt eine Folge fürs spätere Anhören (Pocket Casts) — persistent."""
     state = _podcast_inbox_state_load()
