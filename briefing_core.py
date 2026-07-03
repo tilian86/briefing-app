@@ -14487,6 +14487,17 @@ def run_briefing_via_claude_cli_chunked(
     if special_topics:
         _report(f"🧠 Sonderthemen: {len(special_topics)} Recherche(n) via Opus…", 0.74)
         _hist_block = _recent_topic_history_block()
+        # Heutiges Briefing als Kontext: verhindert, dass ein Sonderthema nachbaut,
+        # was die heutigen Quellen ohnehin behandeln (z.B. Reformpaket doppelt).
+        _today_titles = []
+        for _ts9 in all_sections:
+            _tt9 = _markdown_line_to_plain(_extract_title(_ts9.get("content", "") or "")).strip()
+            if _tt9 and not _ts9.get("_weather"):
+                _today_titles.append(_tt9)
+        if _today_titles:
+            _hist_block += ("\n\nIM HEUTIGEN BRIEFING BEREITS ENTHALTEN (nicht nachbauen — "
+                            "höchstens ergänzen oder kurz Bezug nehmen):\n"
+                            + "\n".join(f"- {_t9}" for _t9 in _today_titles[:40]))
 
         def _one_special(_topic):
             _pl = _SPECIAL_TOPIC_PROMPT.format(topic=_topic) + _hist_block
