@@ -4184,7 +4184,7 @@ _mode_col1, _mode_col2, _mode_col3 = st.columns(3)
 with _mode_col1:
     # Mehrfachauswahl: eine oder mehrere Längen anklicken — bei mehreren werden die
     # Versionen nacheinander erstellt, die Artikel aber nur EINMAL geladen+gemergt.
-    _valid_depths = ("Sehr kurz", "Kürzer", "Ausführlich")
+    _valid_depths = ("Intelligent", "Sehr kurz", "Kürzer", "Ausführlich")
     if "briefing_depth_multi" not in st.session_state:
         # Migration: alter Radio-Wert (falls vorhanden) wird zur Vorauswahl.
         _old_depth = st.session_state.get("briefing_depth_radio")
@@ -4196,7 +4196,7 @@ with _mode_col1:
         "Briefing-Länge(n)",
         options=list(_valid_depths),
         key="briefing_depth_multi",
-        help="Alle drei sind ein VOLLES Briefing in voller Qualität — nur die Artikel-Länge unterscheidet sich. Sehr kurz: ~120 Wörter/Beitrag, ideal bei vielen Artikeln. Kürzer: knackig (Standard). Ausführlich: mehr Kontext, länger. MEHRERE anklicken = alle Versionen in einem Rutsch (Artikel werden nur einmal geladen, dann pro Länge verdichtet). Nicht zu verwechseln mit der separaten Kompaktfassung rechts daneben.",
+        help="Alle sind ein VOLLES Briefing in voller Qualität. 🧠 Intelligent: Opus gewichtet jedes Thema automatisch (Tragweite 1-5, du musst NICHTS bewerten) — Top-Storys werden voll erzählt, Randnotizen auf 2-3 Sätze eingedampft; Gesamtlänge bleibt im Rahmen, Substanz geht vor. Sehr kurz: ~120 Wörter/Beitrag überall gleich. Kürzer: knackig, gleichmäßig. Ausführlich: mehr Kontext überall. MEHRERE anklicken = alle Versionen in einem Rutsch. Intelligent wirkt nur mit Themen-Synthese.",
     )
     _depths_to_run = [d for d in _valid_depths if d in (_briefing_depth_sel or [])] or ["Kürzer"]
     st.session_state["_depths_to_run"] = _depths_to_run
@@ -4207,6 +4207,11 @@ with _mode_col1:
     st.session_state["ultra_compact"] = ultra_compact
     if len(_depths_to_run) > 1:
         st.caption(f"🔁 {len(_depths_to_run)} Versionen werden nacheinander erstellt — gemeinsame Artikel-Basis, nur die Verdichtung läuft pro Länge.")
+    elif _briefing_depth == "Intelligent":
+        if st.session_state.get("topic_synthesis_mode", True):
+            st.caption("🧠 Opus verteilt die Länge selbst: Schwerpunkte voll, Randnotizen in 2-3 Sätzen — vollständig bleibt es immer.")
+        else:
+            st.caption("⚠️ Intelligent braucht die Themen-Synthese (rechts) — ohne sie läuft diese Version wie Kürzer.")
     elif ultra_compact:
         st.caption("Sehr kurz: höchstens ~120 Wörter pro Beitrag — volles Briefing, aber für umfangreiche Tage (viele Artikel) deutlich kürzer.")
     elif compact_mode:
@@ -4657,7 +4662,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                     _on_cli_progress(f"Großes Briefing ({_cli_item_count} Beiträge) — Häppchen-Modus startet…", 0.02)
                     handoff_text = ""  # im chunked-Pfad nicht gebaut; verhindert NameError unten
                     st.session_state["claude_handoff_text"] = ""
-                    _depth_suffix = {"Sehr kurz": "_sehr-kurz", "Kürzer": "_kuerzer", "Ausführlich": "_ausfuehrlich"}
+                    _depth_suffix = {"Sehr kurz": "_sehr-kurz", "Kürzer": "_kuerzer", "Ausführlich": "_ausfuehrlich", "Intelligent": "_intelligent"}
                     # Lauf-Plan: WhatsApp-Lese-Version (klassisch, Sehr kurz) ZUERST —
                     # sie füllt die geteilte Basis; die Hauptversionen laufen danach,
                     # damit _AKTUELL-TXT und Reader-Upload die Hörversion tragen.
@@ -4704,6 +4709,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             content_check=bool(_cli_content_check_enabled and _di == _check_idx),
                             auto_repair=bool(_cli_auto_repair_enabled and _di == _check_idx),
                             special_topics=(_special_list if _di == _check_idx else None),
+                            smart_length=bool(_rp["synth"] and _rp["depth"] == "Intelligent"),
                         )
                         if not cli_result.get("ok"):
                             break  # Fehler-Handling unten greift für cli_result

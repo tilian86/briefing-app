@@ -13602,6 +13602,7 @@ REGELN:
 - Ein Thema kann auch nur eine Quelle haben (der Normalfall).
 - Podcasts, die viele verschiedene Themen streifen, bleiben ein EIGENES Thema.
 - Gib jedem Thema einen prägnanten deutschen Titel und ein Gewicht von 1 (Randnotiz) bis 5 (Topthema des Tages).
+- Vergib die Gewichte STRENG: höchstens 1-2 Themen bekommen eine 5, die Masse liegt bei 2-3. Das Gewicht steuert später die Beitragslänge.
 
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Vorrede:
 {"topics": [{"title": "Koalitionsausschuss einigt sich auf Haushalt", "members": [3, 7, 12], "weight": 5}, {"title": "...", "members": [1], "weight": 2}]}"""
@@ -13643,9 +13644,26 @@ STIL — UNTERHALTSAM ERZÄHLT: Schreibe wie der Host eines exzellenten Magazin-
 """
 
 
+_SMART_WEIGHT_BUDGETS = {5: (300, 480), 4: (220, 340), 3: (150, 230), 2: (90, 140), 1: (50, 90)}
+_SMART_WEIGHT_NOTES = {
+    5: "Schwerpunkt des Tages — erzähle vollständig, mit Kontext und Einordnung",
+    4: "wichtiges Thema — gründlich, aber ohne Ausschweifen",
+    3: "solide Meldung — kompakt mit den Kernfakten",
+    2: "kleinere Meldung — nur das Wesentliche in wenigen Sätzen",
+    1: "Randnotiz — 2-3 Sätze genügen",
+}
+
+
+def _smart_topic_budget(weight: int, n_src: int) -> tuple:
+    """Intelligente Länge: Wortbudget aus Tragweite (1-5) + kleinem Quellen-Bonus."""
+    wmin, wmax = _SMART_WEIGHT_BUDGETS.get(int(weight or 3), _SMART_WEIGHT_BUDGETS[3])
+    bonus = min(40 * (max(1, n_src) - 1), 160)
+    return wmin + bonus // 2, wmax + bonus
+
+
 def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, ultra_compact=False,
                                   cli_path=None, progress_callback=None, timeout_seconds=600,
-                                  narrative_style=False, web_enrich=False):
+                                  narrative_style=False, web_enrich=False, smart_length=False):
     """Themen-Synthese: bündelt alle Quellen thematisch (Opus) und schreibt pro Thema
     EINEN verwobenen Vorlesetext (Opus, parallel max 2). Vollständigkeits-Garantie:
     jede Quelle landet in genau einem Thema (Nachzügler werden als Einzelthemen ergänzt).
@@ -13710,6 +13728,24 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
           f"{[t['title'][:40] + ' <- ' + str(len(t['members'])) + ' Quellen' for t in multi[:5]]}).", file=sys.stderr)
 
     # 2) Pro Thema EINEN verwobenen Beitrag schreiben (Opus, parallel max 2)
+    if smart_length:
+        # 🧠 Intelligente Länge: Tragweite bestimmt das Budget — Unwichtiges radikal
+        # kurz, Wichtiges voll erzählt. Sanfte Gesamtbremse schützt vor Monster-PDFs,
+        # drosselt aber nur Gewicht ≤3 (Top-Themen bleiben unangetastet).
+        for t in topics:
+            t["_wmin"], t["_wmax"] = _smart_topic_budget(t.get("weight", 3), len(t["members"]))
+            t["_note"] = _SMART_WEIGHT_NOTES.get(int(t.get("weight") or 3), _SMART_WEIGHT_NOTES[3])
+        _est = sum((t["_wmin"] + t["_wmax"]) // 2 for t in topics)
+        if _est > 8000:
+            _f = max(0.65, 8000 / _est)
+            for t in topics:
+                if int(t.get("weight") or 3) <= 3:
+                    t["_wmin"], t["_wmax"] = int(t["_wmin"] * _f), int(t["_wmax"] * _f)
+            print(f"[synthese] Intelligente Länge: ~{_est} Wörter geschätzt → Gewicht ≤3 auf Faktor {_f:.2f} gedrosselt.", file=sys.stderr)
+        _w_hist = {}
+        for t in topics:
+            _w_hist[t.get("weight", 3)] = _w_hist.get(t.get("weight", 3), 0) + 1
+        print(f"[synthese] Intelligente Länge: Gewichtsverteilung {dict(sorted(_w_hist.items(), reverse=True))}, Zielumfang ~{sum((t['_wmin'] + t['_wmax']) // 2 for t in topics)} Wörter.", file=sys.stderr)
     if ultra_compact:
         base_min, base_max, per_src, cap = 90, 150, 70, 450
     elif compact_mode:
@@ -13719,9 +13755,16 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
 
     def _write_topic(t):
         n_src = len(t["members"])
-        wmin = base_min + (per_src // 2) * (n_src - 1)
-        wmax = min(base_max + per_src * (n_src - 1), cap)
+        if "_wmin" in t:
+            wmin, wmax = t["_wmin"], t["_wmax"]
+        else:
+            wmin = base_min + (per_src // 2) * (n_src - 1)
+            wmax = min(base_max + per_src * (n_src - 1), cap)
         prompt = _TOPIC_SYNTH_PROMPT.format(topic_title=t["title"], word_min=wmin, word_max=wmax)
+        if "_wmin" in t:
+            prompt += (f"\n\nGEWICHTUNG: Tragweite {t.get('weight', 3)}/5 — {t.get('_note', '')}. "
+                       "Das Wortbudget ist ein Richtwert: bei dünner Substanz DEUTLICH unterschreiten, "
+                       "bei echter Tiefe maßvoll (bis ~20%) überziehen.")
         if narrative_style:
             prompt += _SYNTH_NARRATIVE_STYLE
         if web_enrich:
@@ -13811,7 +13854,7 @@ def _strip_transcript_noise(text: str) -> str:
 
 
 def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str] = None,
-                                         model: str = "opus", timeout_seconds: int = 900) -> dict:
+                                         model: str = "sonnet", timeout_seconds: int = 900) -> dict:
     """Verdichtet EIN rohes Podcast-Transkript zur Briefing-tauglichen Zusammenfassung
     (Florians Podcast-Prompt, endet garantiert mit dem Endmarker). Läuft übers Max-Abo.
 
@@ -14219,6 +14262,7 @@ def run_briefing_via_claude_cli_chunked(
     content_check: bool = False,
     auto_repair: bool = False,
     special_topics: Optional[List[str]] = None,
+    smart_length: bool = False,
 ) -> dict:
     """Wie run_briefing_via_claude_cli, aber in Häppchen — zuverlässig bei großen
     Briefings, weil kein einzelner CLI-Aufruf zu lange läuft (Socket-Abbruch-Schutz).
@@ -14339,7 +14383,8 @@ def run_briefing_via_claude_cli_chunked(
             items, weather_text=weather_text, compact_mode=compact_mode,
             ultra_compact=ultra_compact, cli_path=cli,
             progress_callback=progress_callback, timeout_seconds=timeout_seconds,
-            narrative_style=synthesis_narrative, web_enrich=synthesis_web_enrich)
+            narrative_style=synthesis_narrative, web_enrich=synthesis_web_enrich,
+            smart_length=smart_length)
 
     # In Gruppen teilen
     groups = [] if topic_synthesis else ([items[i:i + chunk_size] for i in range(0, len(items), chunk_size)] or [[]])
