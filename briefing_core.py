@@ -13386,23 +13386,31 @@ def split_special_topics(text: str) -> List[str]:
 
 _MISSING_TOPICS_PROMPT = """Du bist Nachrichten-Redakteur für ein persönliches deutsches Audio-Briefing.
 
-AUFGABE Recherchiere im Netz (3-5 gezielte Suchen, seriöse Quellen), was HEUTE die wichtigsten Nachrichten-Themen sind: Weltgeschehen, Deutschland, Baden-Württemberg/Region Tübingen — plus die erkennbaren Interessensfelder des Hörers (aus der Liste unten ablesbar, z.B. Tech/KI). Vergleiche mit den Themen, die der Hörer in den letzten Tagen bereits im Briefing hatte:
+AUFGABE Recherchiere im Netz (3-5 gezielte Suchen, seriöse Quellen), was HEUTE die wichtigsten Nachrichten-Themen sind: Weltgeschehen, Deutschland, Baden-Württemberg/Region Tübingen — plus die erkennbaren Interessensfelder des Hörers (aus den Listen unten ablesbar, z.B. Tech/KI). Vergleiche mit BEIDEM — was der Hörer in den letzten Tagen bereits im Briefing hatte UND was er für das heutige Briefing schon eingesammelt hat:
 {history}
+{staged}
 
-ERGEBNIS Nenne die 3-6 WICHTIGSTEN Themen, die in der Liste NICHT oder nur am Rand vorkommen — Dinge mit echter Tragweite, kein Promi-Klatsch, nichts Kleinteiliges. Für jedes: ein prägnanter Sonderthema-Vorschlag (als recherchierbare Frage oder Stichwort formuliert) plus EIN Satz, warum es gerade relevant ist. Fehlt nichts Wesentliches, gib eine leere Liste zurück — lieber ehrlich leer als künstlich gefüllt.
+ERGEBNIS Nenne die 3-6 WICHTIGSTEN Themen, die in KEINER der beiden Listen (auch nicht im heute Eingesammelten) vorkommen oder nur am Rand — Dinge mit echter Tragweite, kein Promi-Klatsch, nichts Kleinteiliges. Für jedes: ein prägnanter Sonderthema-Vorschlag (als recherchierbare Frage oder Stichwort formuliert) plus EIN Satz, warum es gerade relevant ist. Fehlt nichts Wesentliches, gib eine leere Liste zurück — lieber ehrlich leer als künstlich gefüllt.
 
 ANTWORT NUR ALS JSON:
 {{"missing": [{{"topic": "…", "why": "…"}}]}}"""
 
 
-def suggest_missing_topics_via_cli(cli_path: Optional[str] = None, timeout_seconds: int = 300) -> dict:
+def suggest_missing_topics_via_cli(cli_path: Optional[str] = None, timeout_seconds: int = 300,
+                                   staged_lines: Optional[List[str]] = None) -> dict:
     """🌍 Weltlage-Check: Was ist gerade wichtig, fehlt aber in den letzten Briefings?
-    Ein Opus-Call mit Websuche gegen die Themen-Historie. Returns {ok, topics, error}."""
+    staged_lines: heute bereits eingesammelte Quellen (Links/Titel) — zählen als abgedeckt,
+    damit der Check nichts vorschlägt, was schon im heutigen Briefing landet."""
     cli = cli_path or _locate_claude_cli()
     if not cli:
         return {"ok": False, "error": "Claude CLI nicht gefunden.", "topics": []}
     hist = _recent_topic_history_block(days=4, cap=60) or "\n(keine Historie vorhanden)"
-    payload = _MISSING_TOPICS_PROMPT.format(history=hist)
+    staged = ""
+    if staged_lines:
+        staged = ("\nBEREITS FÜR HEUTE EINGESAMMELT (geht ins heutige Briefing — zählt als abgedeckt; "
+                  "Links anhand ihres Sprech-Pfads deuten):\n"
+                  + "\n".join(f"- {l[:200]}" for l in staged_lines[:80]))
+    payload = _MISSING_TOPICS_PROMPT.format(history=hist, staged=staged)
     cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
            "--dangerously-skip-permissions", "--effort", "medium",
            "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."]

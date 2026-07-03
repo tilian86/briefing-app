@@ -2807,8 +2807,20 @@ with st.expander(f"🧠 Sonderthemen — eigene Fragen ins Briefing{f' ({_n_sp0}
     with _wl_c1:
         if st.button("🌍 Weltlage-Check", key="missing_topics_btn",
                      help="Opus recherchiert die aktuell wichtigsten Themen (Welt, Deutschland, Region, deine Interessensfelder) und vergleicht sie mit deinen Briefings der letzten Tage. Vorschläge übernimmst du per ➕ direkt als Sonderthema. ~1-2 Min, 0 € übers Abo."):
-            with st.spinner("🌍 Vergleiche die Nachrichtenlage mit deinen letzten Briefings (~1-2 Min)…"):
-                st.session_state["_missing_topics_result"] = suggest_missing_topics_via_cli()
+            with st.spinner("🌍 Vergleiche die Nachrichtenlage mit deinen letzten Briefings UND dem heute Eingesammelten (~1-2 Min)…"):
+                # Heutige Eingaben zählen als abgedeckt: Links (Slugs sind sprechend),
+                # erste Zeilen der Paywall-/Podcast-Blöcke, vorhandene Sonderthemen.
+                _staged = [l.strip() for l in (st.session_state.get("urls_text") or "").splitlines()
+                           if l.strip().startswith("http")]
+                for _fld in ("paywall_text", "podcast_text"):
+                    _blocks9 = re.split(r"(?im)^\s*(?:m{3,}|-{3,}|={3,}|artikel ende)\s*$",
+                                        st.session_state.get(_fld) or "")
+                    for _b9 in _blocks9:
+                        _first9 = next((x.strip() for x in _b9.splitlines() if x.strip()), "")
+                        if len(_first9) > 15:
+                            _staged.append(_first9.strip("*# "))
+                _staged += split_special_topics(st.session_state.get("special_topics_text") or "")
+                st.session_state["_missing_topics_result"] = suggest_missing_topics_via_cli(staged_lines=_staged)
     with _wl_c2:
         st.caption("Was ist gerade wichtig, kam aber in deinen Briefings noch nicht vor? Ein Klick, und du bekommst Vorschläge für Sonderthemen.")
     _mt = st.session_state.get("_missing_topics_result")
