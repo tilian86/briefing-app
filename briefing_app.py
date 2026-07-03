@@ -2825,7 +2825,7 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
         key="raw_transcript_inbox",
         label_visibility="collapsed",
     )
-    _raw_blocks_now = [b.strip() for b in re.split(r"(?i)m{3,}", _raw_inbox or "") if b.strip()]
+    _raw_blocks_now = [b.strip() for b in re.split(r"(?im)^\s*(?:m{3,}|-{3,}|={3,}|artikel ende)\s*$", _raw_inbox or "") if b.strip()]
     _n_bg_jobs = len(st.session_state.get("_round_jobs") or [])
     _cnt_bits = [f"Aktuell erkannt: **{len(_raw_blocks_now)}** Transkript(e)"]
     if _n_bg_jobs:
@@ -4523,6 +4523,17 @@ if st.session_state.confirm_clear:
 st.markdown("---")
 st.markdown('<div id="nav-claude" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) — Standard", expanded=True):
+    # Headless-Lauf-Anzeige: Claude kann das Briefing auch außerhalb der App fahren
+    # (Status-Datei .headless_running.json) — dann hier warnen statt Doppel-Lauf riskieren.
+    try:
+        _hl = json.loads((_APP_DIR / ".headless_running.json").read_text(encoding="utf-8"))
+        _hl_start = datetime.datetime.fromisoformat(_hl.get("started"))
+        _hl_min = int((datetime.datetime.now() - _hl_start).total_seconds() // 60)
+        if _hl_min < 150:
+            st.warning(f"🤖 **Briefing läuft gerade außerhalb der App** (von Claude gestartet, seit {_hl_min} Min). "
+                       f"Plan: {_hl.get('plan', '')}. Bitte KEINEN zweiten Lauf starten — Bericht kommt per Mail. ✉️")
+    except Exception:
+        pass
     _cli_path = _locate_claude_cli()
     _cli_available = bool(_cli_path)
 
