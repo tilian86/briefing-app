@@ -13826,7 +13826,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
 
 PODCAST_SUMMARY_PROMPT = """Fasse das folgende Podcast-Transkript zusammen.
 
-Beginne in der ersten Zeile mit **Podcastname – Episodentitel** in Fettdruck (falls erkennbar) und einer Kurzzusammenfassung in einem Satz. Stelle dann eine prägnante Leitfrage, die den Kern des Gesprächs erfasst. Fasse den Inhalt in 300-600 Wörtern zusammen — kürzer bei kompakten Episoden, länger bei informationsdichten Gesprächen. Beginne mit einem einleitenden Satz, der das Kernthema direkt aufgreift und die Leitfrage beantwortet. Gliedere den Text in Abschnitte mit ### Überschriften für jeden wesentlichen Aspekt. Jeder Abschnitt bietet eine kurzweilige, fesselnde Zusammenfassung des jeweiligen Punktes.
+Beginne in der ersten Zeile mit **Podcastname – Episodentitel** in Fettdruck (falls erkennbar) und einer Kurzzusammenfassung in einem Satz. Stelle dann eine prägnante Leitfrage, die den Kern des Gesprächs erfasst. Fasse den Inhalt in der unten angegebenen LÄNGENVORGABE zusammen — und nutze die Spanne nach oben aus, wenn die Episode informationsdicht ist: lieber ein konkretes Detail, eine Zahl, ein Name mehr als eine Plattitüde. Beginne mit einem einleitenden Satz, der das Kernthema direkt aufgreift und die Leitfrage beantwortet. Gliedere den Text in Abschnitte mit ### Überschriften für jeden wesentlichen Aspekt. Jeder Abschnitt bietet eine kurzweilige, fesselnde Zusammenfassung des jeweiligen Punktes.
 
 REGELN
 Schreibe IMMER auf Deutsch, auch wenn die Episode englisch ist — englische Fachbegriffe darfst du beibehalten. Bevorzuge konkrete Zahlen, Namen, Daten und Beispiele aus der Episode gegenüber Allgemeinplätzen. Das Transkript ist automatisch erstellt — korrigiere offensichtliche Erkennungsfehler (z.B. falsch geschriebene Namen) stillschweigend. Ordne Kernaussagen den Sprechern zu, wenn mehrere Gesprächsteilnehmer beteiligt sind. Unterscheide klar zwischen belegten Fakten und persönlichen Einschätzungen der Sprecher. Wenn die Gesprächsteilnehmer unterschiedlicher Meinung sind, stelle beide Positionen fair gegenüber. Ignoriere Smalltalk, Werbung, Wiederholungen und Nebengespräche. Unklares oder nur angedeutetes Wissen weglassen — nichts hinzuerfinden. Nutze aktive Sprache, konkrete statt abstrakte Formulierungen und baue Spannungsbögen auf. Hebe Schlüsselbegriffe in Fettdruck hervor. Vergleiche und Analogien nur zur Veranschaulichung — keine erfundenen Beispiele.
@@ -13854,7 +13854,7 @@ def _strip_transcript_noise(text: str) -> str:
 
 
 def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str] = None,
-                                         model: str = "sonnet", timeout_seconds: int = 900) -> dict:
+                                         model: str = "opus", timeout_seconds: int = 900) -> dict:
     """Verdichtet EIN rohes Podcast-Transkript zur Briefing-tauglichen Zusammenfassung
     (Florians Podcast-Prompt, endet garantiert mit dem Endmarker). Läuft übers Max-Abo.
 
@@ -13868,10 +13868,23 @@ def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str
     if len(cleaned) < 500:
         return {"ok": False, "summary": "", "error": "Transkript zu kurz (unter 500 Zeichen).", "elapsed_seconds": 0.0}
     truncated_note = ""
-    if len(cleaned) > 300_000:  # ~4-5 Stunden Sprechtext — Sicherheitsdeckel
-        cleaned = cleaned[:300_000]
+    if len(cleaned) > 700_000:  # ~9-10 Stunden Sprechtext — Sicherheitsdeckel (Opus: 1M Kontext)
+        cleaned = cleaned[:700_000]
         truncated_note = " (Transkript war extrem lang und wurde am Ende gekappt)"
-    payload = PODCAST_SUMMARY_PROMPT + "\n\n=== TRANSKRIPT ===\n\n" + cleaned
+    # Längenvorgabe skaliert mit dem Episodenumfang (~10-15k Zeichen ≈ 1 Sprechstunde):
+    # kurze Wissenshäppchen bleiben knackig, ein 3-Stunden-Gespräch bekommt Raum.
+    _n_chars = len(cleaned)
+    if _n_chars < 25_000:
+        _wspan = "300-500"
+    elif _n_chars < 80_000:
+        _wspan = "500-800"
+    elif _n_chars < 180_000:
+        _wspan = "800-1200"
+    else:
+        _wspan = "1200-1600"
+    payload = (PODCAST_SUMMARY_PROMPT
+               + f"\n\nLÄNGENVORGABE FÜR DIESE EPISODE: {_wspan} Wörter."
+               + "\n\n=== TRANSKRIPT ===\n\n" + cleaned)
     cmd = [
         cli, "--print", "--output-format", "text", "--model", model,
         "--dangerously-skip-permissions", "--effort", "medium",
