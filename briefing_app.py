@@ -2391,19 +2391,36 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                 _sums, _errs = [], []
                 _pr = st.progress(0)
                 _stt = st.empty()
-                for _i2, _e2 in enumerate(_auto, 1):
-                    _stt.caption(f"{_i2}/{len(_auto)}: {_e2['feed']} — Transkript laden + zusammenfassen…")
-                    _txt = download_feed_transcript(_e2["transcript_url"], _e2.get("transcript_type"))
-                    if not _txt or len(_txt) < 500:
-                        _errs.append(f"{_e2['title'][:40]}: Transkript-Download leer")
-                    else:
-                        _r2 = summarize_podcast_transcript_via_cli(f"Podcast: {_e2['feed']} — Episode: {_e2['title']}\n\n{_txt}")
-                        if _r2.get("ok"):
-                            _sums.append(_r2["summary"])
-                            _inbox_done(_e2["guid"])
-                        else:
-                            _errs.append(f"{_e2['title'][:40]}: {_r2.get('error', '?')[:120]}")
-                    _pr.progress(_i2 / max(len(_auto), 1))
+
+                def _process_auto(_ea):
+                    # Läuft im Worker-Thread: NUR Netz/Subprozess, kein st.*!
+                    _txta = download_feed_transcript(_ea["transcript_url"], _ea.get("transcript_type"))
+                    if not _txta or len(_txta) < 500:
+                        return (_ea, None, "Transkript-Download leer")
+                    _ra = summarize_podcast_transcript_via_cli(f"Podcast: {_ea['feed']} — Episode: {_ea['title']}\n\n{_txta}")
+                    if _ra.get("ok"):
+                        return (_ea, _ra["summary"], None)
+                    return (_ea, None, str(_ra.get("error", "?"))[:120])
+
+                if _auto:
+                    from concurrent.futures import ThreadPoolExecutor as _AutoPool, as_completed as _auto_done
+                    _stt.caption(f"0/{len(_auto)} fertig — zwei Folgen laufen parallel…")
+                    _dn = 0
+                    with _AutoPool(max_workers=2) as _apx:
+                        _afuts = {_apx.submit(_process_auto, _ea): _ea for _ea in _auto}
+                        for _fa in _auto_done(_afuts):
+                            try:
+                                _ea, _suma, _erra = _fa.result()
+                            except Exception as _exa9:
+                                _ea, _suma, _erra = _afuts[_fa], None, str(_exa9)[:120]
+                            _dn += 1
+                            if _suma:
+                                _sums.append(_suma)
+                                _inbox_done(_ea["guid"])
+                            else:
+                                _errs.append(f"{_ea['title'][:40]}: {_erra}")
+                            _pr.progress(_dn / len(_auto))
+                            _stt.caption(f"{_dn}/{len(_auto)} fertig — zuletzt: {_ea['title'][:45]}")
                 _pr.empty()
                 _stt.empty()
                 if _manual and _apple_ok:
@@ -2483,33 +2500,16 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
             _ar_eps = _ar.get("eps") or []
             _ar_i = int(_ar.get("idx") or 0)
             if _ar_i >= len(_ar_eps):
-                # Runde fertig: alles Erkannte verdichten; Folgen verschwinden NUR bei Erfolg aus der Liste
-                _acol = _ar.get("collected") or []
-                _asums, _aerrs = [], []
-                _abox = st.empty()
-                for _ci, (_ce, _cp) in enumerate(_acol, 1):
-                    _abox.info(f"✨ Fasse zusammen {_ci}/{len(_acol)}: {_ce['title'][:45]}… (~1-3 Min pro Folge)")
-                    try:
-                        _ctxt = apple_ttml_to_text(_cp)
-                    except Exception as _cex:
-                        _aerrs.append(f"{_ce['title'][:40]}: TTML unlesbar ({str(_cex)[:80]})")
-                        continue
-                    _cr = summarize_podcast_transcript_via_cli(f"Podcast: {_ce['feed']} — Episode: {_ce['title']}\n\n{_ctxt}")
-                    if _cr.get("ok"):
-                        _asums.append(_cr["summary"])
-                        mark_ttml_imported([_cp])
-                        _inbox_done(_ce["guid"])
-                    else:
-                        _aerrs.append(f"{_ce['title'][:40]}: {str(_cr.get('error', '?'))[:100]}")
-                _abox.empty()
-                if _asums:
-                    st.session_state["podcast_text_pending_value"] = combine_podcast_field(
-                        st.session_state.get("podcast_text"), _asums)
-                    st.session_state["_podcast_inbox_last_msg"] = f"🍎✅ Apple-Runde fertig: {len(_asums)} Folge(n) zusammengefasst und unten angefügt."
-                elif not _aerrs:
-                    st.session_state["_podcast_inbox_last_msg"] = "🍎 Runde beendet — nichts eingesammelt."
-                if _aerrs:
-                    st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + _aerrs
+                # Runde fertig — die Zusammenfassungen laufen längst im Hintergrund;
+                # der Kollektor unten fügt sie ein, sobald sie fertig sind.
+                _n_open = len(st.session_state.get("_round_jobs") or [])
+                _wq_n = len(st.session_state.get("whisper_queue") or [])
+                _msg9 = "🍎 Runde fertig."
+                if _n_open:
+                    _msg9 += f" {_n_open} Zusammenfassung(en) laufen im Hintergrund und erscheinen unten automatisch."
+                if _wq_n:
+                    _msg9 += f" {_wq_n} Folge(n) warten in der Whisper-Frage unten."
+                st.session_state["_podcast_inbox_last_msg"] = _msg9
                 st.session_state["apple_round"] = None
                 st.rerun()
             else:
@@ -2553,8 +2553,25 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                         st.rerun()
                 # Kurzer Horch-Schritt (4s), dann sofort neu rendern — so bleiben die Knöpfe klickbar.
                 _hit = wait_for_new_apple_ttml(float(_ar["opened"]) - 2, timeout_s=4)
-                if _hit and _hit not in [_p for (_x, _p) in (_ar.get("collected") or [])]:
-                    _ar.setdefault("collected", []).append((_cur, _hit))
+                _seen_paths = set(st.session_state.get("_round_paths") or [])
+                if _hit and _hit not in _seen_paths:
+                    # Sofort im Hintergrund zusammenfassen (2 parallel) — die Runde läuft
+                    # ohne Wartezeit weiter, Ergebnisse sammelt der Kollektor unten ein.
+                    _seen_paths.add(_hit)
+                    st.session_state["_round_paths"] = list(_seen_paths)
+                    try:
+                        _txtj = apple_ttml_to_text(_hit)
+                        if st.session_state.get("_sum_pool") is None:
+                            from concurrent.futures import ThreadPoolExecutor as _SumPool
+                            st.session_state["_sum_pool"] = _SumPool(max_workers=2)
+                        _futj = st.session_state["_sum_pool"].submit(
+                            summarize_podcast_transcript_via_cli,
+                            f"Podcast: {_cur['feed']} — Episode: {_cur['title']}\n\n{_txtj}")
+                        _jobs9 = st.session_state.get("_round_jobs") or []
+                        _jobs9.append({"guid": _cur["guid"], "title": _cur["title"], "path": _hit, "fut": _futj})
+                        st.session_state["_round_jobs"] = _jobs9
+                    except Exception as _jex:
+                        st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [f"{_cur['title'][:40]}: TTML unlesbar ({str(_jex)[:80]})"]
                     _ar["idx"] = _ar_i + 1
                     _ar["opened"] = None
                     st.session_state["apple_round"] = _ar
@@ -2790,6 +2807,49 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             st.rerun()
     else:
         st.caption("🍎 Tipp: Auch Apple Podcasts kann als Quelle dienen — Transkript einer Episode dort einmal öffnen, dann erscheint sie hier zum direkten Zusammenfassen (voller Text, ohne das Abschneide-Problem beim Kopieren).")
+@st.fragment(run_every=4)
+def _round_jobs_collector():
+    """Sammelt fertige Hintergrund-Zusammenfassungen (Apple-Runde) ein — läuft alle 4s
+    als Fragment, ohne die Seite zu blockieren. Erfolg → unten anfügen + aus Inbox."""
+    _jobs = st.session_state.get("_round_jobs") or []
+    if not _jobs:
+        return
+    _left, _got = [], 0
+    for _j in _jobs:
+        if not _j["fut"].done():
+            _left.append(_j)
+            continue
+        try:
+            _r = _j["fut"].result()
+        except Exception as _jex2:
+            _r = {"ok": False, "error": str(_jex2)[:120]}
+        if _r.get("ok"):
+            _base = st.session_state.get("podcast_text_pending_value")
+            if _base is None:
+                _base = st.session_state.get("podcast_text")
+            st.session_state["podcast_text_pending_value"] = combine_podcast_field(_base, [_r["summary"]])
+            mark_ttml_imported([_j["path"]])
+            _d7 = st.session_state.get("podcast_inbox_data") or {}
+            _meta7 = [x for x in (_d7.get("episodes") or []) if x.get("guid") == _j["guid"]]
+            podcast_inbox_mark([_j["guid"]], "summarized", eps_meta=_meta7)
+            podcast_inbox_mark([_j["guid"]], "archived", eps_meta=_meta7)
+            _d7["episodes"] = [x for x in (_d7.get("episodes") or []) if x.get("guid") != _j["guid"]]
+            st.session_state["podcast_inbox_data"] = _d7
+            _got += 1
+        else:
+            st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [
+                f"{_j['title'][:40]}: {str(_r.get('error', '?'))[:100]}"]
+    st.session_state["_round_jobs"] = _left
+    if _left:
+        st.caption(f"⏳ {len(_left)} Podcast-Zusammenfassung(en) laufen im Hintergrund — erscheinen automatisch unten…")
+    if _got or (not _left and _jobs):
+        if _got:
+            st.session_state["_podcast_inbox_last_msg"] = f"✅ {_got} Hintergrund-Zusammenfassung(en) eingefügt." + (f" Noch {len(_left)} offen." if _left else " Alle fertig.")
+        st.rerun(scope="app")
+
+
+_round_jobs_collector()
+
 if st.session_state.get("_podcast_inbox_last_msg"):
     st.success(st.session_state.pop("_podcast_inbox_last_msg"))
 if st.session_state.get("_podcast_inbox_errors"):
