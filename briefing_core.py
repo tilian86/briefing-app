@@ -13384,6 +13384,57 @@ def split_special_topics(text: str) -> List[str]:
     return [t[:500] for t in out if t.strip()]
 
 
+_MISSING_TOPICS_PROMPT = """Du bist Nachrichten-Redakteur für ein persönliches deutsches Audio-Briefing.
+
+AUFGABE Recherchiere im Netz (3-5 gezielte Suchen, seriöse Quellen), was HEUTE die wichtigsten Nachrichten-Themen sind: Weltgeschehen, Deutschland, Baden-Württemberg/Region Tübingen — plus die erkennbaren Interessensfelder des Hörers (aus der Liste unten ablesbar, z.B. Tech/KI). Vergleiche mit den Themen, die der Hörer in den letzten Tagen bereits im Briefing hatte:
+{history}
+
+ERGEBNIS Nenne die 3-6 WICHTIGSTEN Themen, die in der Liste NICHT oder nur am Rand vorkommen — Dinge mit echter Tragweite, kein Promi-Klatsch, nichts Kleinteiliges. Für jedes: ein prägnanter Sonderthema-Vorschlag (als recherchierbare Frage oder Stichwort formuliert) plus EIN Satz, warum es gerade relevant ist. Fehlt nichts Wesentliches, gib eine leere Liste zurück — lieber ehrlich leer als künstlich gefüllt.
+
+ANTWORT NUR ALS JSON:
+{{"missing": [{{"topic": "…", "why": "…"}}]}}"""
+
+
+def suggest_missing_topics_via_cli(cli_path: Optional[str] = None, timeout_seconds: int = 300) -> dict:
+    """🌍 Weltlage-Check: Was ist gerade wichtig, fehlt aber in den letzten Briefings?
+    Ein Opus-Call mit Websuche gegen die Themen-Historie. Returns {ok, topics, error}."""
+    cli = cli_path or _locate_claude_cli()
+    if not cli:
+        return {"ok": False, "error": "Claude CLI nicht gefunden.", "topics": []}
+    hist = _recent_topic_history_block(days=4, cap=60) or "\n(keine Historie vorhanden)"
+    payload = _MISSING_TOPICS_PROMPT.format(history=hist)
+    cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
+           "--dangerously-skip-permissions", "--effort", "medium",
+           "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."]
+    try:
+        sr = _run_claude_cli_subprocess_streaming(cmd, payload, timeout_seconds=timeout_seconds,
+                                                  expected_duration_s=90.0, label="Weltlage-Check")
+        raw = (sr.get("stdout") or "").strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not (sr.get("ok") and m):
+            return {"ok": False, "error": (sr.get("error") or raw[:200] or "leere Antwort"), "topics": []}
+        data = json.loads(m.group(0))
+        topics = [{"topic": str(t.get("topic") or "")[:300], "why": str(t.get("why") or "")[:300]}
+                  for t in (data.get("missing") or []) if t.get("topic")]
+        return {"ok": True, "error": None, "topics": topics}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200], "topics": []}
+
+
+def append_special_topic(existing: str, topic: str) -> str:
+    """Hängt ein Thema modus-gerecht an die Sonderthemen-Box: nutzt das Feld schon
+    mmm-Trenner, kommt es als mmm-Block; sonst als neue Zeile (Zeilen-Modus)."""
+    ex = (existing or "").rstrip()
+    t = (topic or "").strip()
+    if not t:
+        return ex
+    if not ex:
+        return t
+    if re.search(r"(?:^|\n)\s*(?:[mM]mm+|-{3,}|={3,})\s*(?:\n|$)", existing or ""):
+        return f"{ex}\n\nmmm\n\n{t}"
+    return f"{ex}\n{t}"
+
+
 _SPECIAL_TOPIC_PROMPT = """Du schreibst EINEN zusätzlichen Vorlesebeitrag für ein persönliches deutsches Audio-Briefing — zu einem Thema, das der Hörer selbst eingeworfen hat.
 
 THEMA/FRAGE: {topic}

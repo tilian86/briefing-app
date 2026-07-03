@@ -61,6 +61,8 @@ from briefing_core import (
     podcast_inbox_selection_load,
     split_special_topics,
     combine_podcast_field,
+    suggest_missing_topics_via_cli,
+    append_special_topic,
     download_feed_transcript,
     resolve_apple_episode_url,
     open_in_apple_podcasts,
@@ -2801,6 +2803,32 @@ with st.expander(f"🧠 Sonderthemen — eigene Fragen ins Briefing{f' ({_n_sp0}
         label_visibility="collapsed",
         placeholder="Kim Elzemer — was hat er seit Amtsantritt konkret bewegt?\n\nmmm\n\nHat Sokrates wirklich gesagt, man solle sich nur auf Änderbares\nkonzentrieren? Im Podcast hieß es, das sei eigentlich stoisch.",
     )
+    _wl_c1, _wl_c2 = st.columns([1, 2])
+    with _wl_c1:
+        if st.button("🌍 Weltlage-Check", key="missing_topics_btn",
+                     help="Opus recherchiert die aktuell wichtigsten Themen (Welt, Deutschland, Region, deine Interessensfelder) und vergleicht sie mit deinen Briefings der letzten Tage. Vorschläge übernimmst du per ➕ direkt als Sonderthema. ~1-2 Min, 0 € übers Abo."):
+            with st.spinner("🌍 Vergleiche die Nachrichtenlage mit deinen letzten Briefings (~1-2 Min)…"):
+                st.session_state["_missing_topics_result"] = suggest_missing_topics_via_cli()
+    with _wl_c2:
+        st.caption("Was ist gerade wichtig, kam aber in deinen Briefings noch nicht vor? Ein Klick, und du bekommst Vorschläge für Sonderthemen.")
+    _mt = st.session_state.get("_missing_topics_result")
+    if _mt is not None:
+        if not _mt.get("ok"):
+            st.warning(f"🌍 Weltlage-Check fehlgeschlagen: {str(_mt.get('error'))[:150]}")
+        elif not _mt.get("topics"):
+            st.success("🌍 Nichts Wesentliches verpasst — deine Briefings decken die aktuelle Lage ab.")
+        else:
+            for _mi, _mtop in enumerate(_mt["topics"]):
+                _mc1, _mc2 = st.columns([12, 1])
+                with _mc1:
+                    st.markdown(f"**{html.escape(_mtop['topic'])}**  \n<small style='opacity:.7'>{html.escape(_mtop.get('why', ''))}</small>", unsafe_allow_html=True)
+                with _mc2:
+                    if st.button("➕", key=f"mt_add_{_mi}", help="Als Sonderthema übernehmen."):
+                        st.session_state["special_topics_text_pending_value"] = append_special_topic(
+                            st.session_state.get("special_topics_text"), _mtop["topic"])
+                        _mt["topics"] = [t for _j, t in enumerate(_mt["topics"]) if _j != _mi]
+                        st.session_state["_missing_topics_result"] = _mt
+                        st.rerun()
 
 _render_mobile_input_buffer()
 
