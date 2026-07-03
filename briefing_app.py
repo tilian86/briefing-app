@@ -4201,7 +4201,7 @@ with _mode_col1:
         "Briefing-Länge(n)",
         options=list(_valid_depths),
         key="briefing_depth_multi",
-        help="Alle sind ein VOLLES Briefing in voller Qualität. 🧠 Intelligent: Opus gewichtet jedes Thema automatisch (Tragweite 1-5, du musst NICHTS bewerten) — Top-Storys werden voll erzählt, Randnotizen auf 2-3 Sätze eingedampft; Gesamtlänge bleibt im Rahmen, Substanz geht vor. Sehr kurz: ~120 Wörter/Beitrag überall gleich. Kürzer: knackig, gleichmäßig. Ausführlich: mehr Kontext überall. MEHRERE anklicken = alle Versionen in einem Rutsch. Intelligent wirkt nur mit Themen-Synthese.",
+        help="Alle sind ein VOLLES Briefing in voller Qualität. 🧠 Intelligent: Opus gewichtet jedes Thema automatisch (Tragweite 1-5, du musst NICHTS bewerten) — Top-Storys werden voll erzählt, Randnotizen auf 2-3 Sätze eingedampft; Gesamtlänge bleibt im Rahmen, Substanz geht vor. Sehr kurz: ~120 Wörter/Beitrag überall gleich. Kürzer: knackig, gleichmäßig. Ausführlich: mehr Kontext überall. MEHRERE anklicken = alle Versionen in einem Rutsch. Intelligent wirkt in beiden Modi — verwoben (Synthese) und klassisch Artikel für Artikel.",
     )
     _depths_to_run = [d for d in _valid_depths if d in (_briefing_depth_sel or [])] or ["Kürzer"]
     st.session_state["_depths_to_run"] = _depths_to_run
@@ -4213,10 +4213,7 @@ with _mode_col1:
     if len(_depths_to_run) > 1:
         st.caption(f"🔁 {len(_depths_to_run)} Versionen werden nacheinander erstellt — gemeinsame Artikel-Basis, nur die Verdichtung läuft pro Länge.")
     elif _briefing_depth == "Intelligent":
-        if st.session_state.get("topic_synthesis_mode", True):
-            st.caption("🧠 Opus verteilt die Länge selbst: Schwerpunkte voll, Randnotizen in 2-3 Sätzen — vollständig bleibt es immer.")
-        else:
-            st.caption("⚠️ Intelligent braucht die Themen-Synthese (rechts) — ohne sie läuft diese Version wie Kürzer.")
+        st.caption("🧠 Opus verteilt die Länge selbst: Schwerpunkte voll, Randnotizen in 2-3 Sätzen — vollständig bleibt es immer. Funktioniert verwoben UND klassisch.")
     elif ultra_compact:
         st.caption("Sehr kurz: höchstens ~120 Wörter pro Beitrag — volles Briefing, aber für umfangreiche Tage (viele Artikel) deutlich kürzer.")
     elif compact_mode:
@@ -4714,7 +4711,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             content_check=bool(_cli_content_check_enabled and _di == _check_idx),
                             auto_repair=bool(_cli_auto_repair_enabled and _di == _check_idx),
                             special_topics=(_special_list if _di == _check_idx else None),
-                            smart_length=bool(_rp["synth"] and _rp["depth"] == "Intelligent"),
+                            smart_length=bool(_rp["depth"] == "Intelligent"),
                         )
                         if not cli_result.get("ok"):
                             break  # Fehler-Handling unten greift für cli_result

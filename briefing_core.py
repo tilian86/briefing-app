@@ -14209,11 +14209,67 @@ def _collect_briefing_raw_items(urls_text, paywall_text, podcast_text, include_w
     return weather_text, items, weak_fetches
 
 
-def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_compact=False):
+_SMART_ARTICLE_BUDGETS = {5: (220, 320), 4: (160, 240), 3: (110, 170), 2: (70, 110), 1: (40, 70)}
+
+_ITEM_RATE_PROMPT = """Du bekommst nummerierte Nachrichten-Quellen EINES Tages (Titel/Auszug). Bewerte die TRAGWEITE jeder Quelle für ein persönliches Audio-Briefing: 5 = Topthema des Tages mit breiter Tragweite, 3 = solide Meldung, 1 = Randnotiz/Kuriosum. Vergib STRENG: höchstens 1-2 Fünfer, die Masse liegt bei 2-3. Podcasts, die ein wichtiges Thema vertiefen, entsprechend hoch bewerten.
+
+ANTWORT NUR ALS JSON, genau ein Eintrag pro Quelle:
+{"weights": [{"i": 1, "w": 3}, {"i": 2, "w": 5}]}"""
+
+
+def _rate_items_via_cli(items, cli_path=None):
+    """🧠 Klassischer Intelligent-Modus: EIN Call bewertet die Tragweite aller Items (1-5).
+    Ergebnis landet als it["_weight"]; bei Fehler bleiben Items unbewertet → Kompakt-Fallback."""
+    cli = cli_path or _locate_claude_cli()
+    if not cli or not items:
+        return 0
+    lines = []
+    for i, it in enumerate(items, 1):
+        excerpt = " ".join((it.get("body") or "").split())[:200]
+        lines.append(f"[{i}] ({it.get('label', '?')}, {it.get('kind', 'article')}) {excerpt}")
+    payload = _ITEM_RATE_PROMPT + "\n\n=== QUELLEN ===\n\n" + "\n".join(lines)
+    cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
+           "--dangerously-skip-permissions", "--effort", "low",
+           "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."]
+    try:
+        sr = _run_claude_cli_subprocess_streaming(cmd, payload, timeout_seconds=240,
+                                                  expected_duration_s=40.0, label="Tragweite-Bewertung")
+        m = re.search(r"\{.*\}", (sr.get("stdout") or ""), re.DOTALL)
+        data = json.loads(m.group(0)) if (sr.get("ok") and m) else {}
+    except Exception as exc:
+        print(f"[intelligent] Bewertung fehlgeschlagen: {exc}", file=sys.stderr)
+        return 0
+    n = 0
+    for w in (data.get("weights") or []):
+        try:
+            idx = int(w["i"]) - 1
+            if 0 <= idx < len(items):
+                items[idx]["_weight"] = max(1, min(5, int(w["w"])))
+                n += 1
+        except Exception:
+            continue
+    if n:
+        hist = {}
+        for it in items:
+            hist[it.get("_weight", 0)] = hist.get(it.get("_weight", 0), 0) + 1
+        print(f"[intelligent] {n}/{len(items)} Items bewertet — Verteilung: {dict(sorted(hist.items(), reverse=True))}", file=sys.stderr)
+    return n
+
+
+def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_compact=False, smart_length=False):
     """Baut den Handoff-Text für eine Item-Gruppe (chunked CLI-Pfad)."""
     parts = [_CLAUDE_CHUNK_ARTICLE_PROMPT]
     parts.append(f"\nERSTELLT AM: {now.strftime('%A, %d. %B %Y, %H:%M Uhr')}\n")
-    if ultra_compact:
+    smart_active = smart_length and any("_weight" in it for it in items)
+    if smart_active:
+        parts.append(
+            "INTELLIGENTE LÄNGE: Jeder Beitrag trägt unten eine TRAGWEITE (1-5) mit Wortbudget. "
+            "Halte dich daran — Top-Themen voll erzählen, Randnotizen in 2-3 Sätzen. Das Budget ist "
+            "ein Richtwert: bei dünner Substanz DEUTLICH unterschreiten, bei echter Tiefe bis ~20% "
+            "überziehen. Vollständig bleiben: Kernfakten, Namen und Zahlen immer nennen. "
+            "Die oben erwähnte KOMPAKT-MODUS-Zeile entfällt heute — es gelten die TRAGWEITE-Budgets.\n\n"
+        )
+    elif ultra_compact:
         parts.append(
             "KOMPAKT-MODUS: SEHR KURZ — höchstens ~120 Wörter pro Beitrag, oft weniger. "
             "Nur der Kern + der Merksatz, KEINE Ausschmückung. Auch wichtige Themen knapp "
@@ -14228,6 +14284,10 @@ def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_comp
     for i, it in enumerate(items, start=1):
         kind_label = {"article": "ARTIKEL", "paywall": "PAYWALL-TEXT", "podcast": "PODCAST"}.get(it["kind"], "ARTIKEL")
         parts.append("─" * 50 + f"\n{kind_label} {i}\n" + "─" * 50 + "\n")
+        if smart_active and "_weight" in it:
+            _bw = it["_weight"]
+            _bmin, _bmax = _SMART_ARTICLE_BUDGETS.get(_bw, (110, 170))
+            parts.append(f"TRAGWEITE: {_bw}/5 — Wortbudget {_bmin}-{_bmax} ({_SMART_WEIGHT_NOTES.get(_bw, '')})\n")
         parts.append(it["body"].strip() + "\n\n")
     parts.append("─" * 50 + "\nENDE DIESES AUSSCHNITTS\n" + "─" * 50 + "\n")
     parts.append("Erstelle jetzt die Sections für genau diese Beiträge und gib den JSON-Block zurück.\n")
@@ -14378,6 +14438,12 @@ def run_briefing_via_claude_cli_chunked(
     _synth_sections: list = []
     _synth_failed = 0
     _synth_topics = 0
+    if smart_length and not topic_synthesis and items and not any("_weight" in it for it in items):
+        # 🧠 Klassischer Intelligent-Modus: ein schneller Judge-Call bewertet die
+        # Tragweite aller Beiträge — die Gruppen-Prompts bekommen daraus Wortbudgets.
+        _report("🧠 Tragweite der Beiträge wird bewertet…", 0.06)
+        _rate_items_via_cli(items, cli_path=cli)
+
     if topic_synthesis:
         _synth_sections, _synth_failed, _synth_topics = _synthesize_topics_from_items(
             items, weather_text=weather_text, compact_mode=compact_mode,
@@ -14412,7 +14478,8 @@ def run_briefing_via_claude_cli_chunked(
         handoff = _build_chunk_handoff(
             now, compact_mode, group,
             weather_text=weather_text if gi == 0 else None,
-            ultra_compact=ultra_compact)
+            ultra_compact=ultra_compact,
+            smart_length=(smart_length and not topic_synthesis))
         secs = _one_cli_call(handoff, f"Gruppe {gi + 1}/{n_groups}", 0.0, 0.0, progress_cb=None)
         # Podcast-Typ DETERMINISTISCH stempeln: Wir wissen aus den Eingaben, welche
         # Items Podcasts sind — Claude setzt das type-Feld gelegentlich falsch
