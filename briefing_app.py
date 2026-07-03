@@ -2295,6 +2295,8 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
 
         _n_auto = sum(1 for e in _ib_eps if e.get("transcript_url"))
         st.caption(f"**{len(_ib_eps)} neue Folgen** aus {_ib.get('n_feeds', '?')} Feeds — davon {_n_auto} mit 📄 Feed-Transkript (vollautomatisch).")
+        _sel_all_ibx = st.checkbox(f"Alle auswählen ({len(_ib_eps[:60])})", key="ibx_select_all",
+                                   help="Wählt alle angezeigten Folgen für ✨/Apple-Runde/Archivieren aus — einzelne Häkchen sind dann egal.")
         if not st.session_state.get("_ibx_sel_seeded"):
             # Gespeicherte Auswahl wiederherstellen (überlebt Reload/Deploy) —
             # nur einmal pro Session, damit bewusstes Abwählen nicht überschrieben wird.
@@ -2370,7 +2372,8 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                     st.rerun()
 
         _act1, _act2, _act3 = st.columns(3)
-        _sel_guids = [e["guid"] for e in _ib_eps[:60] if st.session_state.get(f"ibx_{e['guid']}")]
+        _sel_guids = [e["guid"] for e in _ib_eps[:60]
+                      if _sel_all_ibx or st.session_state.get(f"ibx_{e['guid']}")]
         if st.session_state.get("_ibx_sel_persisted") != _sel_guids:
             podcast_inbox_selection_save(_sel_guids)
             st.session_state["_ibx_sel_persisted"] = _sel_guids
