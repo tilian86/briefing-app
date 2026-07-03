@@ -2586,6 +2586,8 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                     # Dann sofort greifen — ohne Öffnen, ohne Warten.
                     _ar["_cache_checked_idx"] = _ar_i
                     _cached9 = find_cached_ttml_for(_cur.get("feed", ""), _cur.get("title", ""))
+                    if _ar.pop("_manual_check", None) and not _cached9:
+                        st.toast("🔄 Geprüft — Apple hat für diese Folge (noch) nichts abgelegt. Bei Kurzfolgen: 🎙️ lokal dauert nur 1-2 Min.")
                     if _cached9 and _cached9 not in set(st.session_state.get("_round_paths") or []):
                         _sp9 = set(st.session_state.get("_round_paths") or [])
                         _sp9.add(_cached9)
@@ -2644,6 +2646,7 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                     if st.button("🔄 Jetzt prüfen", key=f"ar_check_{_ar_i}", use_container_width=True,
                                  help="Sofort nachsehen: erst im Apple-Cache (Titel-Abgleich), dann nach frisch geschriebenen Transkript-Dateien — falls die automatische Erkennung hakt."):
                         _ar["_cache_checked_idx"] = None
+                        _ar["_manual_check"] = True
                         st.session_state["apple_round"] = _ar
                         st.rerun()
                 with _rc4:
