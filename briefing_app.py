@@ -2041,6 +2041,11 @@ st.markdown(
 
 st.session_state["content_check_mode"] = "warn"
 
+if st.session_state.pop("_briefing_run_active", None):
+    st.error("⚠️ **Ein laufender Briefing-Lauf wurde abgebrochen** — sehr wahrscheinlich durch einen Klick "
+             "irgendwo auf der Seite (das stoppt den Lauf; wird demnächst durch Hintergrund-Ausführung behoben). "
+             "Es wurde nichts fertiggestellt: bitte neu starten und während des Laufs nichts anklicken.")
+
 if os.getenv("BRIEFING_INSTANCE_LAUNCHD_LABEL"):
     st.caption("ℹ️ Diese Instanz läuft als Hintergrunddienst.")
 
@@ -4699,7 +4704,9 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         disabled=not _cli_available,
         help="Holt alle Artikel + Wetter, schickt sie an Claude, baut Voll-PDF + Kompaktfassung. ~5–10 Min Wartezeit. Nutzt dein Max-Abo, keine API-Kosten.",
     ) or _auto_fire:
+        st.session_state["_briefing_run_active"] = datetime.datetime.now().isoformat()
         if not (urls_text.strip() or paywall_text.strip() or podcast_text.strip() or include_weather):
+            st.session_state.pop("_briefing_run_active", None)
             st.warning("Mindestens ein Feld ausfüllen oder Wetter aktivieren.")
         elif _cli_direct_genius_only and not _cli_genius_enabled:
             st.warning('Direkt-Modus aktiv, aber keine Kompaktfassung gewählt. Bitte oben Lang, Kurz oder Beide wählen.')
@@ -4936,6 +4943,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             smart_length=bool(_rp["depth"] == "Intelligent"),
                         )
                         if not cli_result.get("ok"):
+                            st.session_state.pop("_briefing_run_active", None)
                             break  # Fehler-Handling unten greift für cli_result
                         _prepared_pkg = cli_result.get("prepared")
                         _multi_results.append((_rp["label"], out_path, cli_result))
@@ -5045,6 +5053,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             f"Wiederholung NICHT erzeugt werden — es fehlen ca. {_approx} Beiträge. "
                             f"Tipp: nochmal erstellen oder den API-Pfad (unten) nutzen."
                         )
+                    st.session_state.pop("_briefing_run_active", None)
                     # Diagnose: URLs, die kaum/keinen Inhalt lieferten (Fetch fehlgeschlagen / Cookie-Wall)
                     _weak = cli_result.get("weak_fetches") or []
                     if _weak:
