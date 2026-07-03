@@ -764,7 +764,9 @@ def _render_mobile_input_buffer():
 
       if (!textarea.dataset.audioBriefingBound) {{
         const saved = localStorage.getItem(field.key);
-        if (saved !== null && saved !== textarea.value) {{
+        // NUR in LEERE Felder zurückspielen: Server-Inhalt (z.B. eingefügte
+        // Zusammenfassungen) darf nie von einem alten Handy-Puffer überschrieben werden.
+        if (saved && !textarea.value) {{
           textarea.value = saved;
           textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
           textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));

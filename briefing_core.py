@@ -13854,7 +13854,7 @@ def _strip_transcript_noise(text: str) -> str:
 
 
 def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str] = None,
-                                         model: str = "opus", timeout_seconds: int = 900) -> dict:
+                                         model: str = "sonnet", timeout_seconds: int = 900) -> dict:
     """Verdichtet EIN rohes Podcast-Transkript zur Briefing-tauglichen Zusammenfassung
     (Florians Podcast-Prompt, endet garantiert mit dem Endmarker). Läuft übers Max-Abo.
 
@@ -13883,11 +13883,15 @@ def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str
     else:
         _wspan = "1200-1600"
     payload = (PODCAST_SUMMARY_PROMPT
-               + f"\n\nLÄNGENVORGABE FÜR DIESE EPISODE: {_wspan} Wörter."
+               + f"\n\nLÄNGENVORGABE FÜR DIESE EPISODE: {_wspan} Wörter. "
+                 "WICHTIG: Diese Länge ist AUSDRÜCKLICH erwünscht — der Text wird vorgelesen, "
+                 "Kürze ist hier KEIN Qualitätsmerkmal. Unterschreite die Spanne nur, wenn die "
+                 "Episode wirklich wenig hergibt; bei dichten Gesprächen nutze sie voll aus. "
+                 "Jede wesentliche Person, Zahl, Anekdote und Wendung des Gesprächs gehört hinein."
                + "\n\n=== TRANSKRIPT ===\n\n" + cleaned)
     cmd = [
         cli, "--print", "--output-format", "text", "--model", model,
-        "--dangerously-skip-permissions", "--effort", "medium",
+        "--dangerously-skip-permissions", "--effort", ("high" if _n_chars >= 80_000 else "medium"),
     ]
     try:
         sr = _run_claude_cli_subprocess_streaming(
