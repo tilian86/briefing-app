@@ -1,0 +1,16 @@
+# Backups & temporäre Dateien
+*.bak
+*.bak_*
+.tmp_*
+.DS_Store
+.env
+.briefing_draft.json
+.last_briefing/
+.archive/
+.streamlit_run.log
+rettung_*/
+.briefing_draft_backups/
+__pycache__/
+*.pyc
+.claude/
+.streamlit/

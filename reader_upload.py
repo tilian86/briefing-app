@@ -1,0 +1,448 @@
+"""ElevenReader-Upload-Automatik fürs Audio-Briefing.
+
+Lädt die Eleven-Reader-TXT nach jedem Briefing-Lauf automatisch in Florians
+ElevenReader-Bibliothek hoch (elevenreader.io, Web-Upload) — die synct auf
+das iPhone, dort erscheint das Briefing als "Hörbuch bereit".
+
+Technik: Playwright-Chromium mit PERSISTENTEM Profil (~/.briefing_reader_profile).
+Einmal-Login im sichtbaren Fenster (--login), danach laufen Uploads headless.
+Verifizierter UI-Flow (03.07.2026): Bibliothek → Button "Upload your content" →
+Tab "Upload file" → input[type=file] → Import → Eintrag erscheint in der Library.
+
+CLI:  python3 reader_upload.py --login     (sichtbares Fenster, einmalig)
+      python3 reader_upload.py --status    (angemeldet? Exit 0/1)
+      python3 reader_upload.py --upload PFAD --title "Titel"
+"""
+
+import os
+import re
+import shutil
+import sys
+import tempfile
+import time
+
+PROFILE_DIR = os.path.expanduser("~/.briefing_reader_profile")
+READER_LIBRARY_URL = "https://elevenreader.io/reader/library"
+_UPLOAD_BUTTON_TEXT = "Upload your content"
+
+
+def _launch(headless: bool = True):
+    from playwright.sync_api import sync_playwright
+    p = sync_playwright().start()
+    ctx = p.chromium.launch_persistent_context(
+        PROFILE_DIR, headless=headless,
+        viewport={"width": 1400, "height": 900}, locale="de-DE",
+        args=["--disable-blink-features=AutomationControlled"],
+    )
+    return p, ctx
+
+
+def _page(ctx):
+    return ctx.pages[0] if ctx.pages else ctx.new_page()
+
+
+def _logged_in_now(page) -> bool:
+    """Prüft den AKTUELLEN Seitenzustand (ohne Navigation) auf eingeloggte Library.
+    Robust gegen deutsche/englische UI: Upload-Button ODER (Library-URL + kein Sign-In)."""
+    try:
+        if page.locator(f"text={_UPLOAD_BUTTON_TEXT}").count() > 0:
+            return True
+        url_ok = "/reader/library" in (page.url or "")
+        signin = 0
+        for marker in ("Sign In", "Sign in", "Anmelden", "Log in"):
+            signin += page.locator(f"text={marker}").count()
+        return bool(url_ok and signin == 0 and page.locator("text=Library").count() +
+                    page.locator("text=Bibliothek").count() > 0)
+    except Exception:
+        return False
+
+
+def _open_library(page) -> None:
+    """Navigiert zur Bibliothek, lehnt den Cookie-Banner ab (einmalig, Profil merkt
+    sich das) und wartet, bis die Einträge wirklich gerendert sind."""
+    page.goto(READER_LIBRARY_URL, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_timeout(2000)
+    try:
+        deny = page.locator("text=Alle ablehnen")
+        if deny.count() > 0 and deny.first.is_visible():
+            deny.first.click(timeout=4000)
+            page.wait_for_timeout(800)
+    except Exception:
+        pass
+    try:
+        page.wait_for_selector(f"text={_UPLOAD_BUTTON_TEXT}", timeout=12000)
+    except Exception:
+        pass
+    # Benachrichtigungs-Toasts (Your next listen is ready …) wegklicken — die legen
+    # sich sonst über Einträge/Menüs und fangen Klicks ab (Fehlerquelle 03.07.).
+    for _ in range(5):
+        try:
+            d = page.get_by_role("button", name="Dismiss")
+            if d.count() == 0:
+                break
+            d.first.click(timeout=2000)
+            page.wait_for_timeout(300)
+        except Exception:
+            break
+    page.wait_for_timeout(2500)  # Liste rendert asynchron nach
+
+
+def _looks_logged_in(page) -> bool:
+    try:
+        _open_library(page)
+        return _logged_in_now(page)
+    except Exception:
+        return False
+
+
+def is_logged_in() -> bool:
+    """Headless-Check, ob das Automatik-Profil angemeldet ist (~10-15s)."""
+    p, ctx = _launch(headless=True)
+    try:
+        return _looks_logged_in(_page(ctx))
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        p.stop()
+
+
+def login_interactive(max_wait_s: int = 1800) -> bool:
+    """Öffnet ein sichtbares Fenster für den Einmal-Login. Beendet sich selbst,
+    sobald der Login erkannt wurde (oder das Fenster geschlossen wird)."""
+    p, ctx = _launch(headless=False)
+    try:
+        page = _page(ctx)
+        try:
+            page.goto(READER_LIBRARY_URL, wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            pass
+        deadline = time.time() + max_wait_s
+        while time.time() < deadline:
+            if not ctx.pages:  # Fenster zugemacht
+                return False
+            try:
+                if _logged_in_now(_page(ctx)):
+                    print("Login erkannt — Profil gespeichert. Fenster schließt sich.")
+                    time.sleep(1.5)
+                    return True
+            except Exception:
+                pass
+            time.sleep(2)
+        return False
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        p.stop()
+
+
+def _sanitize_title(title: str) -> str:
+    t = re.sub(r'[\\/:*?"<>|]+', "-", (title or "Tagesbriefing")).strip()
+    return t[:80] or "Tagesbriefing"
+
+
+def upload_briefing_txt(txt_path: str, title: str, timeout_s: int = 120,
+                        chapterize: bool = False) -> dict:
+    """Lädt die TXT als schön benanntes Hörbuch in die ElevenReader-Bibliothek.
+
+    Returns: {"ok": bool, "error": str|None, "elapsed_seconds": float}
+    """
+    t0 = time.time()
+    if not os.path.exists(txt_path):
+        return {"ok": False, "error": f"TXT nicht gefunden: {txt_path}", "elapsed_seconds": 0.0}
+    if not os.path.isdir(PROFILE_DIR):
+        return {"ok": False, "error": "ElevenReader nicht verbunden — Einmal-Login fehlt (Knopf in der App).",
+                "elapsed_seconds": 0.0}
+
+    nice = _sanitize_title(title)
+    tmp_dir = tempfile.mkdtemp(prefix="reader_up_")
+    nice_path = os.path.join(tmp_dir, f"{nice}.txt")
+    # ElevenReader nimmt den Titel aus der ERSTEN ZEILE des Textes (nicht dem
+    # Dateinamen) — daher erste Zeile durch den schönen Titel ersetzen (verifiziert 03.07.).
+    with open(txt_path, encoding="utf-8") as _f:
+        _content = _f.read()
+    _lines = _content.splitlines()
+    if _lines and _lines[0].strip().lower().startswith("audio-briefing"):
+        _lines[0] = nice
+    else:
+        _lines.insert(0, nice)
+    _out_text = "\n".join(_lines)
+    with open(nice_path, "w", encoding="utf-8") as _f:
+        _f.write(_out_text)
+    try:
+        return _do_upload(nice_path, nice, timeout_s, t0)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def upload_briefing_epub(txt_path: str, title: str, timeout_s: int = 120) -> dict:
+    """Wie upload_briefing_txt, aber als ePub mit echter Kapitel-Navigation
+    (ein Kapitel pro Ressort). Empfohlen für die tägliche Automatik."""
+    t0 = time.time()
+    if not os.path.exists(txt_path):
+        return {"ok": False, "error": f"TXT nicht gefunden: {txt_path}", "elapsed_seconds": 0.0}
+    if not os.path.isdir(PROFILE_DIR):
+        return {"ok": False, "error": "ElevenReader nicht verbunden — Einmal-Login fehlt (Knopf in der App).",
+                "elapsed_seconds": 0.0}
+    nice = _sanitize_title(title)
+    tmp_dir = tempfile.mkdtemp(prefix="reader_up_")
+    try:
+        with open(txt_path, encoding="utf-8") as _f:
+            _content = _f.read()
+        _lines = _content.splitlines()
+        if _lines and _lines[0].strip().lower().startswith("audio-briefing"):
+            _lines = _lines[1:]  # redundante Kopfzeile — Titel steckt im ePub-Metadatum
+        epub_path = os.path.join(tmp_dir, f"{nice}.epub")
+        build_briefing_epub("\n".join(_lines), nice, epub_path)
+        return _do_upload(epub_path, nice, timeout_s, t0)
+    except Exception as exc:
+        return {"ok": False, "error": f"ePub-Bau fehlgeschlagen: {str(exc)[:160]}",
+                "elapsed_seconds": time.time() - t0}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _do_upload(file_path: str, expect_title: str, timeout_s: int, t0: float) -> dict:
+    p, ctx = _launch(headless=True)
+    try:
+        page = _page(ctx)
+        if not _looks_logged_in(page):
+            return {"ok": False, "error": "ElevenReader-Login abgelaufen — bitte Einmal-Login in der App wiederholen.",
+                    "elapsed_seconds": time.time() - t0}
+        page.locator(f"text={_UPLOAD_BUTTON_TEXT}").first.click(timeout=10000)
+        page.get_by_role("tab", name="Upload file").click(timeout=10000)
+        page.wait_for_timeout(400)
+        file_input = page.locator('input[type="file"]').first
+        file_input.set_input_files(file_path, timeout=10000)
+        page.wait_for_timeout(800)
+        # Import bestätigen, falls der Dialog nicht schon von selbst importiert
+        try:
+            imp = page.get_by_role("button", name="Import")
+            if imp.count() > 0 and imp.first.is_visible():
+                imp.first.click(timeout=5000)
+        except Exception:
+            pass
+        # Erfolg: Eintrag mit unserem Titel taucht auf (Library oder Reader-Ansicht)
+        page.wait_for_selector(f"text={expect_title}", timeout=timeout_s * 1000)
+        return {"ok": True, "error": None, "elapsed_seconds": time.time() - t0}
+    except Exception as exc:
+        return {"ok": False, "error": f"Upload fehlgeschlagen: {str(exc)[:180]}",
+                "elapsed_seconds": time.time() - t0}
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        p.stop()
+
+
+_CHAPTER_LINES = {"Top 3", "Regional", "Politik & International", "Wirtschaft",
+                  "Tech & Wissenschaft", "Gericht & Recht", "Weitere Themen", "Podcasts"}
+
+
+def _split_into_chapters(text: str, title: str) -> list:
+    """Zerlegt die Briefing-TXT an den Ressort-Zeilen in (Kapiteltitel, Text)-Paare.
+    Experiment 03.07.: Markdown-# in TXT wird von ElevenReader NICHT als Kapitel
+    erkannt (und würde vorgelesen) — echte Kapitel gehen nur über ePub."""
+    chapters = []
+    cur_title, cur_lines = title, []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s in _CHAPTER_LINES or s.startswith("Wetter für") or s.startswith("Rückblick"):
+            if cur_lines and any(x.strip() for x in cur_lines):
+                chapters.append((cur_title, "\n".join(cur_lines).strip()))
+            cur_title, cur_lines = s, []
+        else:
+            cur_lines.append(ln)
+    if cur_lines and any(x.strip() for x in cur_lines):
+        chapters.append((cur_title, "\n".join(cur_lines).strip()))
+    return chapters or [(title, text)]
+
+
+def build_briefing_epub(text: str, title: str, out_path: str) -> str:
+    """Baut ein minimales, valides ePub (Standardbibliothek) mit einem Kapitel pro
+    Ressort — damit zeigt ElevenReader eine echte Kapitel-Navigation."""
+    import zipfile
+    import html as _h
+    import uuid
+    chapters = _split_into_chapters(text, title)
+    # "&" in Kapiteltiteln: Reader zeigt XML-Escapes doppelt an — "und" liest sich eh besser
+    chapters = [(ct.replace(" & ", " und "), ctext) for ct, ctext in chapters]
+    uid = str(uuid.uuid4())
+
+    def _xhtml(ch_title, ch_text):
+        paras = "".join(f"<p>{_h.escape(p.strip())}</p>\n"
+                        for p in ch_text.split("\n\n") if p.strip())
+        return (f'<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+                f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{_h.escape(ch_title)}</title></head>'
+                f'<body><h1>{_h.escape(ch_title)}</h1>\n{paras}</body></html>')
+
+    manifest, spine, navlis = [], [], []
+    files = []
+    for i, (ct, ctext) in enumerate(chapters):
+        fn = f"chap_{i:02d}.xhtml"
+        files.append((f"OEBPS/{fn}", _xhtml(ct, ctext)))
+        manifest.append(f'<item id="c{i}" href="{fn}" media-type="application/xhtml+xml"/>')
+        spine.append(f'<itemref idref="c{i}"/>')
+        navlis.append(f'<li><a href="{fn}">{__import__("html").escape(ct)}</a></li>')
+
+    nav = ('<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+           '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'
+           '<head><title>Inhalt</title></head><body><nav epub:type="toc"><h1>Inhalt</h1><ol>'
+           + "".join(navlis) + '</ol></nav></body></html>')
+    opf = ('<?xml version="1.0" encoding="utf-8"?>\n'
+           '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">'
+           f'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+           f'<dc:identifier id="uid">urn:uuid:{uid}</dc:identifier>'
+           f'<dc:title>{__import__("html").escape(title)}</dc:title>'
+           '<dc:language>de</dc:language>'
+           '<meta xmlns="http://www.idpf.org/2007/opf" property="dcterms:modified">2026-01-01T00:00:00Z</meta>'
+           '</metadata><manifest>'
+           '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+           + "".join(manifest) + '</manifest><spine>' + "".join(spine) + '</spine></package>')
+    container = ('<?xml version="1.0" encoding="utf-8"?>\n'
+                 '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                 '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
+                 '</rootfiles></container>')
+
+    with zipfile.ZipFile(out_path, "w") as z:
+        z.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip", zipfile.ZIP_STORED)
+        z.writestr("META-INF/container.xml", container)
+        z.writestr("OEBPS/content.opf", opf)
+        z.writestr("OEBPS/nav.xhtml", nav)
+        for path, content in files:
+            z.writestr(path, content)
+    return out_path
+
+
+def cleanup_old_briefings(days: int, today=None) -> dict:
+    """Löscht Bibliotheks-Einträge 'Tagesbriefing … dd.mm.…', die älter als `days`
+    Tage sind. Fasst NUR Tagesbriefing-Titel an (Bücher/Wochenbriefings bleiben).
+
+    Returns: {"ok", "deleted": [titel…], "errors": [...], "checked": int}
+    """
+    import datetime as _dt
+    today = today or _dt.date.today()
+    p, ctx = _launch(headless=True)
+    titles = []
+    try:
+        page = _page(ctx)
+        if not _looks_logged_in(page):
+            return {"ok": False, "deleted": [], "errors": ["Nicht angemeldet."], "checked": 0}
+        body = page.inner_text("body")
+        titles = sorted(set(re.findall(r"Tagesbriefing [^\n]{0,60}?\d{2}\.\d{2}\.[^\n]{0,20}", body)))
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        p.stop()
+
+    to_delete = []
+    for t in titles:
+        m = re.search(r"(\d{2})\.(\d{2})\.", t)
+        if not m:
+            continue
+        try:
+            d = _dt.date(today.year, int(m.group(2)), int(m.group(1)))
+            if d > today + _dt.timedelta(days=2):  # Jahreswechsel
+                d = d.replace(year=today.year - 1)
+        except ValueError:
+            continue
+        if (today - d).days > days:
+            to_delete.append(t.strip())
+
+    deleted, errors = [], []
+    for t in to_delete:
+        r = delete_briefing_by_title(t)
+        (deleted if r.get("ok") else errors).append(t if r.get("ok") else f"{t}: {r.get('error')}")
+    return {"ok": True, "deleted": deleted, "errors": errors, "checked": len(titles)}
+
+
+def delete_briefing_by_title(title: str, timeout_s: int = 60) -> dict:
+    """Löscht einen Bibliotheks-Eintrag anhand seines Titels (für Auto-Aufräumen
+    alter Tages-Briefings und Tests). Nutzt den verifizierten UI-Flow:
+    Eintrag öffnen → Menü (…) → Delete → Delete item."""
+    t0 = time.time()
+    p, ctx = _launch(headless=True)
+    try:
+        page = _page(ctx)
+        if not _looks_logged_in(page):
+            return {"ok": False, "error": "Nicht angemeldet.", "elapsed_seconds": time.time() - t0}
+        try:
+            page.wait_for_selector(f"text={title}", timeout=15000)
+        except Exception:
+            return {"ok": False, "error": f"Kein Eintrag mit Titel: {title}", "elapsed_seconds": time.time() - t0}
+        page.locator(f"text={title}").first.click(timeout=10000)
+        page.wait_for_timeout(2000)
+        # Menü-Trigger (Radix: aria-haspopup) von hinten durchprobieren, bis das
+        # Menü mit "Delete" erscheint — es gibt je nach Zustand 2-3 Trigger
+        # (Eintrags-Menü, Player-Menü, Account).
+        triggers = page.locator('button[aria-haspopup="menu"]')
+        menu_found = False
+        for idx in range(triggers.count() - 1, -1, -1):
+            try:
+                triggers.nth(idx).click(timeout=5000)
+                page.wait_for_timeout(500)
+                if page.get_by_role("menuitem", name="Delete").count() > 0:
+                    menu_found = True
+                    break
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(300)
+            except Exception:
+                continue
+        if not menu_found:
+            return {"ok": False, "error": "Eintrags-Menü mit Delete nicht gefunden.",
+                    "elapsed_seconds": time.time() - t0}
+        page.get_by_role("menuitem", name="Delete").first.click(timeout=8000)
+        page.wait_for_timeout(600)
+        # Bestätigen — bevorzugt als echter Button, sonst Text-Fallback
+        try:
+            page.get_by_role("button", name="Delete item").first.click(timeout=6000)
+        except Exception:
+            page.locator("text=Delete item").first.click(timeout=6000)
+        # ERFOLG NUR VERIFIZIERT: zurück zur Bibliothek und prüfen, dass der
+        # Titel wirklich verschwunden ist (Schein-Erfolge gab es schon…).
+        page.wait_for_timeout(2500)
+        _open_library(page)
+        for _ in range(6):
+            if page.locator(f"text={title}").count() == 0:
+                return {"ok": True, "error": None, "elapsed_seconds": time.time() - t0}
+            page.wait_for_timeout(2000)
+        return {"ok": False, "error": "Eintrag nach Löschversuch weiterhin vorhanden.",
+                "elapsed_seconds": time.time() - t0}
+    except Exception as exc:
+        return {"ok": False, "error": f"Löschen fehlgeschlagen: {str(exc)[:160]}",
+                "elapsed_seconds": time.time() - t0}
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        p.stop()
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--login", action="store_true")
+    ap.add_argument("--status", action="store_true")
+    ap.add_argument("--upload")
+    ap.add_argument("--title", default="Tagesbriefing")
+    a = ap.parse_args()
+    if a.login:
+        ok = login_interactive()
+        print("LOGIN_OK" if ok else "LOGIN_ABGEBROCHEN")
+        sys.exit(0 if ok else 1)
+    if a.status:
+        ok = is_logged_in()
+        print("ANGEMELDET" if ok else "NICHT_ANGEMELDET")
+        sys.exit(0 if ok else 1)
+    if a.upload:
+        r = upload_briefing_txt(a.upload, a.title)
+        print(r)
+        sys.exit(0 if r.get("ok") else 1)
+    ap.print_help()

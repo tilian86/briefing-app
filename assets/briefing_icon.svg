@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Audio Briefing Icon">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#dbeafe"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" fill="#0f172a"/>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+
+  <rect x="44" y="42" width="124" height="172" rx="18" fill="url(#card)"/>
+  <rect x="58" y="58" width="96" height="24" rx="8" fill="#cbd5e1"/>
+  <rect x="58" y="95" width="84" height="10" rx="5" fill="#94a3b8"/>
+  <rect x="58" y="114" width="96" height="10" rx="5" fill="#94a3b8"/>
+  <rect x="58" y="133" width="72" height="10" rx="5" fill="#94a3b8"/>
+  <rect x="58" y="160" width="96" height="10" rx="5" fill="#94a3b8"/>
+  <rect x="58" y="179" width="78" height="10" rx="5" fill="#94a3b8"/>
+
+  <circle cx="177" cy="140" r="35" fill="#22c55e"/>
+  <polygon points="166,122 196,140 166,158" fill="#f8fafc"/>
+
+  <path d="M206 112c12 8 18 18 18 28s-6 20-18 28" fill="none" stroke="#93c5fd" stroke-linecap="round" stroke-width="8"/>
+  <path d="M196 124c7 5 11 11 11 16s-4 11-11 16" fill="none" stroke="#bfdbfe" stroke-linecap="round" stroke-width="8"/>
+</svg>
