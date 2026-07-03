@@ -2811,34 +2811,32 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
         key="raw_transcript_inbox",
         label_visibility="collapsed",
     )
-    if st.button("✨ Zusammenfassen und unten anfügen", key="summarize_raw_transcripts",
-                 use_container_width=True, disabled=not (_raw_inbox or "").strip()):
-        _raw_blocks = [b.strip() for b in re.split(r"(?i)m{3,}", _raw_inbox) if b.strip()]
-        _new_summaries = []
-        _inbox_errors = []
-        _prog = st.progress(0)
-        _stat = st.empty()
-        for _bi, _blk in enumerate(_raw_blocks, 1):
+    _raw_blocks_now = [b.strip() for b in re.split(r"(?i)m{3,}", _raw_inbox or "") if b.strip()]
+    _n_bg_jobs = len(st.session_state.get("_round_jobs") or [])
+    _cnt_bits = [f"Aktuell erkannt: **{len(_raw_blocks_now)}** Transkript(e)"]
+    if _n_bg_jobs:
+        _cnt_bits.append(f"⏳ {_n_bg_jobs} laufen im Hintergrund")
+    st.caption(" · ".join(_cnt_bits))
+    if st.button(f"✨ {len(_raw_blocks_now)} zusammenfassen (läuft im Hintergrund — Box wird frei für die nächsten)",
+                 key="summarize_raw_transcripts",
+                 use_container_width=True, disabled=not _raw_blocks_now):
+        # Fließband-Prinzip: Blöcke in den Hintergrund-Pool, Box sofort leeren —
+        # Florian kann direkt den nächsten Schwung einfügen. Ergebnisse fügt der
+        # Kollektor automatisch unten an (gleiche Maschinerie wie die Apple-Runde).
+        if st.session_state.get("_sum_pool") is None:
+            from concurrent.futures import ThreadPoolExecutor as _SumPool4
+            st.session_state["_sum_pool"] = _SumPool4(max_workers=2)
+        _jobs4 = st.session_state.get("_round_jobs") or []
+        for _blk in _raw_blocks_now:
             _first = (_blk.splitlines() or ["?"])[0][:60]
-            _stat.caption(f"Fasse zusammen {_bi}/{len(_raw_blocks)}: {_first}…")
-            _r = summarize_podcast_transcript_via_cli(_blk)
-            if _r.get("ok"):
-                _new_summaries.append(_r["summary"])
-            else:
-                _inbox_errors.append(f"{_first}: {_r.get('error', '?')}")
-            _prog.progress(_bi / len(_raw_blocks))
-        _prog.empty()
-        _stat.empty()
-        if _new_summaries:
-            st.session_state["podcast_text_pending_value"] = combine_podcast_field(
-                st.session_state.get("podcast_text"), _new_summaries)
-            st.session_state["raw_transcript_inbox_clear"] = True
-            st.session_state["_podcast_inbox_last_msg"] = (
-                f"✅ {len(_new_summaries)} Podcast-Zusammenfassung(en) erstellt und unten ins Podcast-Feld angefügt."
-            )
-            _maybe_autostart_briefing("Einwurf")
-        if _inbox_errors:
-            st.session_state["_podcast_inbox_errors"] = _inbox_errors
+            _jobs4.append({"guid": None, "title": _first, "path": None,
+                           "fut": st.session_state["_sum_pool"].submit(summarize_podcast_transcript_via_cli, _blk)})
+        st.session_state["_round_jobs"] = _jobs4
+        st.session_state["raw_transcript_inbox_clear"] = True
+        st.session_state["_podcast_inbox_last_msg"] = (
+            f"✨ {len(_raw_blocks_now)} Transkript(e) laufen im Hintergrund — die Box ist frei, "
+            "füge gern direkt weitere ein. Fertige Zusammenfassungen erscheinen automatisch unten."
+        )
         st.rerun()
     # 🍎 Apple-Podcasts-Import: Die Podcasts-App cached jedes einmal GEÖFFNETE
     # Transkript lokal als TTML — von dort holen wir den VOLLEN Text (das manuelle
@@ -2951,12 +2949,13 @@ def _round_jobs_collector():
             st.session_state["podcast_text_pending_value"] = combine_podcast_field(_base, [_r["summary"]])
             if _j.get("path"):
                 mark_ttml_imported([_j["path"]])
-            _d7 = st.session_state.get("podcast_inbox_data") or {}
-            _meta7 = [x for x in (_d7.get("episodes") or []) if x.get("guid") == _j["guid"]]
-            podcast_inbox_mark([_j["guid"]], "summarized", eps_meta=_meta7)
-            podcast_inbox_mark([_j["guid"]], "archived", eps_meta=_meta7)
-            _d7["episodes"] = [x for x in (_d7.get("episodes") or []) if x.get("guid") != _j["guid"]]
-            st.session_state["podcast_inbox_data"] = _d7
+            if _j.get("guid"):
+                _d7 = st.session_state.get("podcast_inbox_data") or {}
+                _meta7 = [x for x in (_d7.get("episodes") or []) if x.get("guid") == _j["guid"]]
+                podcast_inbox_mark([_j["guid"]], "summarized", eps_meta=_meta7)
+                podcast_inbox_mark([_j["guid"]], "archived", eps_meta=_meta7)
+                _d7["episodes"] = [x for x in (_d7.get("episodes") or []) if x.get("guid") != _j["guid"]]
+                st.session_state["podcast_inbox_data"] = _d7
             _got += 1
         else:
             st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [
@@ -2993,6 +2992,8 @@ podcast_text = st.text_area(
     label_visibility="collapsed",
 )
 _podcast_blocks = split_podcast_summaries(podcast_text) if podcast_text.strip() else []
+if _podcast_blocks:
+    st.caption(f"📦 **{len(_podcast_blocks)}** Podcast-Zusammenfassung(en) im Feld — bereit fürs Briefing.")
 st.markdown(
     f"<div class='briefing-url-meta'><span class='briefing-url-count'>Aktuell erkannt: <strong>{len(_podcast_blocks)}</strong> {'Blöcke' if len(_podcast_blocks) != 1 else 'Block'}</span></div>",
     unsafe_allow_html=True,
