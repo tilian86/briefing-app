@@ -2334,6 +2334,14 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
                                  help="Öffnet die Folge in Apple Podcasts und wartet geduldig auf deinen Transkript-Tipp — mit Knöpfen zum Überspringen oder für die lokale Transkription. (Mini-Runde mit einer Folge.)"):
                         st.session_state["apple_round"] = {"eps": [_e], "idx": 0, "opened": None, "collected": []}
                         st.rerun()
+                    if _e.get("audio_url") and st.button("🎙️ direkt lokal", key=f"ibw_{_e['guid']}", use_container_width=True,
+                                 help="Ohne Apple-Umweg in die Whisper-Warteschlange — z.B. wenn die Folge brandneu ist und Apple sicher noch kein Transkript hat. Unten entscheidest du, ob die lokale Transkription sofort startet (M1, ~5 Min pro Podcast-Stunde)."):
+                        _wq7 = st.session_state.get("whisper_queue") or []
+                        if _e["guid"] not in [x.get("guid") for x in _wq7]:
+                            _wq7.append(_e)
+                        st.session_state["whisper_queue"] = _wq7
+                        st.session_state["_podcast_inbox_last_msg"] = f"🎙️ In der Whisper-Warteschlange: {_e['title'][:55]} — unten starten oder auf Apple warten."
+                        st.rerun()
             with _cols[4]:
                 _on_ll = _e["guid"] in _ll_guids
                 if st.button("✔️🎧" if _on_ll else "🎧", key=f"iblisten_{_e['guid']}",
