@@ -14670,6 +14670,30 @@ def run_briefing_via_claude_cli_chunked(
         print(f"[ressort] Opus-Zuordnung aktiv: {_corrected} von {len(_heur_buckets)} Heuristik-Zuordnungen korrigiert.", file=sys.stderr)
     else:
         print("[ressort] Opus-Zuordnung nicht verfügbar — Keyword-Heuristik bleibt.", file=sys.stderr)
+
+    # HARTER OVERRIDE: Beiträge, deren Quellen AUSSCHLIESSLICH Lokalzeitungen sind
+    # (Tübinger Tagblatt, GEA/Reutlinger General-Anzeiger), gehören per Definition zu
+    # Regional — Lokalblätter berichten nur regional. Das verhindert, dass ein
+    # Tagblatt-Stück in "sonstige" zwischen den Podcasts landet (04.07. beobachtet).
+    _LOCAL_ONLY = ("schwäbisches tagblatt", "tagblatt", "gea", "reutlinger general-anzeiger", "reutlinger")
+    _NONLOCAL_HINT = ("tagesschau", "swr", "bbc", "n-tv", "zdf", "spiegel", "zeit", "faz",
+                      "handelsblatt", "ars technica", "caschys", "heise", "golem", "mdr", "welt", "podcast")
+    _regionalized = 0
+    for _i, _fb in enumerate(_final_buckets):
+        # Nur "sonstige" retten — echte Gericht/Wirtschaft/Tech-Einordnungen des LLM
+        # (auch aus Lokalblättern, z.B. lokale Prozesse) bleiben unangetastet.
+        if _fb != "sonstige":
+            continue
+        _srcs = [p.strip().lower() for p in (all_sections[_i].get("source_label") or "").split("+") if p.strip()]
+        if not _srcs:
+            continue
+        _all_local = all(any(lp in s for lp in _LOCAL_ONLY) and not any(nl in s for nl in _NONLOCAL_HINT) for s in _srcs)
+        if _all_local:
+            _final_buckets[_i] = "regional"
+            _regionalized += 1
+    if _regionalized:
+        print(f"[ressort] {_regionalized} reine Lokalzeitungs-Beiträge nach Regional verschoben (Override).", file=sys.stderr)
+
     _order = sorted(range(len(all_sections)), key=lambda _i: (_bucket_rank.get(_final_buckets[_i], 6), _i))
     all_sections = [all_sections[_i] for _i in _order]
     _sorted_buckets = [_final_buckets[_i] for _i in _order]
