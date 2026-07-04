@@ -358,6 +358,19 @@ def _save_draft():
             key: st.session_state.get(key, default)
             for key, default in _DRAFT_DEFAULTS.items()
         }
+        # FIREWALL: podcast_text darf ohne ausdrückliches Leeren (Neues Briefing) nie
+        # um >50% schrumpfen — schützt vor Zombie-Tabs/alten Sessions, die mit veraltetem
+        # Stand speichern (13er-Vorfall, 2× am 03./04.07.).
+        if not st.session_state.pop("_intentional_clear", False):
+            try:
+                _old_draft = json.loads(_DRAFT_PATH.read_text(encoding="utf-8"))
+                _old_pt = _old_draft.get("podcast_text") or ""
+                _new_pt = draft_data.get("podcast_text") or ""
+                if len(_old_pt) >= 2000 and len(_new_pt) < len(_old_pt) * 0.5:
+                    draft_data["podcast_text"] = _old_pt
+                    print(f"[draft-firewall] podcast_text-Schrumpfung abgewehrt ({len(_new_pt)} < 50% von {len(_old_pt)} Zeichen) — alter Wert behalten.", file=sys.stderr)
+            except Exception:
+                pass
         _backup_draft_before_shrink(draft_data)
         _DRAFT_PATH.write_text(
             json.dumps(draft_data, ensure_ascii=False, indent=2),
@@ -717,6 +730,7 @@ def _render_balance_panel(provider_key: str, title: str):
 
 
 def _clear_briefing_state():
+    st.session_state["_intentional_clear"] = True
     for key in ("urls_text", "paywall_text", "podcast_text"):
         st.session_state[key] = ""
     _clear_topic_review_state()
