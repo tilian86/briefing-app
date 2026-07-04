@@ -14048,6 +14048,8 @@ WICHTIG: Eine LOKALE Story (Ort in Baden-Württemberg/Region Tübingen) gehört 
 
 QUELLEN-HINWEIS: Vor jeder Überschrift steht in eckigen Klammern die Quelle. Nutze sie als starkes Signal: Schwäbisches Tagblatt, GEA und andere Lokalzeitungen aus dem Raum Tübingen/Reutlingen berichten fast immer regional. SWR berichtet überwiegend, aber nicht nur, aus dem Südwesten. tagesschau, BBC, FAZ, n-tv usw. sind überregional. Die Quelle ergänzt den Titel, ersetzt ihn nicht — eine dpa-Weltmeldung im Tagblatt bleibt überregional.
 
+HINWEIS: Nach dem Titel folgt oft ein kurzer Textauszug nach einem Gedankenstrich. NUTZE ihn — manche Titel sind bildhaft/irreführend (z.B. "Die Grüne Hölle wird gefeiert" ist NICHT Motorsport, sondern ein Tübinger Stadtviertel), erst der Auszug verrät Ort und Thema.
+
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Vorrede:
 {"1": "regional", "2": "politik", ...}"""
 
@@ -14063,7 +14065,7 @@ def _classify_sections_via_cli(titles_by_idx, cli_path=None, timeout_seconds=150
     if not cli or not titles_by_idx:
         return {}
     valid_buckets = {"regional", "politik", "wirtschaft", "tech", "gericht", "sonstige"}
-    lines = [f"{idx}. {title[:140]}" for idx, title in sorted(titles_by_idx.items())]
+    lines = [f"{idx}. {title[:320]}" for idx, title in sorted(titles_by_idx.items())]
     payload = _RESSORT_CLASSIFY_PROMPT + "\n\n=== ÜBERSCHRIFTEN ===\n\n" + "\n".join(lines)
     cmd = [
         cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
@@ -14657,7 +14659,13 @@ def run_briefing_via_claude_cli_chunked(
         if _t:
             # Quelle mitgeben — Lokalzeitungen (Tagblatt, GEA) sind ein starkes Regional-Signal
             _src = (s.get("source_label") or "").strip()
-            _titles_by_idx[_i] = f"[{_src}] {_t}" if _src else _t
+            # Body-Auszug mitgeben (irreführende Titel wie "Die Grüne Hölle wird gefeiert"
+            # verraten erst im Text den Ort — hier "Tübingens Französisches Viertel").
+            _body_txt = _markdown_line_to_plain(s.get("content", "") or "")
+            _body_after = _body_txt.split(_t, 1)[-1] if _t in _body_txt else _body_txt
+            _snip = " ".join(_body_after.split())[:180]
+            _head = f"[{_src}] {_t}" if _src else _t
+            _titles_by_idx[_i] = f"{_head} — {_snip}" if _snip else _head
     _llm_buckets = _classify_sections_via_cli(_titles_by_idx, cli_path=cli)
     _final_buckets = []
     _corrected = 0
@@ -14670,29 +14678,6 @@ def run_briefing_via_claude_cli_chunked(
         print(f"[ressort] Opus-Zuordnung aktiv: {_corrected} von {len(_heur_buckets)} Heuristik-Zuordnungen korrigiert.", file=sys.stderr)
     else:
         print("[ressort] Opus-Zuordnung nicht verfügbar — Keyword-Heuristik bleibt.", file=sys.stderr)
-
-    # HARTER OVERRIDE: Beiträge, deren Quellen AUSSCHLIESSLICH Lokalzeitungen sind
-    # (Tübinger Tagblatt, GEA/Reutlinger General-Anzeiger), gehören per Definition zu
-    # Regional — Lokalblätter berichten nur regional. Das verhindert, dass ein
-    # Tagblatt-Stück in "sonstige" zwischen den Podcasts landet (04.07. beobachtet).
-    _LOCAL_ONLY = ("schwäbisches tagblatt", "tagblatt", "gea", "reutlinger general-anzeiger", "reutlinger")
-    _NONLOCAL_HINT = ("tagesschau", "swr", "bbc", "n-tv", "zdf", "spiegel", "zeit", "faz",
-                      "handelsblatt", "ars technica", "caschys", "heise", "golem", "mdr", "welt", "podcast")
-    _regionalized = 0
-    for _i, _fb in enumerate(_final_buckets):
-        # Nur "sonstige" retten — echte Gericht/Wirtschaft/Tech-Einordnungen des LLM
-        # (auch aus Lokalblättern, z.B. lokale Prozesse) bleiben unangetastet.
-        if _fb != "sonstige":
-            continue
-        _srcs = [p.strip().lower() for p in (all_sections[_i].get("source_label") or "").split("+") if p.strip()]
-        if not _srcs:
-            continue
-        _all_local = all(any(lp in s for lp in _LOCAL_ONLY) and not any(nl in s for nl in _NONLOCAL_HINT) for s in _srcs)
-        if _all_local:
-            _final_buckets[_i] = "regional"
-            _regionalized += 1
-    if _regionalized:
-        print(f"[ressort] {_regionalized} reine Lokalzeitungs-Beiträge nach Regional verschoben (Override).", file=sys.stderr)
 
     _order = sorted(range(len(all_sections)), key=lambda _i: (_bucket_rank.get(_final_buckets[_i], 6), _i))
     all_sections = [all_sections[_i] for _i in _order]
