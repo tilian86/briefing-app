@@ -13687,6 +13687,33 @@ def _smart_topic_budget(weight: int, n_src: int) -> tuple:
     return wmin + bonus // 2, wmax + bonus
 
 
+_WEATHER_CONDENSE_PROMPT = """Verdichte diesen rohen Wetterbericht zu einem VORLESE-Wetterteil für ein Audio-Briefing (Tübingen-Hirschau).
+
+FORM: Erste Zeile: ### Wetter: <prägnante Kernaussage des Tages>. Danach 100-150 Wörter Fließtext: aktuelle Lage (Temperatur, gefühlt, Himmel) → Tagesverlauf mit konkreten Zahlen → kurzer Ausblick auf die nächsten Tage. KEINE Modell- oder Metadaten (kein ICON, ECMWF, "Stand:", Konfidenzen). Abschluss: eine Zeile "Was bleibt:" mit einem Merksatz. Gib NUR den Wetterteil aus."""
+
+
+def _condense_weather_for_synthesis(weather_text: str, cli_path: Optional[str] = None) -> str:
+    """Synthese-Modus: Wetter-Rohdaten (400+ Wörter DWD-Dump) auf Briefing-Format
+    verdichten — wie es der klassische Pfad implizit tat. Fallback: Metadaten strippen."""
+    cli = cli_path or _locate_claude_cli()
+    raw = str(weather_text or "").strip()
+    if cli and len(raw.split()) > 170:
+        try:
+            sr = _run_claude_cli_subprocess_streaming(
+                [cli, "--print", "--output-format", "text", "--model", "sonnet",
+                 "--dangerously-skip-permissions", "--effort", "low"],
+                _WEATHER_CONDENSE_PROMPT + "\n\n=== ROHBERICHT ===\n\n" + raw[:8000],
+                timeout_seconds=150, expected_duration_s=25.0, label="Wetter verdichten")
+            out = (sr.get("stdout") or "").strip()
+            if sr.get("ok") and out.startswith("###") and 40 < len(out.split()) < 260:
+                return out
+        except Exception as exc:
+            print(f"[wetter] Verdichtung fehlgeschlagen: {exc}", file=sys.stderr)
+    lines = [l for l in raw.splitlines() if not re.match(r"\s*(Stand:|Primärmodell|Gegencheck|Konfidenz)", l, re.I)]
+    words = " ".join(" ".join(lines).split()[:150])
+    return f"### Wetter\n\n{words}"
+
+
 def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, ultra_compact=False,
                                   cli_path=None, progress_callback=None, timeout_seconds=600,
                                   narrative_style=False, web_enrich=False, smart_length=False):
@@ -13773,11 +13800,11 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
             _w_hist[t.get("weight", 3)] = _w_hist.get(t.get("weight", 3), 0) + 1
         print(f"[synthese] Intelligente Länge: Gewichtsverteilung {dict(sorted(_w_hist.items(), reverse=True))}, Zielumfang ~{sum((t['_wmin'] + t['_wmax']) // 2 for t in topics)} Wörter.", file=sys.stderr)
     if ultra_compact:
-        base_min, base_max, per_src, cap = 90, 150, 70, 450
+        base_min, base_max, per_src, cap = 70, 120, 50, 340
     elif compact_mode:
-        base_min, base_max, per_src, cap = 150, 250, 110, 700
+        base_min, base_max, per_src, cap = 120, 190, 75, 520
     else:
-        base_min, base_max, per_src, cap = 220, 400, 150, 950
+        base_min, base_max, per_src, cap = 200, 320, 100, 750
 
     def _write_topic(t):
         n_src = len(t["members"])
@@ -13787,6 +13814,9 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
             wmin = base_min + (per_src // 2) * (n_src - 1)
             wmax = min(base_max + per_src * (n_src - 1), cap)
         prompt = _TOPIC_SYNTH_PROMPT.format(topic_title=t["title"], word_min=wmin, word_max=wmax)
+        prompt += ("\n\nBUDGET-DISZIPLIN: Halte das Wortbudget STRIKT ein — es ist eine Obergrenze, "
+                   "kein Ziel. Der Magazin-Stil ändert Ton und Dramaturgie, NICHT die Länge. "
+                   "Bei Themen mit nur einer Quelle bleib nah am Minimum.")
         if "_wmin" in t:
             prompt += (f"\n\nGEWICHTUNG: Tragweite {t.get('weight', 3)}/5 — {t.get('_note', '')}. "
                        "Das Wortbudget ist ein Richtwert: bei dünner Substanz DEUTLICH unterschreiten, "
@@ -13843,10 +13873,12 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
                 labels.append(lab)
         sections.append({"type": "article", "content": md, "source_label": " + ".join(labels[:4])})
 
-    # 3) Wetter als eigene, deterministisch formatierte Section voranstellen
+    # 3) Wetter verdichtet voranstellen (Rohdaten wären 400+ Wörter Vorlese-Qual)
     if weather_text and str(weather_text).strip():
+        _report("Wetter wird verdichtet…", 0.72)
+        _w_md = _condense_weather_for_synthesis(weather_text, cli_path=cli)
         sections.insert(0, {"type": "article", "_weather": True, "source_label": "DWD",
-                            "content": f"### Wetter\n\n{str(weather_text).strip()}"})
+                            "content": _w_md})
     return sections, failed, len(topics)
 
 
