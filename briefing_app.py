@@ -2341,6 +2341,7 @@ def _briefing_worker(cfg: dict, status: dict):
                 progress_callback=_cb,
             )
             entry = {"label": rp["label"], "ok": bool(r.get("ok")), "pdf": str(out_pdf),
+                     "eleven_txt": (r.get("artifacts") or {}).get("eleven_txt"),
                      "sections": r.get("sections_count"), "elapsed": int(r.get("elapsed_seconds") or 0),
                      "error": r.get("error"), "upload": None, "wa": rp["wa"]}
             cc = r.get("content_check") or {}
@@ -4891,6 +4892,15 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
     _briefing_job_fragment()
 
     _job_done = st.session_state.get("_briefing_job")
+    if _job_done is None:
+        # Frische Session: letzten Hintergrund-Lauf aus dem Datei-Spiegel zeigen (<36h)
+        try:
+            _fj2 = json.loads(_BRIEFING_JOB_STATUS_PATH.read_text(encoding="utf-8"))
+            _age_h2 = (datetime.datetime.now() - datetime.datetime.fromisoformat(_fj2.get("started"))).total_seconds() / 3600
+            if _fj2.get("done") and _age_h2 < 36:
+                _job_done = _fj2
+        except Exception:
+            pass
     if _job_done and _job_done.get("done"):
         if _job_done.get("failed"):
             st.error(f"❌ Briefing-Lauf fehlgeschlagen: {_job_done.get('step', '')}")
@@ -4913,6 +4923,21 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             st.caption(" · ".join(_bits))
         if _job_done.get("cleanup"):
             st.caption(f"🗑️ {_job_done['cleanup']} alte Bibliothekseinträge aufgeräumt.")
+        _dl_items = [r9 for r9 in (_job_done.get("results") or []) if r9.get("ok")]
+        if _dl_items:
+            _dl_cols = st.columns(min(len(_dl_items), 3))
+            for _di9, _r9 in enumerate(_dl_items):
+                with _dl_cols[_di9 % len(_dl_cols)]:
+                    _pdfp9 = _r9.get("pdf")
+                    if _pdfp9 and os.path.exists(_pdfp9):
+                        st.download_button(f"⬇️ {_r9['label']} (PDF)", data=open(_pdfp9, "rb").read(),
+                                           file_name=os.path.basename(_pdfp9), mime="application/pdf",
+                                           key=f"dl_pdf_{_di9}", use_container_width=True)
+                    _txp9 = _r9.get("eleven_txt")
+                    if _txp9 and os.path.exists(_txp9):
+                        st.download_button(f"⬇️ {_r9['label']} (Hörtext)", data=open(_txp9, "rb").read(),
+                                           file_name=os.path.basename(_txp9), mime="text/plain",
+                                           key=f"dl_txt_{_di9}", use_container_width=True)
 
     if False:  # LEGACY-Blockier-Pfad — 04.07. durch den Hintergrund-Lauf ersetzt (Code als Referenz erhalten)
 
