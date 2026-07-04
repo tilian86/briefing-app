@@ -14004,7 +14004,7 @@ def preprocess_podcast_text(podcast_text: str, cli_path: Optional[str] = None,
     done_count = [0]
     from concurrent.futures import ThreadPoolExecutor, as_completed
     results = {}
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         futs = {pool.submit(summarize_podcast_transcript_via_cli, blocks[i], cli_path): i for i in raw_idx}
         for f in as_completed(futs):
             i = futs[f]
@@ -14546,7 +14546,7 @@ def run_briefing_via_claude_cli_chunked(
     # zusammen mit Claude-Desktop + Browser den Speicher sprengen → macOS killt die
     # App (genau das ist am 05.06. passiert). 2 ist speichersicher und ~2× schneller
     # als sequenziell.
-    max_workers = max(1, min(4, n_groups))
+    max_workers = max(1, min(6, n_groups))
     group_results: list = [None] * n_groups  # Reihenfolge der Gruppen erhalten
 
     def _run_group(gi: int, group: list) -> Optional[list]:
