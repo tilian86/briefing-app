@@ -2291,6 +2291,13 @@ st.markdown('<div id="nav-podcast" style="position:relative; top:-64px;"></div>'
 st.markdown("#### Podcast-Zusammenfassungen")
 
 _BRIEFING_JOB_STATUS_PATH = _APP_DIR / ".briefing_job_status.json"
+_PREPARED_CACHE_PATH = _APP_DIR / ".briefing_prepared_cache.json"
+_PREPARED_CACHE_MAX_AGE_H = 4  # Rohdaten (Fetch+Merge) altern schnell — nach 4h neu holen
+
+
+def _inputs_hash(urls: str, paywall: str, podcast: str) -> str:
+    import hashlib
+    return hashlib.sha1(("\x00".join([urls or "", paywall or "", podcast or ""])).encode("utf-8")).hexdigest()[:16]
 _QUOTA_CAL_USD_PER_WINDOW = 120.0  # Startschätzung: „$-Äquivalent" pro 5h-Fenster — kalibriert sich mit Florians Limit-Anzeigen
 
 
@@ -2385,7 +2392,23 @@ def _briefing_worker(cfg: dict, status: dict):
         n_steps = len(plan) + 1
         prepared = None
         results = []
-        _upd(step="Start — Rohdaten werden geholt…", ratio=0.01, results=results)
+
+        # ♻️ Zwischenspeicher: Wenn die EINGABEN (Links/Paywall/Podcasts) identisch zum
+        # letzten Lauf sind und der Cache frisch ist, überspringen wir Fetch + Merge
+        # komplett — spart Zeit und Kontingent, wenn Florian nur eine andere Länge fährt.
+        _in_hash = cfg.get("inputs_hash")
+        try:
+            import json as _cj
+            _cache = _cj.loads(_PREPARED_CACHE_PATH.read_text(encoding="utf-8"))
+            _age_h = (datetime.datetime.now() - datetime.datetime.fromisoformat(_cache.get("saved"))).total_seconds() / 3600
+            if _cache.get("hash") == _in_hash and _age_h < _PREPARED_CACHE_MAX_AGE_H and _cache.get("prepared"):
+                prepared = _cache["prepared"]
+                status["reused_prepared"] = True
+                _upd(step="♻️ Rohdaten aus dem letzten Lauf wiederverwendet (Fetch + Merge übersprungen)…", ratio=0.02)
+        except Exception:
+            pass
+        _upd(step=("♻️ Start (Rohdaten aus Cache)…" if prepared else "Start — Rohdaten werden geholt…"),
+             ratio=0.02, results=results)
 
         for i, rp in enumerate(plan):
             if _cancelled():
@@ -2430,6 +2453,14 @@ def _briefing_worker(cfg: dict, status: dict):
                 _upd(step=f"❌ {rp['label']} fehlgeschlagen: {str(r.get('error'))[:120]}", done=True, failed=True)
                 return
             prepared = r.get("prepared")
+            if i == 0 and prepared:
+                try:
+                    import json as _cj2
+                    _PREPARED_CACHE_PATH.write_text(_cj2.dumps({
+                        "hash": cfg.get("inputs_hash"), "saved": datetime.datetime.now().isoformat(),
+                        "prepared": prepared}, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
 
             # 🎧 Sofort-Upload je fertiger Hauptversion (Florians Wunsch)
             if not rp["wa"] and cfg["upload"]:
@@ -4927,6 +4958,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "upload": bool(st.session_state.get("auto_reader_upload", True)),
                 "cleanup_days": int(st.session_state.get("reader_cleanup_days", 14) or 0),
                 "model": _cli_model, "ts": _now9.strftime("%Y-%m-%d_%H-%M"), "ts_iso": _now9.isoformat(),
+                "inputs_hash": _inputs_hash(urls_text, paywall_text, podcast_text),
                 "archive_dir": _resolve_archive_dir(for_write=True),
                 "title_base": f"Tagesbriefing {_wd_de9[_now9.weekday()]} {_now9.strftime('%d.%m.')}",
             }
@@ -4991,6 +5023,8 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             st.warning("⏹️ Briefing-Lauf abgebrochen.")
         else:
             st.success("✅ Briefing fertig — Hörversion(en) sind in der ElevenReader-Bibliothek." )
+            if _job_done.get("reused_prepared"):
+                st.caption("♻️ Rohdaten (Fetch + Merge) aus dem vorherigen Lauf wiederverwendet — schneller & spart Kontingent.")
         for _re9 in (_job_done.get("results") or []):
             _bits = [f"**{_re9['label']}**"]
             if _re9.get("ok"):
