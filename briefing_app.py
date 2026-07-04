@@ -2267,6 +2267,125 @@ with _pw_scroll_col:
 st.markdown('<div id="nav-podcast" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 st.markdown("#### Podcast-Zusammenfassungen")
 
+_BRIEFING_JOB_STATUS_PATH = _APP_DIR / ".briefing_job_status.json"
+
+
+def _briefing_worker(cfg: dict, status: dict):
+    """Der komplette Briefing-Lauf im Hintergrund-Thread — klick-, reload- und
+    browserfest. KEIN st.* hier drin! Fortschritt/Ergebnisse nur über das status-Dict
+    (plus Datei-Spiegel für Sessions, die den Thread nicht kennen).
+
+    Reihenfolge auf Tempo optimiert: Hauptversion ZUERST (→ sofort hochladen, Florian
+    kann hören), dann WhatsApp + weitere Längen."""
+    import json as _json
+    import threading as _th
+
+    def _upd(step=None, ratio=None, **kw):
+        if step is not None:
+            status["step"] = step
+        if ratio is not None:
+            status["ratio"] = max(0.0, min(1.0, float(ratio)))
+        status.update(kw)
+        try:
+            _BRIEFING_JOB_STATUS_PATH.write_text(_json.dumps(
+                {k: v for k, v in status.items() if k != "cancel_event"}, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _cancelled():
+        return bool(status.get("cancel"))
+
+    try:
+        depths = cfg["depths"]
+        wa = cfg["wa"]
+        plan = []
+        for _di, dep in enumerate(cfg["depths"]):
+            sfx = {"Sehr kurz": "_sehr-kurz", "Kürzer": "_kuerzer", "Ausführlich": "_ausfuehrlich", "Intelligent": "_intelligent"}[dep] if len(depths) > 1 else ""
+            plan.append({"label": dep, "depth": dep, "synth": cfg["synth"], "suffix": sfx, "wa": False})
+        if wa:
+            plan.append({"label": "WhatsApp 📱", "depth": "Sehr kurz", "synth": False, "suffix": "_whatsapp", "wa": True})
+        # Hauptversion zuerst, WhatsApp direkt danach, weitere Längen zum Schluss
+        plan = [plan[0]] + ([p for p in plan if p["wa"]] if wa else []) + [p for p in plan[1:] if not p["wa"]]
+
+        base_suffix = "_claude_synthese" if cfg["synth"] else "_claude"
+        n_steps = len(plan) + 1
+        prepared = None
+        results = []
+        _upd(step="Start — Rohdaten werden geholt…", ratio=0.01, results=results)
+
+        for i, rp in enumerate(plan):
+            if _cancelled():
+                _upd(step="Abgebrochen.", done=True, cancelled=True)
+                return
+            base = i / n_steps
+            span = 1.0 / n_steps
+            out_pdf = cfg["archive_dir"] / f"{cfg['ts']}_briefing{base_suffix}{rp['suffix']}.pdf"
+
+            def _cb(s, r, _b=base, _s=span, _lbl=rp["label"]):
+                _upd(step=f"{_lbl}: {s}", ratio=_b + _s * max(0.0, min(1.0, float(r))))
+
+            r = run_briefing_via_claude_cli_chunked(
+                urls_text=cfg["urls"], paywall_text=cfg["paywall"], podcast_text=cfg["podcast"],
+                include_weather=True, output_pdf_path=str(out_pdf),
+                model=cfg["model"],
+                compact_mode=(rp["depth"] != "Ausführlich"),
+                ultra_compact=(rp["depth"] == "Sehr kurz"),
+                merge_duplicates=True, prepared=prepared,
+                topic_synthesis=rp["synth"],
+                synthesis_narrative=bool(rp["synth"] and cfg["magazin"]),
+                synthesis_web_enrich=bool(rp["synth"] and cfg["web"]),
+                content_check=bool(cfg["qc"] and i == 0),
+                auto_repair=bool(cfg["qc"] and i == 0),
+                special_topics=(cfg["specials"] if i == 0 else None),
+                smart_length=bool(rp["depth"] == "Intelligent"),
+                progress_callback=_cb,
+            )
+            entry = {"label": rp["label"], "ok": bool(r.get("ok")), "pdf": str(out_pdf),
+                     "sections": r.get("sections_count"), "elapsed": int(r.get("elapsed_seconds") or 0),
+                     "error": r.get("error"), "upload": None, "wa": rp["wa"]}
+            cc = r.get("content_check") or {}
+            if cc:
+                entry["plausi"] = f"{cc.get('warnings', '?')}W/{cc.get('notices', '?')}N, repariert {r.get('content_repaired', 0)}"
+            if r.get("special_done") is not None:
+                entry["specials"] = r.get("special_done")
+                status["specials_failed"] = r.get("special_failed_topics") or []
+            results.append(entry)
+            _upd(results=results)
+            if not r.get("ok"):
+                _upd(step=f"❌ {rp['label']} fehlgeschlagen: {str(r.get('error'))[:120]}", done=True, failed=True)
+                return
+            prepared = r.get("prepared")
+
+            # 🎧 Sofort-Upload je fertiger Hauptversion (Florians Wunsch)
+            if not rp["wa"] and cfg["upload"]:
+                _txtp = (r.get("artifacts") or {}).get("eleven_txt")
+                if _txtp:
+                    _upd(step=f"🎧 {rp['label']}: Upload in die ElevenReader-Bibliothek…")
+                    try:
+                        from reader_upload import upload_briefing_epub, upload_briefing_txt
+                        _ttl = cfg["title_base"] + (f" – {rp['label']}" if len(depths) > 1 else "") + (" 🧵" if cfg["synth"] else "")
+                        _ur = upload_briefing_epub(_txtp, _ttl)
+                        if not _ur.get("ok"):
+                            _ur = upload_briefing_txt(_txtp, _ttl)
+                        entry["upload"] = ("ok: " + _ttl) if _ur.get("ok") else ("fail: " + str(_ur.get("error"))[:100])
+                    except Exception as _uex:
+                        entry["upload"] = "fail: " + str(_uex)[:100]
+                    _upd(results=results)
+
+        if cfg["upload"] and int(cfg.get("cleanup_days") or 0) > 0 and not _cancelled():
+            _upd(step="🗑️ Räume alte Bibliothekseinträge auf…", ratio=0.97)
+            try:
+                from reader_upload import cleanup_old_briefings
+                _cl = cleanup_old_briefings(int(cfg["cleanup_days"]))
+                status["cleanup"] = len(_cl.get("deleted") or [])
+            except Exception:
+                pass
+
+        _upd(step="✅ Fertig.", ratio=1.0, done=True)
+    except Exception as exc:
+        _upd(step=f"❌ Unerwarteter Fehler: {str(exc)[:150]}", done=True, failed=True)
+
+
 def _bg_feed_summarize(_ep):
     """Worker-Thread für den 🚀-Kombi-Knopf: Feed-Transkript laden + zusammenfassen.
     Gibt dasselbe Ergebnis-Format wie summarize_podcast_transcript_via_cli zurück."""
@@ -4696,14 +4815,107 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
     _auto_fire = bool(st.session_state.pop("_auto_run_briefing", False)) and _cli_available
     if _auto_fire:
         st.info("🚀 Automatisch gestartet — alle Podcast-Zusammenfassungen waren fertig.")
-    if st.button(
-        "🤖 Briefing automatisch via Claude bauen (kostenlos)",
+    _job = st.session_state.get("_briefing_job")
+    _job_active = bool(_job and not _job.get("done"))
+    _btn_clicked = st.button(
+        "🤖 Briefing im Hintergrund bauen (kostenlos, klickfest)",
         key="claude_cli_run_button_main",
         use_container_width=True,
         type="primary",
-        disabled=not _cli_available,
-        help="Holt alle Artikel + Wetter, schickt sie an Claude, baut Voll-PDF + Kompaktfassung. ~5–10 Min Wartezeit. Nutzt dein Max-Abo, keine API-Kosten.",
-    ) or _auto_fire:
+        disabled=(not _cli_available) or _job_active,
+        help="Startet den kompletten Lauf im Hintergrund: Hauptversion zuerst (wird sofort in den ElevenReader geladen — hören, während der Rest rechnet), dann WhatsApp + weitere Längen. Klicken, Neuladen, Browser zumachen — alles egal, der Lauf läuft weiter. Nutzt dein Max-Abo, keine API-Kosten.",
+    )
+    if (_btn_clicked or _auto_fire) and not _job_active:
+        if not (urls_text.strip() or paywall_text.strip() or podcast_text.strip() or include_weather):
+            st.warning("Mindestens ein Feld ausfüllen oder Wetter aktivieren.")
+        elif _cli_direct_genius_only:
+            st.warning("Direkt-Modus (nur Kompaktfassung) läuft weiterhin über den bisherigen Weg — Häkchen abwählen für den Hintergrund-Lauf.")
+        else:
+            import threading as _threading
+            _wd_de9 = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+            _now9 = datetime.datetime.now()
+            _cfg = {
+                "urls": urls_text, "paywall": paywall_text, "podcast": podcast_text,
+                "depths": list(_depths_to_run), "synth": bool(st.session_state.get("topic_synthesis_mode", True)),
+                "magazin": bool(st.session_state.get("synthesis_narrative_style", True)),
+                "web": bool(st.session_state.get("synthesis_web_enrich", True)),
+                "wa": bool(st.session_state.get("whatsapp_pdf_additional", True)),
+                "qc": bool(st.session_state.get("quality_check_enabled", True)),
+                "specials": split_special_topics(st.session_state.get("special_topics_text") or ""),
+                "upload": bool(st.session_state.get("auto_reader_upload", True)),
+                "cleanup_days": int(st.session_state.get("reader_cleanup_days", 14) or 0),
+                "model": _cli_model, "ts": _now9.strftime("%Y-%m-%d_%H-%M"),
+                "archive_dir": _resolve_archive_dir(for_write=True),
+                "title_base": f"Tagesbriefing {_wd_de9[_now9.weekday()]} {_now9.strftime('%d.%m.')}",
+            }
+            _status = {"active": True, "started": _now9.isoformat(), "step": "Wird gestartet…",
+                       "ratio": 0.0, "done": False, "cancel": False, "results": []}
+            st.session_state["_briefing_job"] = _status
+            st.session_state.pop("_briefing_job_finished_shown", None)
+            _save_draft()
+            _threading.Thread(target=_briefing_worker, args=(_cfg, _status), daemon=True).start()
+            st.rerun()
+    @st.fragment(run_every=2)
+    def _briefing_job_fragment():
+        _j = st.session_state.get("_briefing_job")
+        if not _j:
+            # Fremd-Session-Fall (Reload/anderes Gerät): Datei-Spiegel zeigen
+            try:
+                _fj = json.loads(_BRIEFING_JOB_STATUS_PATH.read_text(encoding="utf-8"))
+                _fs = datetime.datetime.fromisoformat(_fj.get("started"))
+                _fmin = int((datetime.datetime.now() - _fs).total_seconds() // 60)
+                if not _fj.get("done") and _fmin < 150:
+                    st.progress(float(_fj.get("ratio") or 0))
+                    st.caption(f"🤖 Briefing läuft (gestartet vor {_fmin} Min, andere Sitzung): {_fj.get('step', '')}")
+            except Exception:
+                pass
+            return
+        if not _j.get("done"):
+            st.progress(float(_j.get("ratio") or 0))
+            _el = ""
+            try:
+                _el = f" · seit {int((datetime.datetime.now() - datetime.datetime.fromisoformat(_j['started'])).total_seconds() // 60)} Min"
+            except Exception:
+                pass
+            st.caption(f"⏳ {_j.get('step', '…')}{_el}")
+            if st.button("⏹️ Abbrechen (nach der laufenden Phase)", key="briefing_job_cancel"):
+                _j["cancel"] = True
+                st.caption("Abbruch vorgemerkt — greift nach der aktuellen Version.")
+        else:
+            if not st.session_state.get("_briefing_job_finished_shown"):
+                st.session_state["_briefing_job_finished_shown"] = True
+                if _j.get("specials_failed") is not None:
+                    st.session_state["special_topics_text_pending_value"] = "\n".join(_j.get("specials_failed") or [])
+                st.rerun(scope="app")
+
+    _briefing_job_fragment()
+
+    _job_done = st.session_state.get("_briefing_job")
+    if _job_done and _job_done.get("done"):
+        if _job_done.get("failed"):
+            st.error(f"❌ Briefing-Lauf fehlgeschlagen: {_job_done.get('step', '')}")
+        elif _job_done.get("cancelled"):
+            st.warning("⏹️ Briefing-Lauf abgebrochen.")
+        else:
+            st.success("✅ Briefing fertig — Hörversion(en) sind in der ElevenReader-Bibliothek." )
+        for _re9 in (_job_done.get("results") or []):
+            _bits = [f"**{_re9['label']}**"]
+            if _re9.get("ok"):
+                _bits.append(f"{_re9.get('sections', '?')} Beiträge · {(_re9.get('elapsed') or 0) // 60} Min")
+                if _re9.get("plausi"):
+                    _bits.append(f"Plausi {_re9['plausi']}")
+                if _re9.get("specials") is not None:
+                    _bits.append(f"🧠 {_re9['specials']} Sonderthema/-themen")
+                if _re9.get("upload"):
+                    _bits.append("🎧 " + ("✓" if str(_re9["upload"]).startswith("ok") else f"Upload: {_re9['upload']}"))
+            else:
+                _bits.append(f"❌ {str(_re9.get('error'))[:100]}")
+            st.caption(" · ".join(_bits))
+        if _job_done.get("cleanup"):
+            st.caption(f"🗑️ {_job_done['cleanup']} alte Bibliothekseinträge aufgeräumt.")
+
+    if False:  # LEGACY-Blockier-Pfad — 04.07. durch den Hintergrund-Lauf ersetzt (Code als Referenz erhalten)
+
         st.session_state["_briefing_run_active"] = datetime.datetime.now().isoformat()
         if not (urls_text.strip() or paywall_text.strip() or podcast_text.strip() or include_weather):
             st.session_state.pop("_briefing_run_active", None)
