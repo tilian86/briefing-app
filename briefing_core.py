@@ -13671,6 +13671,7 @@ STIL — UNTERHALTSAM ERZÄHLT: Schreibe wie der Host eines exzellenten Magazin-
 
 
 _SMART_WEIGHT_BUDGETS = {5: (300, 480), 4: (220, 340), 3: (150, 230), 2: (90, 140), 1: (50, 90)}
+_SMART_WEIGHT_BUDGETS_SHORT = {5: (170, 260), 4: (120, 190), 3: (80, 130), 2: (50, 80), 1: (30, 55)}
 _SMART_WEIGHT_NOTES = {
     5: "Schwerpunkt des Tages — erzähle vollständig, mit Kontext und Einordnung",
     4: "wichtiges Thema — gründlich, aber ohne Ausschweifen",
@@ -13680,10 +13681,12 @@ _SMART_WEIGHT_NOTES = {
 }
 
 
-def _smart_topic_budget(weight: int, n_src: int) -> tuple:
-    """Intelligente Länge: Wortbudget aus Tragweite (1-5) + kleinem Quellen-Bonus."""
-    wmin, wmax = _SMART_WEIGHT_BUDGETS.get(int(weight or 3), _SMART_WEIGHT_BUDGETS[3])
-    bonus = min(40 * (max(1, n_src) - 1), 160)
+def _smart_topic_budget(weight: int, n_src: int, short: bool = False) -> tuple:
+    """Intelligente Länge: Wortbudget aus Tragweite (1-5) + kleinem Quellen-Bonus.
+    short=True (Intelligent kurz): gleiche kluge Verteilung im Sehr-kurz-Gesamtformat."""
+    table = _SMART_WEIGHT_BUDGETS_SHORT if short else _SMART_WEIGHT_BUDGETS
+    wmin, wmax = table.get(int(weight or 3), table[3])
+    bonus = min((20 if short else 40) * (max(1, n_src) - 1), 80 if short else 160)
     return wmin + bonus // 2, wmax + bonus
 
 
@@ -13786,7 +13789,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         # kurz, Wichtiges voll erzählt. Sanfte Gesamtbremse schützt vor Monster-PDFs,
         # drosselt aber nur Gewicht ≤3 (Top-Themen bleiben unangetastet).
         for t in topics:
-            t["_wmin"], t["_wmax"] = _smart_topic_budget(t.get("weight", 3), len(t["members"]))
+            t["_wmin"], t["_wmax"] = _smart_topic_budget(t.get("weight", 3), len(t["members"]), short=ultra_compact)
             t["_note"] = _SMART_WEIGHT_NOTES.get(int(t.get("weight") or 3), _SMART_WEIGHT_NOTES[3])
         _est = sum((t["_wmin"] + t["_wmax"]) // 2 for t in topics)
         if _est > 8000:
@@ -14361,7 +14364,9 @@ def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_comp
         parts.append("─" * 50 + f"\n{kind_label} {i}\n" + "─" * 50 + "\n")
         if smart_active and "_weight" in it:
             _bw = it["_weight"]
-            _bmin, _bmax = _SMART_ARTICLE_BUDGETS.get(_bw, (110, 170))
+            _tbl = ({5: (150, 220), 4: (110, 160), 3: (75, 115), 2: (45, 75), 1: (25, 50)}
+                    if ultra_compact else _SMART_ARTICLE_BUDGETS)
+            _bmin, _bmax = _tbl.get(_bw, _tbl[3])
             parts.append(f"TRAGWEITE: {_bw}/5 — Wortbudget {_bmin}-{_bmax} ({_SMART_WEIGHT_NOTES.get(_bw, '')})\n")
         parts.append(it["body"].strip() + "\n\n")
     parts.append("─" * 50 + "\nENDE DIESES AUSSCHNITTS\n" + "─" * 50 + "\n")
@@ -14734,6 +14739,36 @@ def run_briefing_via_claude_cli_chunked(
         if title:
             digest_lines.append(f"- {title}")
 
+    # 🎙️ Ressort-Anmoderationen: ein Halbsatz pro Ressort ("— heute vor allem X und Y"),
+    # als eigene Zeile UNTER dem Kapitelnamen (Kapitel-Split im ePub bleibt intakt).
+    def _ressort_intros(buckets, sections):
+        titles_by_bucket = {}
+        for _bk, _s in zip(buckets, sections):
+            _t = _markdown_line_to_plain(_extract_title(_s.get("content", "") or "")).strip()
+            if _t and not _s.get("_weather"):
+                titles_by_bucket.setdefault(_bk, []).append(_t)
+        payload_map = {k: v[:14] for k, v in titles_by_bucket.items() if len(v) >= 2}
+        if not payload_map:
+            return {}
+        _pl = ("Für jedes Ressort EINEN Anmoderations-Halbsatz (max 12 Wörter), der die 1-2 "
+               "wichtigsten Themen nennt — Stil: 'Heute vor allem die Hitzewelle und die "
+               "gescheiterte Grundsteuer-Klage.' Keine Wertung, kein Doppelpunkt am Anfang.\n"
+               "ANTWORT NUR ALS JSON: {\"<ressort>\": \"<Halbsatz>\"}\n\n"
+               + json.dumps(payload_map, ensure_ascii=False))
+        try:
+            _sr = _run_claude_cli_subprocess_streaming(
+                [cli, "--print", "--output-format", "text", "--model", "sonnet",
+                 "--dangerously-skip-permissions", "--effort", "low",
+                 "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."],
+                _pl, timeout_seconds=120, expected_duration_s=20.0, label="Ressort-Anmoderationen")
+            _m = re.search(r"\{.*\}", (_sr.get("stdout") or ""), re.DOTALL)
+            return {k: str(v).strip()[:120] for k, v in json.loads(_m.group(0)).items()} if (_sr.get("ok") and _m) else {}
+        except Exception as _iex:
+            print(f"[anmoderation] übersprungen: {_iex}", file=sys.stderr)
+            return {}
+
+    _intros = _ressort_intros(_sorted_buckets, all_sections)
+
     # Sichtbare Ressort-Überschriften zwischen den (bereits sortierten) Gruppen einfügen,
     # damit die thematische Gliederung im Voll-Briefing sichtbar ist (wie in der Kompaktfassung).
     # Wetter braucht keinen Header (ist selbsterklärend + eigene Section).
@@ -14747,9 +14782,10 @@ def run_briefing_via_claude_cli_chunked(
     for _bk, s in zip(_sorted_buckets, all_sections):
         if _bk != _last_bucket:
             if _bk in _ressort_labels:
+                _intro_line = _intros.get(_bk, "").strip()
                 _with_headers.append({
                     "type": "article", "_ressort_header": True, "source_label": "",
-                    "content": f"# {_ressort_labels[_bk]}",
+                    "content": f"# {_ressort_labels[_bk]}" + (f"\n\n{_intro_line}" if _intro_line else ""),
                 })
             _last_bucket = _bk
         _with_headers.append(s)

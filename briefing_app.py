@@ -2323,7 +2323,7 @@ def _briefing_worker(cfg: dict, status: dict):
         wa = cfg["wa"]
         plan = []
         for _di, dep in enumerate(cfg["depths"]):
-            sfx = {"Sehr kurz": "_sehr-kurz", "Kürzer": "_kuerzer", "Ausführlich": "_ausfuehrlich", "Intelligent": "_intelligent"}[dep] if len(depths) > 1 else ""
+            sfx = {"Sehr kurz": "_sehr-kurz", "Kürzer": "_kuerzer", "Ausführlich": "_ausfuehrlich", "Intelligent": "_intelligent", "Intelligent kurz": "_intelligent-kurz"}[dep] if len(depths) > 1 else ""
             plan.append({"label": dep, "depth": dep, "synth": cfg["synth"], "suffix": sfx, "wa": False})
         if wa:
             plan.append({"label": "WhatsApp 📱", "depth": "Sehr kurz", "synth": False, "suffix": "_whatsapp", "wa": True})
@@ -2352,7 +2352,7 @@ def _briefing_worker(cfg: dict, status: dict):
                 include_weather=True, output_pdf_path=str(out_pdf),
                 model=cfg["model"],
                 compact_mode=(rp["depth"] != "Ausführlich"),
-                ultra_compact=(rp["depth"] == "Sehr kurz"),
+                ultra_compact=(rp["depth"] in ("Sehr kurz", "Intelligent kurz")),
                 merge_duplicates=True, prepared=prepared,
                 topic_synthesis=rp["synth"],
                 synthesis_narrative=bool(rp["synth"] and cfg["magazin"]),
@@ -2360,7 +2360,7 @@ def _briefing_worker(cfg: dict, status: dict):
                 content_check=bool(cfg["qc"] and i == 0),
                 auto_repair=bool(cfg["qc"] and i == 0),
                 special_topics=(cfg["specials"] if i == 0 else None),
-                smart_length=bool(rp["depth"] == "Intelligent"),
+                smart_length=bool(rp["depth"].startswith("Intelligent")),
                 progress_callback=_cb,
             )
             entry = {"label": rp["label"], "ok": bool(r.get("ok")), "pdf": str(out_pdf),
@@ -4545,7 +4545,7 @@ _mode_col1, _mode_col2, _mode_col3 = st.columns(3)
 with _mode_col1:
     # Mehrfachauswahl: eine oder mehrere Längen anklicken — bei mehreren werden die
     # Versionen nacheinander erstellt, die Artikel aber nur EINMAL geladen+gemergt.
-    _valid_depths = ("Intelligent", "Sehr kurz", "Kürzer", "Ausführlich")
+    _valid_depths = ("Intelligent kurz", "Intelligent", "Sehr kurz", "Kürzer", "Ausführlich")
     if "briefing_depth_multi" not in st.session_state:
         # Migration: alter Radio-Wert (falls vorhanden) wird zur Vorauswahl.
         _old_depth = st.session_state.get("briefing_depth_radio")
@@ -4557,17 +4557,19 @@ with _mode_col1:
         "Briefing-Länge(n)",
         options=list(_valid_depths),
         key="briefing_depth_multi",
-        help="Alle sind ein VOLLES Briefing in voller Qualität. 🧠 Intelligent: Opus gewichtet jedes Thema automatisch (Tragweite 1-5, du musst NICHTS bewerten) — Top-Storys werden voll erzählt, Randnotizen auf 2-3 Sätze eingedampft; Gesamtlänge bleibt im Rahmen, Substanz geht vor. Sehr kurz: ~120 Wörter/Beitrag überall gleich. Kürzer: knackig, gleichmäßig. Ausführlich: mehr Kontext überall. MEHRERE anklicken = alle Versionen in einem Rutsch. Intelligent wirkt in beiden Modi — verwoben (Synthese) und klassisch Artikel für Artikel.",
+        help="Alle sind ein VOLLES Briefing in voller Qualität. 🧠✂️ Intelligent kurz: kluge Gewichtung im Sehr-kurz-Gesamtformat (Alltags-Empfehlung). 🧠 Intelligent: Opus gewichtet jedes Thema automatisch (Tragweite 1-5, du musst NICHTS bewerten) — Top-Storys werden voll erzählt, Randnotizen auf 2-3 Sätze eingedampft; Gesamtlänge bleibt im Rahmen, Substanz geht vor. Sehr kurz: ~120 Wörter/Beitrag überall gleich. Kürzer: knackig, gleichmäßig. Ausführlich: mehr Kontext überall. MEHRERE anklicken = alle Versionen in einem Rutsch. Intelligent wirkt in beiden Modi — verwoben (Synthese) und klassisch Artikel für Artikel.",
     )
     _depths_to_run = [d for d in _valid_depths if d in (_briefing_depth_sel or [])] or ["Kürzer"]
     st.session_state["_depths_to_run"] = _depths_to_run
     _briefing_depth = _depths_to_run[0]
     compact_mode = _briefing_depth != "Ausführlich"
-    ultra_compact = _briefing_depth == "Sehr kurz"
+    ultra_compact = _briefing_depth in ("Sehr kurz", "Intelligent kurz")
     st.session_state["compact_mode"] = compact_mode
     st.session_state["ultra_compact"] = ultra_compact
     if len(_depths_to_run) > 1:
         st.caption(f"🔁 {len(_depths_to_run)} Versionen werden nacheinander erstellt — gemeinsame Artikel-Basis, nur die Verdichtung läuft pro Länge.")
+    elif _briefing_depth == "Intelligent kurz":
+        st.caption("🧠✂️ Kluge Gewichtung im Sehr-kurz-Format: Randnotizen 1-2 Sätze, nur die Top-Story darf atmen — dein Alltags-Sweet-Spot.")
     elif _briefing_depth == "Intelligent":
         st.caption("🧠 Opus verteilt die Länge selbst: Schwerpunkte voll, Randnotizen in 2-3 Sätzen — vollständig bleibt es immer. Funktioniert verwoben UND klassisch.")
     elif ultra_compact:
@@ -5153,7 +5155,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                     _on_cli_progress(f"Großes Briefing ({_cli_item_count} Beiträge) — Häppchen-Modus startet…", 0.02)
                     handoff_text = ""  # im chunked-Pfad nicht gebaut; verhindert NameError unten
                     st.session_state["claude_handoff_text"] = ""
-                    _depth_suffix = {"Sehr kurz": "_sehr-kurz", "Kürzer": "_kuerzer", "Ausführlich": "_ausfuehrlich", "Intelligent": "_intelligent"}
+                    _depth_suffix = {"Sehr kurz": "_sehr-kurz", "Kürzer": "_kuerzer", "Ausführlich": "_ausfuehrlich", "Intelligent": "_intelligent", "Intelligent kurz": "_intelligent-kurz"}
                     # Lauf-Plan: WhatsApp-Lese-Version (klassisch, Sehr kurz) ZUERST —
                     # sie füllt die geteilte Basis; die Hauptversionen laufen danach,
                     # damit _AKTUELL-TXT und Reader-Upload die Hörversion tragen.
@@ -5200,7 +5202,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             content_check=bool(_cli_content_check_enabled and _di == _check_idx),
                             auto_repair=bool(_cli_auto_repair_enabled and _di == _check_idx),
                             special_topics=(_special_list if _di == _check_idx else None),
-                            smart_length=bool(_rp["depth"] == "Intelligent"),
+                            smart_length=bool(_rp["depth"].startswith("Intelligent")),
                         )
                         if not cli_result.get("ok"):
                             st.session_state.pop("_briefing_run_active", None)
