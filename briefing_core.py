@@ -13833,13 +13833,23 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
             it = items[m_ - 1]
             src_parts.append(f"--- QUELLE {m_} ({it.get('label', '?')}, {it.get('kind', 'article')}) ---\n\n{(it.get('body') or '')[:6500]}")
         pl = prompt + "\n\n=== QUELLEN ZU DIESEM THEMA ===\n\n" + "\n\n".join(src_parts)
-        c = [cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
+        # MODELL-MIX: Mehrquellen-Verwebung, schwere Themen (Gewicht ≥4) und Web-Recherche
+        # brauchen Opus. Einzelquellen-Themen mit geringem Gewicht sind Umschreiben/Verdichten
+        # = Sonnet-5-Kernkompetenz (schneller + eigenes Rate-Limit → mehr echte Parallelität).
+        # Web-Ergänzung ist KEIN Opus-Grund (Sonnet 5 kann die Websuche auch) — sonst
+        # würde der Mix bei Florians Default (Web an) nie greifen. Opus nur für die
+        # Fälle, wo es zählt: Mehrquellen-Verwebung oder schwere Themen.
+        _weight = int(t.get("weight") or 3)
+        _use_opus = n_src >= 2 or _weight >= 4
+        _model = _CLI_JUDGE_MODEL if _use_opus else "sonnet"
+        t["_model_used"] = "opus" if _use_opus else "sonnet"
+        c = [cli, "--print", "--output-format", "text", "--model", _model,
              "--dangerously-skip-permissions", "--effort", "medium"]
         for attempt in (1, 2):
             try:
                 sr2 = _run_claude_cli_subprocess_streaming(
                     c, pl, timeout_seconds=timeout_seconds,
-                    expected_duration_s=(200.0 if web_enrich else 120.0), label=f"Thema: {t['title'][:36]}")
+                    expected_duration_s=(200.0 if web_enrich else (90.0 if not _use_opus else 120.0)), label=f"Thema: {t['title'][:36]}")
                 out = (sr2.get("stdout") or "").strip()
                 if sr2.get("ok") and out.startswith("###") and "Was bleibt" in out:
                     return out
@@ -13852,7 +13862,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
     from concurrent.futures import ThreadPoolExecutor, as_completed
     results = {}
     done = [0]
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         futs = {pool.submit(_write_topic, t): ti for ti, t in enumerate(topics)}
         for f in as_completed(futs):
             ti = futs[f]
@@ -13863,6 +13873,9 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
             done[0] += 1
             _report(f"Themen-Synthese: Beitrag {done[0]}/{len(topics)} geschrieben…",
                     0.2 + 0.5 * done[0] / max(len(topics), 1))
+    _mopus = sum(1 for t in topics if t.get("_model_used") == "opus")
+    _msonnet = sum(1 for t in topics if t.get("_model_used") == "sonnet")
+    print(f"[synthese] Modell-Mix: {_mopus} Themen auf Opus (Verwebung/schwer), {_msonnet} auf Sonnet 5 (Einzelquelle) — 8 parallel.", file=sys.stderr)
     for ti, t in enumerate(topics):
         md = results.get(ti)
         if not md:
@@ -14553,7 +14566,7 @@ def run_briefing_via_claude_cli_chunked(
     # zusammen mit Claude-Desktop + Browser den Speicher sprengen → macOS killt die
     # App (genau das ist am 05.06. passiert). 2 ist speichersicher und ~2× schneller
     # als sequenziell.
-    max_workers = max(1, min(6, n_groups))
+    max_workers = max(1, min(8, n_groups))
     group_results: list = [None] * n_groups  # Reihenfolge der Gruppen erhalten
 
     def _run_group(gi: int, group: list) -> Optional[list]:
