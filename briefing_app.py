@@ -754,9 +754,12 @@ def _render_mobile_input_buffer():
     const fields = [
       {{label: 'Artikel-URLs', key: 'audio_briefing_urls_text'}},
       {{label: 'Paywall-Artikel', key: 'audio_briefing_paywall_text'}},
-      {{label: 'Podcast-Zusammenfassungen', key: 'audio_briefing_podcast_text'}},
       {{label: 'Roh-Transkript', key: 'audio_briefing_raw_inbox'}},
     ];
+    // Podcast-Feld ist RAUS aus dem Puffer: Es wird programmatisch gefüllt und server-
+    // seitig persistiert — der Puffer hat es beim Laden 2x mit altem Stand überschrieben
+    // (Hydrations-Lücke: Feld wirkt kurz leer). Alten Schnappschuss einmalig entsorgen:
+    localStorage.removeItem('audio_briefing_podcast_text');
 
     if (clearToken && localStorage.getItem(clearMarkerKey) !== clearToken) {{
       fields.forEach((field) => localStorage.removeItem(field.key));
@@ -775,8 +778,14 @@ def _render_mobile_input_buffer():
 
       if (!textarea.dataset.audioBriefingBound) {{
         const saved = localStorage.getItem(field.key);
-        // NUR in LEERE Felder zurückspielen: Server-Inhalt (z.B. eingefügte
-        // Zusammenfassungen) darf nie von einem alten Handy-Puffer überschrieben werden.
+        // NUR in LEERE Felder — und erst nach 3 Leer-Sichtungen (~2,5s): direkt nach dem
+        // Laden ist das Feld kurz leer, obwohl der Server gleich Inhalt liefert
+        // (Hydrations-Lücke — hat 2x alte Stände über neue geschrieben).
+        const emptySeen = parseInt(textarea.dataset.abEmptySeen || '0', 10);
+        if (saved && !textarea.value && emptySeen < 3) {{
+          textarea.dataset.abEmptySeen = String(emptySeen + 1);
+          return;
+        }}
         if (saved && !textarea.value) {{
           textarea.value = saved;
           textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
