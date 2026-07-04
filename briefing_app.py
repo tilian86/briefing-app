@@ -2291,6 +2291,50 @@ st.markdown('<div id="nav-podcast" style="position:relative; top:-64px;"></div>'
 st.markdown("#### Podcast-Zusammenfassungen")
 
 _BRIEFING_JOB_STATUS_PATH = _APP_DIR / ".briefing_job_status.json"
+_QUOTA_CAL_USD_PER_WINDOW = 120.0  # Startschätzung: „$-Äquivalent" pro 5h-Fenster — kalibriert sich mit Florians Limit-Anzeigen
+
+
+def _sum_cli_usage(t0_iso: str, t1_iso: str) -> dict:
+    """Summiert Token-Verbrauch der Briefing-CLI-Aufrufe im Zeitfenster aus den
+    Claude-Sitzungsprotokollen (~/.claude/projects). Fable = meine Steuer-Session → raus."""
+    import glob as _glob
+    t0 = datetime.datetime.fromisoformat(t0_iso).astimezone()
+    t1 = datetime.datetime.fromisoformat(t1_iso).astimezone() + datetime.timedelta(minutes=3)
+    by_model = {}
+    for p in _glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
+        try:
+            if os.path.getmtime(p) < t0.timestamp() - 60:
+                continue
+            for line in open(p, encoding="utf-8", errors="ignore"):
+                if '"usage"' not in line or '"assistant"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    ts = datetime.datetime.fromisoformat(d["timestamp"].replace("Z", "+00:00")).astimezone()
+                except Exception:
+                    continue
+                if not (t0 <= ts <= t1):
+                    continue
+                msg = d.get("message") or {}
+                model = msg.get("model") or "?"
+                if "fable" in model:
+                    continue
+                u = msg.get("usage") or {}
+                b = by_model.setdefault(model.split("-202")[0], {"in": 0, "out": 0, "cr": 0, "cw": 0, "n": 0})
+                b["in"] += u.get("input_tokens") or 0
+                b["out"] += u.get("output_tokens") or 0
+                b["cr"] += u.get("cache_read_input_tokens") or 0
+                b["cw"] += u.get("cache_creation_input_tokens") or 0
+                b["n"] += 1
+        except Exception:
+            continue
+    price = {"claude-sonnet-5": (3, 15, 3.75, 0.3), "claude-opus-4": (5, 25, 6.25, 0.5), "claude-haiku": (1, 5, 1.25, 0.1)}
+    usd = 0.0
+    for m, b in by_model.items():
+        pi, po, pcw, pcr = next((v for k, v in price.items() if m.startswith(k)), (3, 15, 3.75, 0.3))
+        usd += (b["in"] * pi + b["out"] * po + b["cw"] * pcw + b["cr"] * pcr) / 1e6
+    return {"by_model": by_model, "usd_equiv": round(usd, 2),
+            "pct_window_est": round(100 * usd / _QUOTA_CAL_USD_PER_WINDOW, 1)}
 
 
 def _briefing_worker(cfg: dict, status: dict):
@@ -2330,6 +2374,13 @@ def _briefing_worker(cfg: dict, status: dict):
         # Hauptversion zuerst, WhatsApp direkt danach, weitere Längen zum Schluss
         plan = [plan[0]] + ([p for p in plan if p["wa"]] if wa else []) + [p for p in plan[1:] if not p["wa"]]
 
+        if cfg["upload"]:
+            try:
+                from reader_upload import is_logged_in as _is_li
+                if not _is_li():
+                    status["login_warn"] = True
+            except Exception:
+                pass
         base_suffix = "_claude_synthese" if cfg["synth"] else "_claude"
         n_steps = len(plan) + 1
         prepared = None
@@ -2405,6 +2456,11 @@ def _briefing_worker(cfg: dict, status: dict):
             except Exception:
                 pass
 
+        try:
+            _upd(step="🪙 Token-Bilanz wird erstellt…", ratio=0.99)
+            status["tokens"] = _sum_cli_usage(cfg["ts_iso"], datetime.datetime.now().isoformat())
+        except Exception:
+            pass
         _upd(step="✅ Fertig.", ratio=1.0, done=True)
     except Exception as exc:
         _upd(step=f"❌ Unerwarteter Fehler: {str(exc)[:150]}", done=True, failed=True)
@@ -4870,7 +4926,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "specials": split_special_topics(st.session_state.get("special_topics_text") or ""),
                 "upload": bool(st.session_state.get("auto_reader_upload", True)),
                 "cleanup_days": int(st.session_state.get("reader_cleanup_days", 14) or 0),
-                "model": _cli_model, "ts": _now9.strftime("%Y-%m-%d_%H-%M"),
+                "model": _cli_model, "ts": _now9.strftime("%Y-%m-%d_%H-%M"), "ts_iso": _now9.isoformat(),
                 "archive_dir": _resolve_archive_dir(for_write=True),
                 "title_base": f"Tagesbriefing {_wd_de9[_now9.weekday()]} {_now9.strftime('%d.%m.')}",
             }
@@ -4904,6 +4960,8 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             except Exception:
                 pass
             st.caption(f"⏳ {_j.get('step', '…')}{_el}")
+            if _j.get("login_warn"):
+                st.warning("🎧 ElevenReader ist abgemeldet — der Upload am Ende würde fehlschlagen. Jetzt kurz den Einmal-Login machen (der Lauf läuft ungestört weiter).")
             if st.button("⏹️ Abbrechen (nach der laufenden Phase)", key="briefing_job_cancel"):
                 _j["cancel"] = True
                 st.caption("Abbruch vorgemerkt — greift nach der aktuellen Version.")
@@ -4948,6 +5006,11 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             st.caption(" · ".join(_bits))
         if _job_done.get("cleanup"):
             st.caption(f"🗑️ {_job_done['cleanup']} alte Bibliothekseinträge aufgeräumt.")
+        _tok = _job_done.get("tokens")
+        if _tok:
+            _bm = _tok.get("by_model") or {}
+            _parts = [f"{m.replace('claude-', '')}: {b['n']}× ({(b['in'] + b['cw']) // 1000}k rein / {b['out'] // 1000}k raus)" for m, b in sorted(_bm.items()) if b.get("n")]
+            st.caption(f"🪙 Verbrauch: ≈{_tok.get('usd_equiv', '?')} $-Äquivalent · geschätzt ~{_tok.get('pct_window_est', '?')} % deines 5-Stunden-Fensters (Schätzwert, eicht sich) · " + " · ".join(_parts))
         _dl_items = [r9 for r9 in (_job_done.get("results") or []) if r9.get("ok")]
         if _dl_items:
             _dl_cols = st.columns(min(len(_dl_items), 3))
