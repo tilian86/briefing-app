@@ -95,7 +95,7 @@ def _looks_logged_in(page) -> bool:
         return False
 
 
-def is_logged_in_fast() -> bool | None:
+def is_logged_in_fast():
     """Schneller Cookie-Vorcheck (~Millisekunden) ohne Browserstart. Returns:
     False = definitiv abgemeldet (Auth-Cookie fehlt/abgelaufen) → früh warnen;
     True  = Cookie da (wahrscheinlich angemeldet, der echte Upload prüft autoritativ);
