@@ -2555,7 +2555,9 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
     if _ib.get("errors"):
         st.caption(f"⚠️ {len(_ib['errors'])} Feed(s) nicht erreichbar (u.a. {_ib['errors'][0][:50]}…)")
     if _ib_eps:
-        _apple_ok = apple_container_accessible()
+        if "_apple_ok_cached" not in st.session_state:
+            st.session_state["_apple_ok_cached"] = apple_container_accessible()
+        _apple_ok = st.session_state["_apple_ok_cached"]
 
         def _inbox_done(_g):
             # NUR bei wirklich eingefügtem Transkript aufrufen: markiert erledigt
@@ -3092,7 +3094,14 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
     # Kopieren in der App schneidet ab). Workflow: Episode in Apple Podcasts öffnen →
     # Transkript anzeigen → hier erscheint sie zum Zusammenfassen.
     st.markdown("---")
-    _ttml_list = list_apple_podcast_transcripts(limit=10)
+    # 316ms-Glob+SQLite pro Rerun vermeiden: max. alle 20s neu (oder nach 🗑️/Import).
+    import time as _t_ttml
+    _now_ttml = _t_ttml.time()
+    if (_now_ttml - float(st.session_state.get("_ttml_list_ts", 0)) > 20) or st.session_state.get("_ttml_list_dirty"):
+        st.session_state["_ttml_list_cache"] = list_apple_podcast_transcripts(limit=10)
+        st.session_state["_ttml_list_ts"] = _now_ttml
+        st.session_state["_ttml_list_dirty"] = False
+    _ttml_list = st.session_state.get("_ttml_list_cache") or []
     if _ttml_list:
         st.caption("🍎 Oder aus Apple Podcasts übernehmen (Transkript dort einmal öffnen, dann taucht es hier auf — voller Text, ohne Abschneiden):")
         import datetime as _dt_ttml
@@ -3122,6 +3131,7 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                 if st.button("🗑️", key=f"apple_ttml_del_{_ti}",
                              help="Aus dieser Liste (und der Nachlese) entfernen — z.B. wenn du das Transkript nur versehentlich geöffnet hast. Apples Cache-Datei bleibt unberührt."):
                     mark_ttml_imported([_t["path"]])
+                    st.session_state["_ttml_list_dirty"] = True
                     st.session_state["_podcast_inbox_last_msg"] = f"🗑️ Entfernt: {_t.get('title') or (_t['preview'] or '?')[:50]}"
                     st.rerun()
         if st.button(f"🍎 Ausgewählte zusammenfassen und unten anfügen ({len(_ttml_selected)})", key="summarize_apple_ttml",
@@ -3175,7 +3185,11 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             st.rerun()
     else:
         st.caption("🍎 Tipp: Auch Apple Podcasts kann als Quelle dienen — Transkript einer Episode dort einmal öffnen, dann erscheint sie hier zum direkten Zusammenfassen (voller Text, ohne das Abschneide-Problem beim Kopieren).")
-@st.fragment(run_every=4)
+_rjc_active = bool(
+    st.session_state.get("_round_jobs") or st.session_state.get("apple_round")
+    or st.session_state.get("whisper_running") or st.session_state.get("whisper_queue")
+)
+@st.fragment(run_every=(4 if _rjc_active else None))
 def _round_jobs_collector():
     """Sammelt fertige Hintergrund-Zusammenfassungen (Apple-Runde) ein — läuft alle 4s
     als Fragment, ohne die Seite zu blockieren. Erfolg → unten anfügen + aus Inbox."""
@@ -4969,7 +4983,15 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             _save_draft()
             _threading.Thread(target=_briefing_worker, args=(_cfg, _status), daemon=True).start()
             st.rerun()
-    @st.fragment(run_every=2)
+    _bjf_active = bool(st.session_state.get("_briefing_job") and not st.session_state.get("_briefing_job", {}).get("done"))
+    if not _bjf_active:
+        try:
+            _fjp = json.loads(_BRIEFING_JOB_STATUS_PATH.read_text(encoding="utf-8"))
+            _fjp_age = (datetime.datetime.now() - datetime.datetime.fromisoformat(_fjp.get("started"))).total_seconds()
+            _bjf_active = (not _fjp.get("done")) and _fjp_age < 9000
+        except Exception:
+            pass
+    @st.fragment(run_every=(2 if _bjf_active else None))
     def _briefing_job_fragment():
         _j = st.session_state.get("_briefing_job")
         if not _j:
