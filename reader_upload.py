@@ -95,6 +95,31 @@ def _looks_logged_in(page) -> bool:
         return False
 
 
+def is_logged_in_fast() -> bool | None:
+    """Schneller Cookie-Vorcheck (~Millisekunden) ohne Browserstart. Returns:
+    False = definitiv abgemeldet (Auth-Cookie fehlt/abgelaufen) → früh warnen;
+    True  = Cookie da (wahrscheinlich angemeldet, der echte Upload prüft autoritativ);
+    None  = unklar (Cookie-DB nicht lesbar) → Aufrufer soll nicht warnen."""
+    import sqlite3, time as _t
+    db = os.path.join(PROFILE_DIR, "Default", "Cookies")
+    if not os.path.exists(db):
+        return False
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+        try:
+            row = con.execute(
+                "SELECT CAST((expires_utc/1000000 - 11644473600) AS INT) FROM cookies "
+                "WHERE host_key LIKE '%elevenreader%' AND name='xi_website_auth_hint' LIMIT 1"
+            ).fetchone()
+        finally:
+            con.close()
+        if not row:
+            return False
+        return row[0] > _t.time()
+    except Exception:
+        return None
+
+
 def is_logged_in() -> bool:
     """Headless-Check, ob das Automatik-Profil angemeldet ist (~10-15s)."""
     p, ctx = _launch(headless=True)

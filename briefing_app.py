@@ -2383,8 +2383,8 @@ def _briefing_worker(cfg: dict, status: dict):
 
         if cfg["upload"]:
             try:
-                from reader_upload import is_logged_in as _is_li
-                if not _is_li():
+                from reader_upload import is_logged_in_fast as _is_lf
+                if _is_lf() is False:   # nur bei definitivem Abgemeldet warnen (schnell, kein Browser)
                     status["login_warn"] = True
             except Exception:
                 pass
