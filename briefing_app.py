@@ -2497,6 +2497,35 @@ def _briefing_worker(cfg: dict, status: dict):
         _upd(step=f"❌ Unerwarteter Fehler: {str(exc)[:150]}", done=True, failed=True)
 
 
+def _meta_worker(cfg, status):
+    """Wochen-Meta im Hintergrund-Thread — klick-/reloadfest wie der Briefing-Worker."""
+    import json as _mj
+    def _u(**kw):
+        status.update(kw)
+    try:
+        def _cb(step, prog):
+            status["step"] = step
+            status["ratio"] = max(0.0, min(float(prog), 1.0))
+        r = run_meta_briefing_via_claude_cli(
+            archive_dir=cfg["archive_dir"], days=cfg["days"], model=cfg["model"],
+            progress_callback=_cb, cli_path=cfg["cli_path"])
+        if not r or r.get("ok") is False:
+            _u(done=True, failed=True, step=f"❌ {(r or {}).get('error', 'keine Briefings gefunden')}")
+            return
+        status["result"] = {"elapsed": int(r.get("elapsed_seconds") or 0), "txt_path": r.get("txt_path")}
+        if cfg["upload"] and r.get("txt_path"):
+            _u(step="🎧 Upload in die ElevenReader-Bibliothek…", ratio=0.95)
+            try:
+                from reader_upload import upload_briefing_txt as _up
+                _ur = _up(r["txt_path"], cfg["title"])
+                status["result"]["upload"] = ("ok: " + cfg["title"]) if _ur.get("ok") else ("fail: " + str(_ur.get("error"))[:90])
+            except Exception as _e:
+                status["result"]["upload"] = "fail: " + str(_e)[:90]
+        _u(done=True, step="✅ Fertig.", ratio=1.0)
+    except Exception as exc:
+        _u(done=True, failed=True, step=f"❌ Unerwartet: {str(exc)[:120]}")
+
+
 def _bg_feed_summarize(_ep):
     """Worker-Thread für den 🚀-Kombi-Knopf: Feed-Transkript laden + zusammenfassen.
     Gibt dasselbe Ergebnis-Format wie summarize_podcast_transcript_via_cli zurück."""
@@ -5997,11 +6026,11 @@ with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
         if _meta_age_d is not None and _meta_age_d >= 7:
             st.info(f"⏰ Dein letztes Wochen-Briefing ist {_meta_age_d} Tage her — Zeit für ein neues?")
         meta_button_cli = st.button(
-            "🤖 Wochen-Meta + Coach via Claude",
+            "🤖 Wochen-Meta + Coach via Claude (Hintergrund)",
             key="meta_briefing_cli_button",
             use_container_width=True,
             type="primary",
-            disabled=not _meta_cli_available,
+            disabled=(not _meta_cli_available) or bool(st.session_state.get("_meta_job") and not st.session_state.get("_meta_job", {}).get("done")),
             help="Nutzt dein Claude Max-Abo via CLI. Kostet nichts, ~3–5 Min Wartezeit.",
         )
     with meta_col2:
@@ -6056,52 +6085,48 @@ with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
             help="Nur als Backup, falls der Claude-CLI-Pfad nicht verfügbar ist.",
         )
 
-    if meta_button_cli:
+    _meta_job = st.session_state.get("_meta_job")
+    _meta_active = bool(_meta_job and not _meta_job.get("done"))
+    if meta_button_cli and not _meta_active:
         if not _meta_available_briefings:
             st.warning(f"Keine Tagesbriefing-Texte der letzten {int(meta_days)} Tage gefunden. Erstelle erst Tagesbriefings — sie landen automatisch im lokalen Spiegel, aus dem das Wochen-Meta liest.")
-            st.stop()
-        meta_progress = st.progress(0)
-        meta_status = st.empty()
+        else:
+            import threading as _mth
+            _mcfg = {"archive_dir": str(_meta_archive_dir), "days": int(meta_days), "model": meta_cli_model,
+                     "cli_path": _meta_cli_path, "upload": bool(st.session_state.get("auto_reader_upload", True)),
+                     "title": f"Wochenbriefing bis {datetime.datetime.now().strftime('%d.%m.')}"}
+            _mstatus = {"started": datetime.datetime.now().isoformat(), "step": "Wird gestartet…", "ratio": 0.0, "done": False}
+            st.session_state["_meta_job"] = _mstatus
+            st.session_state.pop("_meta_job_shown", None)
+            _mth.Thread(target=_meta_worker, args=(_mcfg, _mstatus), daemon=True).start()
+            st.rerun()
 
-        def _meta_progress(step, progress):
-            meta_progress.progress(max(0.0, min(progress, 1.0)))
-            meta_status.caption(step)
+    @st.fragment(run_every=(2 if _meta_active else None))
+    def _meta_job_fragment():
+        _mj = st.session_state.get("_meta_job")
+        if not _mj:
+            return
+        if not _mj.get("done"):
+            st.progress(float(_mj.get("ratio") or 0))
+            st.caption(f"⏳ {_mj.get('step', '…')} — läuft im Hintergrund, du kannst weiterarbeiten.")
+        elif not st.session_state.get("_meta_job_shown"):
+            st.session_state["_meta_job_shown"] = True
+            st.rerun(scope="app")
+    _meta_job_fragment()
 
-        try:
-            result = run_meta_briefing_via_claude_cli(
-                archive_dir=str(_meta_archive_dir),
-                days=int(meta_days),
-                model=meta_cli_model,
-                progress_callback=_meta_progress,
-                cli_path=_meta_cli_path,
-            )
-        except Exception as exc:
-            result = {"ok": False, "error": f"Unerwarteter Fehler: {exc}"}
-        meta_progress.empty()
-        meta_status.empty()
-        if result is None:
-            st.warning(f"Keine Briefing-Texte der letzten {int(meta_days)} Tage im Archiv gefunden.")
-        elif result.get("ok") is False:
-            st.error(f"Wochen-Briefing via Claude fehlgeschlagen: {result.get('error')}")
+    if _meta_job and _meta_job.get("done"):
+        if _meta_job.get("failed"):
+            st.error(f"Wochen-Briefing fehlgeschlagen: {_meta_job.get('step')}")
             st.caption("Tipp: den Backup-API-Block in diesem Abschnitt nutzen (ca. USD 0.20-0.50).")
         else:
-            _g_elapsed = result.get("elapsed_seconds") or 0
-            st.success(f"✅ Wochen-Briefing fertig in {_g_elapsed:.0f}s — 0,00 € Kosten")
-            st.session_state["meta_briefing_result"] = result
-            st.session_state["last_meta_created_iso"] = datetime.datetime.now().isoformat()
-            _save_draft()
-            if st.session_state.get("auto_reader_upload", True) and result.get("txt_path"):
-                try:
-                    from reader_upload import upload_briefing_txt as _up_meta
-                    _mt_title = f"Wochenbriefing bis {datetime.datetime.now().strftime('%d.%m.')}"
-                    with st.spinner(f"🎧 Sende an ElevenReader: {_mt_title}…"):
-                        _mur = _up_meta(result["txt_path"], _mt_title)
-                    if _mur.get("ok"):
-                        st.success(f"🎧 {_mt_title} liegt in deiner ElevenReader-Bibliothek.")
-                    else:
-                        st.warning(f"🎧 Meta-Upload: {_mur.get('error')}")
-                except Exception as _mex:
-                    st.warning(f"🎧 Meta-Upload übersprungen: {_mex}")
+            _mr = _meta_job.get("result") or {}
+            st.success(f"✅ Wochen-Briefing fertig in {_mr.get('elapsed', 0)}s — 0,00 €"
+                       + (" · 🎧 im ElevenReader" if str(_mr.get("upload", "")).startswith("ok") else ""))
+            if str(_mr.get("upload", "")).startswith("fail"):
+                st.warning(f"🎧 Upload: {_mr['upload'][6:]}")
+            if not st.session_state.get("last_meta_created_iso", "").startswith(datetime.datetime.now().strftime("%Y-%m-%d")):
+                st.session_state["last_meta_created_iso"] = datetime.datetime.now().isoformat()
+                _save_draft()
 
     if meta_button:
         if not _meta_available_briefings:
