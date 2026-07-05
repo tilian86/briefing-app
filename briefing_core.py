@@ -13817,9 +13817,10 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
             wmin = base_min + (per_src // 2) * (n_src - 1)
             wmax = min(base_max + per_src * (n_src - 1), cap)
         prompt = _TOPIC_SYNTH_PROMPT.format(topic_title=t["title"], word_min=wmin, word_max=wmax)
-        prompt += ("\n\nBUDGET-DISZIPLIN: Halte das Wortbudget STRIKT ein — es ist eine Obergrenze, "
-                   "kein Ziel. Der Magazin-Stil ändert Ton und Dramaturgie, NICHT die Länge. "
-                   "Bei Themen mit nur einer Quelle bleib nah am Minimum.")
+        prompt += (f"\n\nHARTE OBERGRENZE: HÖCHSTENS {wmax} Wörter — das ist eine feste Grenze, kein Ziel. "
+                   "Lieber deutlich darunter. Der Magazin-Stil ändert Ton und Dramaturgie, NICHT die Länge. "
+                   "Bei Themen mit nur einer Quelle bleib nah am Minimum. Ein einzelner Strandfund oder eine "
+                   "Kuriosität bekommt 2-4 Sätze, egal wie ausführlich die Quelle ist.")
         if "_wmin" in t:
             prompt += (f"\n\nGEWICHTUNG: Tragweite {t.get('weight', 3)}/5 — {t.get('_note', '')}. "
                        "Das Wortbudget ist ein Richtwert: bei dünner Substanz DEUTLICH unterschreiten, "
@@ -13852,6 +13853,23 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
                     expected_duration_s=(200.0 if web_enrich else (90.0 if not _use_opus else 120.0)), label=f"Thema: {t['title'][:36]}")
                 out = (sr2.get("stdout") or "").strip()
                 if sr2.get("ok") and out.startswith("###") and "Was bleibt" in out:
+                    # Budget-Durchsetzung: >60% über Obergrenze → EIN Kürz-Nachlauf (selten,
+                    # ~1 Beitrag/Lauf). Verhindert Runaway-Beiträge (698 W aus 1 Quelle).
+                    if len(out.split()) > wmax * 1.6:
+                        try:
+                            _cut = _run_claude_cli_subprocess_streaming(
+                                [cli, "--print", "--output-format", "text", "--model", "sonnet",
+                                 "--dangerously-skip-permissions", "--effort", "low"],
+                                f"Kürze diesen Vorlese-Beitrag auf HÖCHSTENS {wmax} Wörter, ohne wichtige Fakten/Namen/Zahlen "
+                                f"zu verlieren. Behalte Format exakt bei: ### Titel, Fließtext, am Ende eine Zeile 'Was bleibt:' "
+                                f"mit einem Satz. NUR den gekürzten Beitrag ausgeben.\n\n{out}",
+                                timeout_seconds=120, expected_duration_s=25.0, label=f"Kürzen: {t['title'][:30]}")
+                            _co = (_cut.get("stdout") or "").strip()
+                            if _cut.get("ok") and _co.startswith("###") and "Was bleibt" in _co and len(_co.split()) < len(out.split()):
+                                print(f"[synthese] Budget-Nachlauf: '{t['title'][:40]}' {len(out.split())}→{len(_co.split())} W (Limit {wmax}).", file=sys.stderr)
+                                return _co
+                        except Exception:
+                            pass
                     return out
             except Exception:
                 pass
