@@ -8511,6 +8511,43 @@ def _record_archived_file(path) -> None:
 _RECENT_QUOTES_PATH = _LOCAL_META_MIRROR_DIR / ".recent_quotes.json"
 
 
+_BANNED_QUOTES = [
+    "Wir sehen die Dinge nicht, wie sie sind, sondern wie wir sind.",
+    "Es gibt Jahrzehnte, in denen nichts passiert; und es gibt Wochen, in denen Jahrzehnte passieren.",
+    "Es ist nicht die stärkste Spezies, die überlebt, auch nicht die intelligenteste, sondern jene, die sich am besten dem Wandel anpasst.",
+]
+
+
+def _quote_is_blocked(q: str) -> bool:
+    """Ist dieses Schlusszitat gesperrt (Blocklist oder zuletzt verwendet)? Normalisiert."""
+    def _norm(s):
+        return re.sub(r"[^a-zäöüß]", "", (s or "").lower())
+    nq = _norm(q)
+    if len(nq) < 12:
+        return False
+    pool = list(_BANNED_QUOTES) + _load_recent_quotes(limit=12)
+    def _lcs_len(a, b):
+        # längste gemeinsame Teilzeichenkette (fängt Paraphrasen mit gleichem markanten Teil)
+        m = [0] * (len(b) + 1); best = 0
+        for i in range(len(a)):
+            prev = 0
+            for j in range(len(b)):
+                cur = m[j + 1]
+                if a[i] == b[j]:
+                    m[j + 1] = prev + 1; best = max(best, m[j + 1])
+                else:
+                    m[j + 1] = 0
+                prev = cur
+        return best
+    for p in pool:
+        npq = _norm(p)
+        if len(npq) < 12:
+            continue
+        if npq[:38] in nq or nq[:38] in npq or _lcs_len(nq, npq) >= 16:
+            return True
+    return False
+
+
 def _load_recent_quotes(limit: int = 10) -> list:
     """Zuletzt verwendete Schlusszitate (für Rotation — LLMs haben Lieblingszitate)."""
     try:
@@ -14846,16 +14883,17 @@ def run_briefing_via_claude_cli_chunked(
         + f"TAGESZEIT: {_tageszeit_label(now.hour)}\n\n"
         + "\n".join(digest_lines) + "\n"
     )
-    # Zitat-Rotation: LLMs greifen immer wieder zu denselben Lieblingszitaten
-    # (z.B. 3× Anaïs Nin in einer Woche). Zuletzt verwendete ausschließen.
-    _recent_quotes = _load_recent_quotes()
-    if _recent_quotes:
-        finalize_handoff += (
-            "\nZULETZT VERWENDETE SCHLUSSZITATE — verwende KEINES davon erneut. "
-            "Wähle ein frisches, thematisch passendes Zitat einer ANDEREN Person "
-            "(gern auch mal überraschend: Wissenschaft, Literatur, Sport, Film):\n"
-            + "\n".join(f"- {q}" for q in _recent_quotes) + "\n"
-        )
+    # Zitat-Rotation: LLMs greifen immer wieder zu denselben Lieblingszitaten (Opus
+    # ignoriert die reine Ausschlussliste hartnäckig — z.B. Anaïs Nin "wie wir sind").
+    # Deshalb: dauerhafte Blocklist + zuletzt verwendete, als LETZTE (salienteste) Anweisung.
+    _recent_quotes = list(dict.fromkeys(list(_BANNED_QUOTES) + _load_recent_quotes()))
+    finalize_handoff += (
+        "\n\n⛔ SCHLUSSZITAT — HARTE REGEL (WICHTIGSTE ANWEISUNG FÜRS ZITAT): "
+        "Verwende KEINES der folgenden Zitate und KEINE Variante/Übersetzung davon. "
+        "Wähle bewusst aus einem ANDEREN Bereich als Philosophie-Aphorismen — z.B. "
+        "Wissenschaft, Sport, Musik, Film, Literatur, Geschichte — und von einer anderen Person:\n"
+        + "\n".join(f"- {q}" for q in _recent_quotes) + "\n"
+    )
     # Schlussteil ist die kreative Synthese → Opus 4.8 (stärker). Wenn Opus mal
     # nicht liefert, sauberer Fallback auf das Basis-Modell (Sonnet), damit das
     # Briefing nie ohne Recap/Essenz endet.
@@ -14864,6 +14902,23 @@ def run_briefing_via_claude_cli_chunked(
     if not final_secs:
         print("[chunked-cli] Opus-Schlussteil leer — Fallback auf Basis-Modell.", file=sys.stderr)
         final_secs = _one_cli_call(finalize_handoff, "Schlussteil (Fallback)", 0.86, 0.04)
+    # DURCHSETZUNG: greift Opus trotz Anweisung zum gesperrten Lieblingszitat, EIN
+    # Neuversuch mit dem konkret verbotenen Zitat (Ausschlussliste allein reicht nicht).
+    def _closing_quote(secs):
+        for _s in (secs or []):
+            if _s.get("_verabschiedung"):
+                _qs = re.findall(r"[„\"“]([^\"“”„]{15,160})[\"“”]", _s.get("content", "") or "")
+                return _qs[-1].strip() if _qs else ""
+        return ""
+    _cq = _closing_quote(final_secs)
+    if _cq and _quote_is_blocked(_cq):
+        print(f"[zitat] gesperrtes Schlusszitat erkannt ('{_cq[:40]}…') → Neuversuch.", file=sys.stderr)
+        _retry = finalize_handoff + (f"\n\n⛔ Das Zitat »{_cq}« ist DEFINITIV VERBOTEN — nimm ein völlig "
+                                     "anderes aus Wissenschaft/Sport/Musik/Film von einer anderen Person.")
+        _fs2 = _one_cli_call(_retry, "Schlussteil (Zitat-Neuversuch)", 0.78, 0.02, model_override=_CLI_JUDGE_MODEL)
+        if _fs2 and not _quote_is_blocked(_closing_quote(_fs2)):
+            final_secs = _fs2
+            print(f"[zitat] frisches Zitat: '{_closing_quote(_fs2)[:50]}'", file=sys.stderr)
     if final_secs:
         # Top-3-Vorschau (_preview) kommt GANZ AN DEN ANFANG, Recap/Essenz/Verabschiedung ans Ende.
         _preview_secs = [s for s in final_secs if s.get("_preview")]
