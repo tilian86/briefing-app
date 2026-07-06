@@ -2470,7 +2470,7 @@ def _briefing_worker(cfg: dict, status: dict):
                     _upd(step=f"🎧 {rp['label']}: Upload in die ElevenReader-Bibliothek…")
                     try:
                         from reader_upload import upload_briefing_epub, upload_briefing_txt
-                        _ttl = cfg["title_base"] + (f" – {rp['label']}" if len(depths) > 1 else "") + (" 🧵" if cfg["synth"] else "")
+                        _ttl = cfg["title_base"] + f" · {rp['label']}" + (" 🧵" if cfg["synth"] else "")
                         _ur = upload_briefing_epub(_txtp, _ttl)
                         if not _ur.get("ok"):
                             _ur = upload_briefing_txt(_txtp, _ttl)

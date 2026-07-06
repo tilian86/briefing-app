@@ -12572,11 +12572,11 @@ Unten findest du die Titel und Kernaussagen ALLER Beiträge des heutigen Briefin
 0) TOP-3-VORSCHAU (kommt GANZ AN DEN ANFANG des Briefings)
 ### Die drei wichtigsten Themen heute
 
-1. Ein prägnanter Satz zur wichtigsten Story des Tages — mit dem konkreten Namen/Zahl, worum es geht.
-2. Ein prägnanter Satz zur zweitwichtigsten Story.
-3. Ein prägnanter Satz zur drittwichtigsten Story.
+1. ZWEI Sätze zur wichtigsten Story des Tages: erst worum es konkret geht (mit Namen/Zahl), dann warum es zählt bzw. was auf dem Spiel steht.
+2. ZWEI Sätze zur zweitwichtigsten Story (gleiches Muster: Was + Warum).
+3. ZWEI Sätze zur drittwichtigsten Story.
 
-Wähle nach Tragweite und Relevanz für den Hörer, NICHT nach Reihenfolge im Briefing. Keine Wetter-/Podcast-Nennung hier, es sei denn, sie ist wirklich das Top-Thema.
+Je Punkt ~30-45 Wörter — griffig, aber mit Substanz, nicht nur eine Schlagzeile. Wähle nach Tragweite und Relevanz für den Hörer, NICHT nach Reihenfolge im Briefing. Keine Wetter-/Podcast-Nennung hier, es sei denn, sie ist wirklich das Top-Thema.
 
 1) RÜCKBLICK
 ### Rückblick
