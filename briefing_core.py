@@ -13792,12 +13792,16 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
             t["_wmin"], t["_wmax"] = _smart_topic_budget(t.get("weight", 3), len(t["members"]), short=ultra_compact)
             t["_note"] = _SMART_WEIGHT_NOTES.get(int(t.get("weight") or 3), _SMART_WEIGHT_NOTES[3])
         _est = sum((t["_wmin"] + t["_wmax"]) // 2 for t in topics)
-        if _est > 8000:
-            _f = max(0.65, 8000 / _est)
+        # Gesamtbremse skaliert mit Themenzahl UND Modus — sonst squasht ein fester
+        # Deckel die normale Variante bei vielen Themen auf Kurz-Niveau (Bug 06.07.):
+        # kurz ~105 W/Thema, normal ~200 W/Thema als Zielobergrenze.
+        _cap_total = len(topics) * (105 if ultra_compact else 200)
+        if _est > _cap_total:
+            _f = max(0.7, _cap_total / _est)
             for t in topics:
                 if int(t.get("weight") or 3) <= 3:
                     t["_wmin"], t["_wmax"] = int(t["_wmin"] * _f), int(t["_wmax"] * _f)
-            print(f"[synthese] Intelligente Länge: ~{_est} Wörter geschätzt → Gewicht ≤3 auf Faktor {_f:.2f} gedrosselt.", file=sys.stderr)
+            print(f"[synthese] Intelligente Länge: ~{_est} > Deckel {_cap_total} ({len(topics)} Themen, {'kurz' if ultra_compact else 'normal'}) → Gewicht ≤3 × {_f:.2f}.", file=sys.stderr)
         _w_hist = {}
         for t in topics:
             _w_hist[t.get("weight", 3)] = _w_hist.get(t.get("weight", 3), 0) + 1
@@ -13822,9 +13826,12 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
                    "Bei Themen mit nur einer Quelle bleib nah am Minimum. Ein einzelner Strandfund oder eine "
                    "Kuriosität bekommt 2-4 Sätze, egal wie ausführlich die Quelle ist.")
         if "_wmin" in t:
-            prompt += (f"\n\nGEWICHTUNG: Tragweite {t.get('weight', 3)}/5 — {t.get('_note', '')}. "
+            # Gewichts-Zahl ja, aber KEINE Label-Wörter wie "Randnotiz"/"Schwerpunkt" —
+            # das Modell echot sie sonst in den Text (Leak 06.07.: "Nur eine Randnotiz…").
+            prompt += (f"\n\nGEWICHTUNG intern: Tragweite {t.get('weight', 3)}/5. "
                        "Das Wortbudget ist ein Richtwert: bei dünner Substanz DEUTLICH unterschreiten, "
-                       "bei echter Tiefe maßvoll (bis ~20%) überziehen.")
+                       "bei echter Tiefe maßvoll (bis ~20%) überziehen. Verwende die Wörter 'Randnotiz', "
+                       "'Schwerpunkt' o.Ä. NICHT im Beitrag — sie sind nur eine interne Längen-Anweisung.")
         if narrative_style:
             prompt += _SYNTH_NARRATIVE_STYLE
         if web_enrich:
