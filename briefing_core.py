@@ -13719,7 +13719,7 @@ def _condense_weather_for_synthesis(weather_text: str, cli_path: Optional[str] =
 
 def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, ultra_compact=False,
                                   cli_path=None, progress_callback=None, timeout_seconds=600,
-                                  narrative_style=False, web_enrich=False, smart_length=False):
+                                  narrative_style=False, web_enrich=False, smart_length=False, smart_cap=0):
     """Themen-Synthese: bündelt alle Quellen thematisch (Opus) und schreibt pro Thema
     EINEN verwobenen Vorlesetext (Opus, parallel max 2). Vollständigkeits-Garantie:
     jede Quelle landet in genau einem Thema (Nachzügler werden als Einzelthemen ergänzt).
@@ -13789,19 +13789,20 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         # kurz, Wichtiges voll erzählt. Sanfte Gesamtbremse schützt vor Monster-PDFs,
         # drosselt aber nur Gewicht ≤3 (Top-Themen bleiben unangetastet).
         for t in topics:
-            t["_wmin"], t["_wmax"] = _smart_topic_budget(t.get("weight", 3), len(t["members"]), short=ultra_compact)
+            t["_wmin"], t["_wmax"] = _smart_topic_budget(t.get("weight", 3), len(t["members"]), short=False)
             t["_note"] = _SMART_WEIGHT_NOTES.get(int(t.get("weight") or 3), _SMART_WEIGHT_NOTES[3])
         _est = sum((t["_wmin"] + t["_wmax"]) // 2 for t in topics)
-        # Gesamtbremse skaliert mit Themenzahl UND Modus — sonst squasht ein fester
-        # Deckel die normale Variante bei vielen Themen auf Kurz-Niveau (Bug 06.07.):
-        # kurz ~105 W/Thema, normal ~200 W/Thema als Zielobergrenze.
-        _cap_total = len(topics) * (105 if ultra_compact else 200)
+        # Gesamtlänge über smart_cap (Wörter/Thema-Obergrenze): S=75, M=105, L=210.
+        # Deckel skaliert mit Themenzahl; nur Gewicht ≤3 wird gedrosselt (Top-Themen bleiben).
+        _cpt = smart_cap if smart_cap else 105
+        _floor = 0.4 if _cpt <= 85 else 0.55
+        _cap_total = len(topics) * _cpt
         if _est > _cap_total:
-            _f = max(0.7, _cap_total / _est)
+            _f = max(_floor, _cap_total / _est)
             for t in topics:
                 if int(t.get("weight") or 3) <= 3:
                     t["_wmin"], t["_wmax"] = int(t["_wmin"] * _f), int(t["_wmax"] * _f)
-            print(f"[synthese] Intelligente Länge: ~{_est} > Deckel {_cap_total} ({len(topics)} Themen, {'kurz' if ultra_compact else 'normal'}) → Gewicht ≤3 × {_f:.2f}.", file=sys.stderr)
+            print(f"[synthese] Intelligente Länge: ~{_est} > Deckel {_cap_total} ({len(topics)} Themen, cap {_cpt}/Thema) → Gewicht ≤3 × {_f:.2f}.", file=sys.stderr)
         _w_hist = {}
         for t in topics:
             _w_hist[t.get("weight", 3)] = _w_hist.get(t.get("weight", 3), 0) + 1
@@ -14443,6 +14444,7 @@ def run_briefing_via_claude_cli_chunked(
     auto_repair: bool = False,
     special_topics: Optional[List[str]] = None,
     smart_length: bool = False,
+    smart_cap: int = 0,
 ) -> dict:
     """Wie run_briefing_via_claude_cli, aber in Häppchen — zuverlässig bei großen
     Briefings, weil kein einzelner CLI-Aufruf zu lange läuft (Socket-Abbruch-Schutz).
@@ -14570,7 +14572,7 @@ def run_briefing_via_claude_cli_chunked(
             ultra_compact=ultra_compact, cli_path=cli,
             progress_callback=progress_callback, timeout_seconds=timeout_seconds,
             narrative_style=synthesis_narrative, web_enrich=synthesis_web_enrich,
-            smart_length=smart_length)
+            smart_length=smart_length, smart_cap=smart_cap)
 
     # In Gruppen teilen
     groups = [] if topic_synthesis else ([items[i:i + chunk_size] for i in range(0, len(items), chunk_size)] or [[]])
