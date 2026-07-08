@@ -2489,6 +2489,10 @@ def _briefing_worker(cfg: dict, status: dict):
                             if _tx and _tx[0].strip() in ("Audio-Briefing", ""):
                                 _tx[0] = _ttl
                                 open(_txtp, "w", encoding="utf-8").write("\n".join(_tx))
+                                # Spiegel-Kopie synchron halten (Wochen-Meta & Analysen lesen von dort)
+                                _mirp = os.path.expanduser(f"~/.briefing_meta_mirror/Texte/{os.path.basename(_txtp)}")
+                                if os.path.exists(_mirp):
+                                    open(_mirp, "w", encoding="utf-8").write("\n".join(_tx))
                         except Exception:
                             pass
                         _ur = upload_briefing_epub(_txtp, _ttl)
@@ -4683,6 +4687,9 @@ if _pw_n > 0:
 _pc_n = len(_podcast_blocks) if _podcast_blocks else 0
 if _pc_n > 0:
     _ovr_parts.append(f"{_pc_n} Podcast{'s' if _pc_n != 1 else ''}")
+_sp_n = len(split_special_topics(st.session_state.get("special_topics_text") or ""))
+if _sp_n > 0:
+    _ovr_parts.append(f"🧠 {_sp_n} Sonderthema{'' if _sp_n == 1 else '/-themen'}")
 if _ovr_parts:
     _ovr_pills = "".join(f"<span class='briefing-pill'>{html.escape(p)}</span>" for p in _ovr_parts)
     st.markdown(f"<div class='briefing-pill-row' style='margin-top:0.6em;margin-bottom:0.3em;'>{_ovr_pills}</div>", unsafe_allow_html=True)
