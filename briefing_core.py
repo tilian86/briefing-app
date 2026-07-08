@@ -14436,7 +14436,12 @@ def _rate_items_via_cli(items, cli_path=None):
     return n
 
 
-def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_compact=False, smart_length=False):
+_SMART_ARTICLE_BUDGETS_S = {5: (150, 220), 4: (110, 160), 3: (75, 115), 2: (45, 75), 1: (25, 50)}
+_SMART_ARTICLE_BUDGETS_L = {5: (300, 440), 4: (220, 320), 3: (150, 230), 2: (90, 140), 1: (50, 90)}
+
+
+def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_compact=False, smart_length=False,
+                         smart_cap=0, podcast_mode="woven"):
     """Baut den Handoff-Text für eine Item-Gruppe (chunked CLI-Pfad)."""
     parts = [_CLAUDE_CHUNK_ARTICLE_PROMPT]
     parts.append(f"\nERSTELLT AM: {now.strftime('%A, %d. %B %Y, %H:%M Uhr')}\n")
@@ -14447,7 +14452,9 @@ def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_comp
             "Halte dich daran — Top-Themen voll erzählen, Randnotizen in 2-3 Sätzen. Das Budget ist "
             "ein Richtwert: bei dünner Substanz DEUTLICH unterschreiten, bei echter Tiefe bis ~20% "
             "überziehen. Vollständig bleiben: Kernfakten, Namen und Zahlen immer nennen. "
-            "Die oben erwähnte KOMPAKT-MODUS-Zeile entfällt heute — es gelten die TRAGWEITE-Budgets.\n\n"
+            "Die oben erwähnte KOMPAKT-MODUS-Zeile entfällt heute — es gelten die TRAGWEITE-Budgets. "
+            "Die Einstufung ist INTERN: verwende Wörter wie 'Randnotiz', 'Tragweite' oder 'Schwerpunkt' "
+            "NIE im Beitragstext.\n\n"
         )
     elif ultra_compact:
         parts.append(
@@ -14464,12 +14471,26 @@ def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_comp
     for i, it in enumerate(items, start=1):
         kind_label = {"article": "ARTIKEL", "paywall": "PAYWALL-TEXT", "podcast": "PODCAST"}.get(it["kind"], "ARTIKEL")
         parts.append("─" * 50 + f"\n{kind_label} {i}\n" + "─" * 50 + "\n")
-        if smart_active and "_weight" in it:
+        _is_pod = it.get("kind") == "podcast"
+        if _is_pod and podcast_mode == "verbatim":
+            # Original übernehmen: kein Budget — der Prompt-Grundsatz "wie geliefert
+            # übernehmen" gilt uneingeschränkt, auch im Kompakt-/Intelligent-Modus.
+            parts.append("PODCAST-REGEL: Diese Zusammenfassung 1:1 übernehmen (nur formal säubern) — "
+                         "NICHT kürzen. Kompakt-Modus und Tragweite-Budgets gelten für diesen Beitrag NICHT.\n")
+        elif smart_active and "_weight" in it:
             _bw = it["_weight"]
-            _tbl = ({5: (150, 220), 4: (110, 160), 3: (75, 115), 2: (45, 75), 1: (25, 50)}
-                    if ultra_compact else _SMART_ARTICLE_BUDGETS)
+            if ultra_compact or (smart_cap and smart_cap <= 85):
+                _tbl = _SMART_ARTICLE_BUDGETS_S
+            elif smart_cap and smart_cap >= 150:
+                _tbl = _SMART_ARTICLE_BUDGETS_L
+            else:
+                _tbl = _SMART_ARTICLE_BUDGETS
             _bmin, _bmax = _tbl.get(_bw, _tbl[3])
-            parts.append(f"TRAGWEITE: {_bw}/5 — Wortbudget {_bmin}-{_bmax} ({_SMART_WEIGHT_NOTES.get(_bw, '')})\n")
+            if _is_pod and podcast_mode == "soft":
+                _bmin, _bmax = max(_bmin, 220), max(_bmax, 340)
+            parts.append(f"TRAGWEITE: {_bw}/5 — Wortbudget {_bmin}-{_bmax} Wörter\n")
+        elif _is_pod and podcast_mode == "soft":
+            parts.append("PODCAST-REGEL: substanziell erhalten (~250-350 Wörter) — nicht aufs Kompakt-Maß eindampfen.\n")
         parts.append(it["body"].strip() + "\n\n")
     parts.append("─" * 50 + "\nENDE DIESES AUSSCHNITTS\n" + "─" * 50 + "\n")
     parts.append("Erstelle jetzt die Sections für genau diese Beiträge und gib den JSON-Block zurück.\n")
@@ -14663,7 +14684,8 @@ def run_briefing_via_claude_cli_chunked(
             now, compact_mode, group,
             weather_text=weather_text if gi == 0 else None,
             ultra_compact=ultra_compact,
-            smart_length=(smart_length and not topic_synthesis))
+            smart_length=(smart_length and not topic_synthesis),
+            smart_cap=smart_cap, podcast_mode=podcast_mode)
         secs = _one_cli_call(handoff, f"Gruppe {gi + 1}/{n_groups}", 0.0, 0.0, progress_cb=None)
         # Podcast-Typ DETERMINISTISCH stempeln: Wir wissen aus den Eingaben, welche
         # Items Podcasts sind — Claude setzt das type-Feld gelegentlich falsch

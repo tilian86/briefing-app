@@ -2437,7 +2437,7 @@ def _briefing_worker(cfg: dict, status: dict):
                 special_topics=(cfg["specials"] if i == 0 else None),
                 smart_length=bool(rp["depth"].startswith("Intelligent")),
                 smart_cap={"Intelligent kompakt": 75, "Intelligent": 105, "Intelligent ausführlich": 210}.get(rp["depth"], 0),
-                podcast_mode=(cfg.get("podcast_mode", "woven") if rp["synth"] else "woven"),
+                podcast_mode=cfg.get("podcast_mode", "woven"),
                 progress_callback=_cb,
             )
             entry = {"label": rp["label"], "ok": bool(r.get("ok")), "pdf": str(out_pdf),
@@ -4754,13 +4754,13 @@ with _mode_col2:
             help="Fehlt deinen Quellen ein zentraler Baustein (Wer ist die Person? Vorgeschichte? Schlüsselzahl?), darf Opus GEZIELT im Netz nachschlagen — max. 1-2 Suchen pro Thema, nur seriöse Quellen (Agenturen, Öffentlich-Rechtliche, Primärquellen). Jede Ergänzung wird im Text klar gekennzeichnet (Zur Einordnung, laut Reuters: …). Nur Lückenfüllung, nie neue Themen; bei Widerspruch gewinnen DEINE Quellen. Macht den Lauf etwas langsamer.",
         )
         st.selectbox(
-            "🎙️ Podcasts in der Synthese",
+            "🎙️ Podcast-Behandlung",
             options=["Einweben (kürzen)", "Länger erhalten", "Original übernehmen"],
             key="podcast_synth_mode",
-            help="Wie deine kuratierten Podcast-Zusammenfassungen ins Synthese-Briefing kommen: "
-                 "Einweben = wie alle Quellen thematisch verwoben und aufs Budget gekürzt (~100-200 W, Standard). "
-                 "Länger erhalten = eingewoben, aber mit Mindestlänge (~300 W), damit die Substanz bleibt. "
-                 "Original übernehmen = deine Zusammenfassung 1:1 unverändert als eigener Podcast-Block am Ende.",
+            help="Wie deine kuratierten Podcast-Zusammenfassungen ins Briefing kommen — gilt in Synthese UND klassisch: "
+                 "Einweben = wie alle Quellen behandelt und aufs Budget gekürzt (~100-200 W, Standard; klassisch: Kompakt-/Tragweite-Budget gilt auch für Podcasts). "
+                 "Länger erhalten = mit Mindestlänge ~250-350 W, damit die Substanz bleibt. "
+                 "Original übernehmen = deine Zusammenfassung 1:1 unverändert (Synthese: eigener Podcast-Block am Ende; klassisch: als eigener Beitrag ohne Kürzung).",
         )
 with _mode_col3:
     # Altlasten normalisieren: früher gab es "Standard" — auf gültige Option mappen,
