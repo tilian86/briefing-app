@@ -2239,7 +2239,10 @@ if _truncated:
     with st.expander(f"❌ Details + Aktionen — {len(_truncated)} abgeschnittene Blöcke", expanded=True):
         for t in _truncated:
             block_no = t["index"] + 1
-            st.markdown(f"**Block {block_no}** — nur {t['content_length']} Zeichen Inhalt vor dem Paywall-Marker")
+            if t.get("marker"):
+                st.markdown(f"**Block {block_no}** — Paywall-Marker „{t['marker']}“ gefunden, nur {t['content_length']} Zeichen Inhalt davor")
+            else:
+                st.markdown(f"**Block {block_no}** — {t.get('reason', 'verdächtig kurz')}")
             if t.get("url"):
                 st.markdown(f"  → URL: `{t['url']}`")
             else:

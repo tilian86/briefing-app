@@ -984,11 +984,34 @@ def _get_http_session() -> requests.Session:
 _PAYWALL_MARKERS = [
     "Sie haben bereits ein Abo",
     "Jetzt weiterlesen mit",
+    "Jetzt weiterlesen",
     "Kennenlernabo",
     "Jahresabo",
+    "Monatsabo",
+    "Probeabo",
     "Kostenlos Digitalzugang freischalten",
     "Unbegrenzt lesen auf",
     "Weitere Angebote",
+    # SWP / Schwäbisches Tagblatt / generisch (Vergleich case-insensitiv!)
+    "SWP+",
+    "Tagblatt+",
+    "Sie wollen mehr",
+    "Digital-Abo",
+    "Digitalabo",
+    "Anmelden und weiterlesen",
+    "Registrieren und weiterlesen",
+    "Jetzt registrieren",
+    "Jetzt anmelden",
+    "Bereits Abonnent",
+    "Schon Abonnent",
+    "Sind Sie bereits Abonnent",
+    "Jetzt kostenlos testen",
+    "Angebot auswählen",
+    "Zugriff auf alle Artikel",
+    "Alle Artikel frei lesen",
+    "Premium-Artikel",
+    "exklusiv für Abonnenten",
+    "Artikel für Abonnenten",
 ]
 
 
@@ -1000,13 +1023,29 @@ def detect_truncated_paywall_blocks(blocks: List[str]) -> List[dict]:
     """
     truncated = []
     for idx, block in enumerate(blocks):
-        # Paywall-Marker gefunden?
+        # Paywall-Marker gefunden? (case-insensitiv — "JETZT ANMELDEN" zählt auch)
+        _bl = block.lower()
         found_marker = None
         for marker in _PAYWALL_MARKERS:
-            if marker in block:
+            if marker.lower() in _bl:
                 found_marker = marker
                 break
         if not found_marker:
+            # TEASER-HEURISTIK: Ausgeloggt kopiert man oft nur Titel+Anriss OHNE die
+            # Abo-Box (kein Marker!). Verdächtig: sehr kurz und/oder mitten im Satz
+            # abgebrochen — fertige Summaries (Endmarker) sind ausgenommen.
+            if "Weiter geht's" in block or "Ende der Podcastzusammenfassung" in block:
+                continue
+            _words = len(block.split())
+            _tail = block.rstrip()[-1:] if block.rstrip() else ""
+            _mid_sentence = _tail not in (".", "!", "?", "\"", "'", "«", ")") or block.rstrip().endswith(("…", "..."))
+            if _words < 100 and (_mid_sentence or _words < 60):
+                _um = re.search(r"https?://[^\s)]+", block)
+                truncated.append({
+                    "index": idx, "url": _um.group(0) if _um else None,
+                    "content_length": len(block.strip()), "marker": None,
+                    "reason": f"verdächtig kurz ({_words} Wörter{', endet mitten im Satz' if _mid_sentence else ''}) — Teaser statt Volltext?",
+                })
             continue
         # Text vor dem Paywall-Marker extrahieren (das ist der tatsächliche Artikel)
         marker_pos = block.find(found_marker)
