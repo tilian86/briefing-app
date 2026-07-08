@@ -2451,8 +2451,14 @@ def _briefing_worker(cfg: dict, status: dict):
             results.append(entry)
             _upd(results=results)
             if not r.get("ok"):
-                _upd(step=f"❌ {rp['label']} fehlgeschlagen: {str(r.get('error'))[:120]}", done=True, failed=True)
-                return
+                if i == 0:
+                    # Hauptversion gescheitert → nichts Brauchbares, ganzer Job scheitert.
+                    _upd(step=f"❌ {rp['label']} fehlgeschlagen: {str(r.get('error'))[:120]}", done=True, failed=True)
+                    return
+                # Spätere Version (Limit/Auslastung): Hauptversion ist schon fertig+hochgeladen —
+                # diese Version überspringen statt den ganzen Job zu verwerfen (07.07.: int-m nach int-s).
+                _upd(step=f"⚠️ {rp['label']} übersprungen ({str(r.get('error'))[:80]}) — Hauptversion ist fertig.")
+                continue
             prepared = r.get("prepared")
             if i == 0 and prepared:
                 try:
@@ -2471,6 +2477,15 @@ def _briefing_worker(cfg: dict, status: dict):
                     try:
                         from reader_upload import upload_briefing_epub, upload_briefing_txt
                         _ttl = cfg["title_base"] + f" · {rp['label']}" + (" 🧵" if cfg["synth"] else "")
+                        # Erste Textzeile = ElevenReader-Anzeigetitel → Modus reinschreiben
+                        # (statt generischem "Audio-Briefing"). Datei liegt schon, nur Zeile 1 tauschen.
+                        try:
+                            _tx = open(_txtp, encoding="utf-8").read().split("\n")
+                            if _tx and _tx[0].strip() in ("Audio-Briefing", ""):
+                                _tx[0] = _ttl
+                                open(_txtp, "w", encoding="utf-8").write("\n".join(_tx))
+                        except Exception:
+                            pass
                         _ur = upload_briefing_epub(_txtp, _ttl)
                         if not _ur.get("ok"):
                             _ur = upload_briefing_txt(_txtp, _ttl)

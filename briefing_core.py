@@ -14704,6 +14704,16 @@ def run_briefing_via_claude_cli_chunked(
         all_sections = _synth_sections
         failed_groups = _synth_failed
         n_groups = _synth_topics
+        # Massen-Ausfall (Limit/Auslastung): lieber LAUT scheitern als ein 2-Seiten-Stub
+        # hochladen (07.07.: 2. Lauf direkt nach dem 1. → fast alle Themen fehlgeschlagen,
+        # trotzdem als "fertig" hochgeladen). Ab 40% Ausfall: kein brauchbares Briefing.
+        if n_groups >= 6 and failed_groups >= n_groups * 0.4:
+            return {"ok": False,
+                    "error": (f"{failed_groups} von {n_groups} Themen fehlgeschlagen — "
+                              "wahrscheinlich Limit oder Auslastung erreicht. Kein brauchbares Briefing "
+                              "erzeugt. Tipp: kurz warten (das 5-Std-Limit füllt sich wieder auf) und nicht "
+                              "zwei volle Briefings direkt hintereinander fahren."),
+                    "raw_response": "", "sections_count": 0, "completeness": None, "output_pdf_path": None}
 
     if not all_sections:
         return {"ok": False,
