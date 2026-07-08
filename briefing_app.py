@@ -169,6 +169,7 @@ _DRAFT_DEFAULTS = {
     "topic_synthesis_mode": True,
     "synthesis_narrative_style": True,
     "synthesis_web_enrich": True,
+    "podcast_synth_mode": "Einweben (kürzen)",
     "auto_reader_upload": True,
     "reader_cleanup_days": 14,
     "whatsapp_pdf_additional": True,
@@ -2436,6 +2437,7 @@ def _briefing_worker(cfg: dict, status: dict):
                 special_topics=(cfg["specials"] if i == 0 else None),
                 smart_length=bool(rp["depth"].startswith("Intelligent")),
                 smart_cap={"Intelligent kompakt": 75, "Intelligent": 105, "Intelligent ausführlich": 210}.get(rp["depth"], 0),
+                podcast_mode=(cfg.get("podcast_mode", "woven") if rp["synth"] else "woven"),
                 progress_callback=_cb,
             )
             entry = {"label": rp["label"], "ok": bool(r.get("ok")), "pdf": str(out_pdf),
@@ -4751,6 +4753,15 @@ with _mode_col2:
             "🌐 Fehlendes intelligent ergänzen (Websuche)", value=True, key="synthesis_web_enrich",
             help="Fehlt deinen Quellen ein zentraler Baustein (Wer ist die Person? Vorgeschichte? Schlüsselzahl?), darf Opus GEZIELT im Netz nachschlagen — max. 1-2 Suchen pro Thema, nur seriöse Quellen (Agenturen, Öffentlich-Rechtliche, Primärquellen). Jede Ergänzung wird im Text klar gekennzeichnet (Zur Einordnung, laut Reuters: …). Nur Lückenfüllung, nie neue Themen; bei Widerspruch gewinnen DEINE Quellen. Macht den Lauf etwas langsamer.",
         )
+        st.selectbox(
+            "🎙️ Podcasts in der Synthese",
+            options=["Einweben (kürzen)", "Länger erhalten", "Original übernehmen"],
+            key="podcast_synth_mode",
+            help="Wie deine kuratierten Podcast-Zusammenfassungen ins Synthese-Briefing kommen: "
+                 "Einweben = wie alle Quellen thematisch verwoben und aufs Budget gekürzt (~100-200 W, Standard). "
+                 "Länger erhalten = eingewoben, aber mit Mindestlänge (~300 W), damit die Substanz bleibt. "
+                 "Original übernehmen = deine Zusammenfassung 1:1 unverändert als eigener Podcast-Block am Ende.",
+        )
 with _mode_col3:
     # Altlasten normalisieren: früher gab es "Standard" — auf gültige Option mappen,
     # sonst crasht st.radio (gespeicherter Wert nicht in options).
@@ -5018,6 +5029,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "depths": list(_depths_to_run), "synth": bool(st.session_state.get("topic_synthesis_mode", True)),
                 "magazin": bool(st.session_state.get("synthesis_narrative_style", True)),
                 "web": bool(st.session_state.get("synthesis_web_enrich", True)),
+                "podcast_mode": {"Einweben (kürzen)": "woven", "Länger erhalten": "soft", "Original übernehmen": "verbatim"}.get(st.session_state.get("podcast_synth_mode", "Einweben (kürzen)"), "woven"),
                 "wa": bool(st.session_state.get("whatsapp_pdf_additional", True)),
                 "qc": bool(st.session_state.get("quality_check_enabled", True)),
                 "specials": split_special_topics(st.session_state.get("special_topics_text") or ""),

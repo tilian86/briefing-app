@@ -13756,7 +13756,8 @@ def _condense_weather_for_synthesis(weather_text: str, cli_path: Optional[str] =
 
 def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, ultra_compact=False,
                                   cli_path=None, progress_callback=None, timeout_seconds=600,
-                                  narrative_style=False, web_enrich=False, smart_length=False, smart_cap=0):
+                                  narrative_style=False, web_enrich=False, smart_length=False, smart_cap=0,
+                                  podcast_mode="woven"):
     """Themen-Synthese: bündelt alle Quellen thematisch (Opus) und schreibt pro Thema
     EINEN verwobenen Vorlesetext (Opus, parallel max 2). Vollständigkeits-Garantie:
     jede Quelle landet in genau einem Thema (Nachzügler werden als Einzelthemen ergänzt).
@@ -13778,6 +13779,13 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         b = (it.get("body") or "").strip()
         head, sep, rest = b.partition("\n\n")
         return rest.strip() if (sep and head.upper().startswith("QUELLE")) else b
+
+    # 🎙️ Podcast-Modus: "verbatim" = Original 1:1 (aus dem Cluster ausklinken, unverändert
+    # als eigener Block); "soft" = eingewoben mit Mindestbudget; "woven" = wie andere Quellen.
+    _pod_verbatim = []
+    if podcast_mode == "verbatim":
+        _pod_verbatim = [it for it in items if it.get("kind") == "podcast"]
+        items = [it for it in items if it.get("kind") != "podcast"]
 
     # 1) Themen-Clustering (ein kleiner Opus-Call über Kurzauszüge)
     _report("Themen-Synthese: Opus bündelt die Quellen zu Themen…", 0.18)
@@ -13858,6 +13866,10 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         else:
             wmin = base_min + (per_src // 2) * (n_src - 1)
             wmax = min(base_max + per_src * (n_src - 1), cap)
+        # 🎙️ Soft-Modus: Podcast-Themen behalten mehr Substanz (Mindestbudget), damit
+        # Florians kuratierte Zusammenfassungen nicht auf ~100 Wörter eingedampft werden.
+        if podcast_mode == "soft" and any(items[m_ - 1].get("kind") == "podcast" for m_ in t["members"]):
+            wmin, wmax = max(wmin, 220), max(wmax, 340)
         prompt = _TOPIC_SYNTH_PROMPT.format(topic_title=t["title"], word_min=wmin, word_max=wmax)
         prompt += (f"\n\nHARTE OBERGRENZE: HÖCHSTENS {wmax} Wörter — das ist eine feste Grenze, kein Ziel. "
                    "Lieber deutlich darunter. Der Magazin-Stil ändert Ton und Dramaturgie, NICHT die Länge. "
@@ -13951,6 +13963,18 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
             if lab and lab not in labels:
                 labels.append(lab)
         sections.append({"type": "article", "content": md, "source_label": " + ".join(labels[:4])})
+
+    # 🎙️ Verbatim-Podcasts: Original-Zusammenfassungen 1:1 anhängen (type=podcast →
+    # sortiert ans Ende, wird als eigener Podcast-Block vorgelesen, unverändert).
+    for _pit in _pod_verbatim:
+        _pbody = _body_core(_pit)
+        _pbody = re.sub(r"\n*Ende der Podcastzusammenfassung\.?\s*$", "", _pbody).strip()
+        if _pbody:
+            if not _pbody.lstrip().startswith("#"):
+                _pbody = "### " + _pbody
+            sections.append({"type": "podcast", "source_label": _pit.get("label", "Podcast"), "content": _pbody})
+    if _pod_verbatim:
+        print(f"[synthese] {len(_pod_verbatim)} Podcast(s) im Original übernommen (verbatim).", file=sys.stderr)
 
     # 3) Wetter verdichtet voranstellen (Rohdaten wären 400+ Wörter Vorlese-Qual)
     if weather_text and str(weather_text).strip():
@@ -14482,6 +14506,7 @@ def run_briefing_via_claude_cli_chunked(
     special_topics: Optional[List[str]] = None,
     smart_length: bool = False,
     smart_cap: int = 0,
+    podcast_mode: str = "woven",
 ) -> dict:
     """Wie run_briefing_via_claude_cli, aber in Häppchen — zuverlässig bei großen
     Briefings, weil kein einzelner CLI-Aufruf zu lange läuft (Socket-Abbruch-Schutz).
@@ -14609,7 +14634,7 @@ def run_briefing_via_claude_cli_chunked(
             ultra_compact=ultra_compact, cli_path=cli,
             progress_callback=progress_callback, timeout_seconds=timeout_seconds,
             narrative_style=synthesis_narrative, web_enrich=synthesis_web_enrich,
-            smart_length=smart_length, smart_cap=smart_cap)
+            smart_length=smart_length, smart_cap=smart_cap, podcast_mode=podcast_mode)
 
     # In Gruppen teilen
     groups = [] if topic_synthesis else ([items[i:i + chunk_size] for i in range(0, len(items), chunk_size)] or [[]])
