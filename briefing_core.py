@@ -14060,6 +14060,50 @@ def _strip_transcript_noise(text: str) -> str:
     return t.strip()
 
 
+_PODCAST_FAITHFULNESS_PROMPT = """Du prüfst eine Podcast-ZUSAMMENFASSUNG gegen ihr TRANSKRIPT — nur auf klare Faktentreue.
+
+MELDE NUR, wenn die Zusammenfassung dem Transkript FAKTISCH WIDERSPRICHT:
+- Ergebnis/Aussage ins Gegenteil verdreht (z.B. "scheiterte" statt "gewann")
+- falsche Zahl, falscher Name, verwechselte Person
+- etwas als sicher behauptet, das im Transkript klar anders/offen ist
+
+KEIN Fehler (NICHT melden): Kürzungen, Auslassungen, Paraphrasen, andere Wortwahl,
+Zusammenfassen mehrerer Aussagen. Im Zweifel NICHT melden — lieber eine echte Warnung
+zu wenig als Fehlalarme. Wenn alles stimmig ist: leere Liste.
+
+Antworte AUSSCHLIESSLICH als JSON: {"concerns": ["<Ort/Aussage>: <was widerspricht>", ...]}"""
+
+
+def _check_podcast_summary_faithfulness(summary: str, transcript: str, cli_path=None) -> list:
+    """Vergleicht die fertige Zusammenfassung mit dem Transkript und meldet NUR klare
+    faktische Widersprüche. Ändert NICHTS — reine Warnung (kein Verschlimmbesserungs-Risiko).
+    Returns: Liste kurzer Hinweise (leer, wenn alles stimmig oder Check nicht möglich)."""
+    cli = cli_path or _locate_claude_cli()
+    if not cli or not summary or not transcript:
+        return []
+    try:
+        _tx = " ".join(transcript.split())[:55000]
+        payload = (_PODCAST_FAITHFULNESS_PROMPT
+                   + "\n\n=== ZUSAMMENFASSUNG ===\n\n" + summary
+                   + "\n\n=== TRANSKRIPT (Auszug) ===\n\n" + _tx)
+        sr = _run_claude_cli_subprocess_streaming(
+            [cli, "--print", "--output-format", "text", "--model", "sonnet",
+             "--dangerously-skip-permissions", "--effort", "low",
+             "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."],
+            payload, timeout_seconds=200, expected_duration_s=30.0, label="Podcast-Faktencheck")
+        if not sr.get("ok"):
+            return []
+        m = re.search(r"\{.*\}", (sr.get("stdout") or ""), re.DOTALL)
+        if not m:
+            return []
+        data = json.loads(m.group(0))
+        out = [str(c).strip() for c in (data.get("concerns") or []) if str(c).strip()]
+        return out[:5]
+    except Exception as exc:
+        print(f"[podcast-faktencheck] übersprungen: {exc}", file=sys.stderr)
+        return []
+
+
 def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str] = None,
                                          model: str = "sonnet", timeout_seconds: int = 900) -> dict:
     """Verdichtet EIN rohes Podcast-Transkript zur Briefing-tauglichen Zusammenfassung
@@ -14118,7 +14162,11 @@ def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str
         summary += "\n\nEnde der Podcastzusammenfassung"
     if truncated_note:
         summary = summary.replace("Ende der Podcastzusammenfassung", f"{truncated_note}\n\nEnde der Podcastzusammenfassung", 1)
-    return {"ok": True, "summary": summary, "error": None, "elapsed_seconds": time.time() - t0}
+    _concerns = _check_podcast_summary_faithfulness(summary, cleaned, cli_path=cli)
+    if _concerns:
+        print(f"[podcast-faktencheck] {len(_concerns)} Hinweis(e): {_concerns}", file=sys.stderr)
+    return {"ok": True, "summary": summary, "error": None, "concerns": _concerns,
+            "elapsed_seconds": time.time() - t0}
 
 
 _RAW_TRANSCRIPT_MIN_CHARS = 4000  # ohne Endmarker + länger als das = rohes Transkript

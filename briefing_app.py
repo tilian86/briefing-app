@@ -3205,8 +3205,8 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                     _txt = f"Podcast-Episode: {_t['title']}\n\n{_txt}"
                 _r = summarize_podcast_transcript_via_cli(_txt)
                 if _r.get("ok"):
-                    return (_t, _tn, _r["summary"], None)
-                return (_t, _tn, None, str(_r.get("error", "?"))[:120])
+                    return (_t, _tn, _r["summary"], None, _r.get("concerns") or [])
+                return (_t, _tn, None, str(_r.get("error", "?"))[:120], [])
 
             from concurrent.futures import ThreadPoolExecutor as _TtmlPool, as_completed as _ttml_done
             _stat2.caption(f"0/{len(_ttml_selected)} fertig — zwei Folgen laufen parallel (~1-3 Min pro Folge)…")
@@ -3215,12 +3215,16 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                 _tfuts = {_tpx.submit(_process_ttml, _t): _t for _t in _ttml_selected}
                 for _tf in _ttml_done(_tfuts):
                     try:
-                        _t, _tn, _sumt, _errt = _tf.result()
+                        _t, _tn, _sumt, _errt, _tconc = _tf.result()
                     except Exception as _tex:
-                        _t, _tn, _sumt, _errt = _tfuts[_tf], "?", None, str(_tex)[:120]
+                        _t, _tn, _sumt, _errt, _tconc = _tfuts[_tf], "?", None, str(_tex)[:120], []
                     _tdn += 1
                     if _sumt:
                         _new_sums.append(_sumt)
+                        if _tconc:
+                            _pc = st.session_state.get("_podcast_concerns") or []
+                            _pc.append({"title": _tn, "concerns": _tconc})
+                            st.session_state["_podcast_concerns"] = _pc
                         mark_ttml_imported([_t["path"]])
                     else:
                         _ttml_errs.append(f"{_tn[:40]}: {_errt}")
@@ -3264,6 +3268,10 @@ def _round_jobs_collector():
             if _base is None:
                 _base = st.session_state.get("podcast_text")
             st.session_state["podcast_text_pending_value"] = combine_podcast_field(_base, [_r["summary"]])
+            if _r.get("concerns"):
+                _pc = st.session_state.get("_podcast_concerns") or []
+                _pc.append({"title": _j.get("title", "Podcast"), "concerns": _r["concerns"]})
+                st.session_state["_podcast_concerns"] = _pc
             if _j.get("path"):
                 mark_ttml_imported([_j["path"]])
             if _j.get("guid"):
@@ -3315,6 +3323,20 @@ podcast_text = st.text_area(
 _podcast_blocks = split_podcast_summaries(podcast_text) if podcast_text.strip() else []
 if _podcast_blocks:
     st.caption(f"📦 **{len(_podcast_blocks)}** Podcast-Zusammenfassung(en) im Feld — bereit fürs Briefing.")
+# 🔎 Fakten-Hinweise aus dem Podcast-Check (nur WARNUNG, Text wurde NICHT geändert)
+_pconc = st.session_state.get("_podcast_concerns") or []
+if _pconc:
+    _n_conc = sum(len(x["concerns"]) for x in _pconc)
+    with st.expander(f"🔎 {_n_conc} möglicher Fakten-Hinweis in {len(_pconc)} Zusammenfassung(en) — kurz prüfen", expanded=True):
+        st.caption("Der Faktencheck vergleicht jede Zusammenfassung mit ihrem Transkript und meldet mögliche Widersprüche. "
+                   "Es wurde NICHTS geändert — schau die Stelle im Zweifel selbst an (Fehlalarme möglich).")
+        for _e in _pconc:
+            st.markdown(f"**{_e['title'][:70]}**")
+            for _c in _e["concerns"]:
+                st.markdown(f"  ⚠️ {_c}")
+        if st.button("✓ Hinweise gesehen — ausblenden", key="dismiss_podcast_concerns"):
+            st.session_state["_podcast_concerns"] = []
+            st.rerun()
 st.markdown(
     f"<div class='briefing-url-meta'><span class='briefing-url-count'>Aktuell erkannt: <strong>{len(_podcast_blocks)}</strong> {'Blöcke' if len(_podcast_blocks) != 1 else 'Block'}</span></div>",
     unsafe_allow_html=True,
