@@ -11953,6 +11953,13 @@ def build_pdf_from_claude_json(
             _annotate_section_progress_markers(clean_sections)
         except Exception:
             pass
+    # WICHTIG: "Ende des Briefings." vom letzten Beitrag entfernen, wenn danach noch
+    # Rückblick/Essenz/Abschluss folgen (bislang lief das nur im API-Pfad — im Synthese-
+    # Pfad blieb der Marker am letzten Sonderthema/Beitrag kleben, 08.07. beobachtet).
+    try:
+        _strip_premature_briefing_end_markers(clean_sections)
+    except Exception:
+        pass
 
     try:
         create_pdf(clean_sections, output_path, generated_at, document_title="Audio-Briefing")
