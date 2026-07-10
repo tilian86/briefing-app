@@ -287,6 +287,49 @@ def _split_into_chapters(text: str, title: str) -> list:
     return chapters or [(title, text)]
 
 
+def _make_cover_png(title: str) -> bytes:
+    """Erzeugt ein schlichtes Cover (Titel auf dunklem Grund) → ElevenReader zeigt wieder
+    eine Vorschau/Thumbnail wie früher beim PDF. Fällt bei Fehler auf None-Bytes zurück."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import io as _io
+        W, H = 720, 960
+        img = Image.new("RGB", (W, H), (24, 28, 38))
+        d = ImageDraw.Draw(img)
+        d.rectangle([0, 0, W, 12], fill=(210, 90, 60))          # Akzentbalken oben
+        def _font(sz):
+            for p in ("/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                      "/System/Library/Fonts/Helvetica.ttc",
+                      "/Library/Fonts/Arial.ttf"):
+                try:
+                    return ImageFont.truetype(p, sz)
+                except Exception:
+                    continue
+            return ImageFont.load_default()
+        d.text((56, 90), "AUDIO-BRIEFING", font=_font(30), fill=(210, 90, 60))
+        # Titel umbrechen (grob nach ~16 Zeichen/Wortgrenze)
+        words = title.replace(" 🧵", "").split()
+        lines, cur = [], ""
+        for w in words:
+            if len(cur) + len(w) + 1 > 16:
+                lines.append(cur); cur = w
+            else:
+                cur = (cur + " " + w).strip()
+        if cur:
+            lines.append(cur)
+        y = 200
+        big = _font(58)
+        for ln in lines[:6]:
+            d.text((56, y), ln, font=big, fill=(240, 242, 248))
+            y += 78
+        d.text((56, H - 90), "🧵 Themen-Synthese", font=_font(28), fill=(150, 156, 170))
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return b""
+
+
 def build_briefing_epub(text: str, title: str, out_path: str) -> str:
     """Baut ein minimales, valides ePub (Standardbibliothek) mit einem Kapitel pro
     Ressort — damit zeigt ElevenReader eine echte Kapitel-Navigation."""
@@ -318,15 +361,31 @@ def build_briefing_epub(text: str, title: str, out_path: str) -> str:
            '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'
            '<head><title>Inhalt</title></head><body><nav epub:type="toc"><h1>Inhalt</h1><ol>'
            + "".join(navlis) + '</ol></nav></body></html>')
+    _esc = __import__("html").escape
+    # Beschreibung: erste inhaltsstarke Zeile (z.B. Top-3-Vorschau/erster Beitrag) als Vorschau-Text.
+    _desc = ""
+    for _ln in text.splitlines():
+        _s = _ln.strip()
+        if len(_s) > 40 and not _s.startswith(("Tagesbriefing", "Audio-Briefing")) and "Uhr" not in _s[:30]:
+            _desc = _s[:280]
+            break
+    _cover_png = _make_cover_png(title)
+    _cover_manifest = ('<item id="cover-img" href="cover.png" media-type="image/png" properties="cover-image"/>'
+                       if _cover_png else "")
+    _cover_meta = '<meta name="cover" content="cover-img"/>' if _cover_png else ""
     opf = ('<?xml version="1.0" encoding="utf-8"?>\n'
            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">'
            f'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
            f'<dc:identifier id="uid">urn:uuid:{uid}</dc:identifier>'
-           f'<dc:title>{__import__("html").escape(title)}</dc:title>'
-           '<dc:language>de</dc:language>'
-           '<meta xmlns="http://www.idpf.org/2007/opf" property="dcterms:modified">2026-01-01T00:00:00Z</meta>'
+           f'<dc:title>{_esc(title)}</dc:title>'
+           '<dc:creator>Tägliches Audio-Briefing</dc:creator>'
+           + (f'<dc:description>{_esc(_desc)}</dc:description>' if _desc else '')
+           + '<dc:language>de</dc:language>'
+           + _cover_meta
+           + '<meta xmlns="http://www.idpf.org/2007/opf" property="dcterms:modified">2026-01-01T00:00:00Z</meta>'
            '</metadata><manifest>'
            '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+           + _cover_manifest
            + "".join(manifest) + '</manifest><spine>' + "".join(spine) + '</spine></package>')
     container = ('<?xml version="1.0" encoding="utf-8"?>\n'
                  '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
@@ -338,6 +397,8 @@ def build_briefing_epub(text: str, title: str, out_path: str) -> str:
         z.writestr("META-INF/container.xml", container)
         z.writestr("OEBPS/content.opf", opf)
         z.writestr("OEBPS/nav.xhtml", nav)
+        if _cover_png:
+            z.writestr("OEBPS/cover.png", _cover_png)
         for path, content in files:
             z.writestr(path, content)
     return out_path
