@@ -11337,6 +11337,35 @@ def build_claude_handoff_package(
     return "".join(parts)
 
 
+_WD_DE_FULL = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+_MON_DE_FULL = ["", "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+                "August", "September", "Oktober", "November", "Dezember"]
+
+
+def _briefing_greeting(now) -> str:
+    """Warmer, zeitabhängiger Gesprochen-Auftakt vor der Top-3 (deterministisch,
+    leicht rotierend nach Tag). Kein Kaltstart mit '1, 2, 3' mehr."""
+    h = now.hour
+    if h < 5:
+        gruss = "Hallo"
+    elif h < 11:
+        gruss = "Guten Morgen"
+    elif h < 18:
+        gruss = "Guten Tag"
+    else:
+        gruss = "Guten Abend"
+    wd = _WD_DE_FULL[now.weekday()]
+    datum = f"{wd}, den {now.day}. {_MON_DE_FULL[now.month]}"
+    leads = [
+        f"Hier ist dein Tagesbriefing für {datum}.",
+        f"Schön, dass du da bist — dein Überblick für {datum}.",
+        f"Willkommen zu deinem Briefing für {datum}.",
+        f"Dein Tagesüberblick für {datum} ist fertig. Fangen wir an.",
+    ]
+    lead = leads[now.timetuple().tm_yday % len(leads)]
+    return f"{gruss}. {lead}"
+
+
 def _tageszeit_label(hour: int) -> str:
     if hour < 6:
         return "Nacht (nach Mitternacht)"
@@ -15075,8 +15104,16 @@ def run_briefing_via_claude_cli_chunked(
         _preview_secs = [s for s in final_secs if s.get("_preview")]
         _end_secs = [s for s in final_secs if not s.get("_preview")]
         if _preview_secs:
+            # Warmer Gruß VOR die Top-3 (kein '1,2,3'-Kaltstart). Als erster Absatz in
+            # die Vorschau-Section, damit er unter demselben Kapitel gesprochen wird.
+            try:
+                _greet = _briefing_greeting(now)
+                _pv0 = _preview_secs[0]
+                _pv0["content"] = _greet + "\n\n" + (_pv0.get("content") or "")
+            except Exception as _gex:
+                print(f"[chunked-cli] Gruß übersprungen: {_gex}", file=sys.stderr)
             all_sections[0:0] = _preview_secs
-            print(f"[chunked-cli] Top-3-Vorschau vorangestellt.", file=sys.stderr)
+            print(f"[chunked-cli] Top-3-Vorschau + Gruß vorangestellt.", file=sys.stderr)
         all_sections.extend(_end_secs)
     else:
         print("[chunked-cli] Finalisierung fehlgeschlagen — Briefing ohne Recap/Essenz.", file=sys.stderr)
