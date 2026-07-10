@@ -174,6 +174,7 @@ _DRAFT_DEFAULTS = {
     "reader_cleanup_days": 14,
     "whatsapp_pdf_additional": True,
     "last_meta_created_iso": "",
+    "last_weltlage_check_iso": "",
     "briefing_depth_multi": ["Kürzer"],
     "export_pdf": True,
     "genius_summary_mode": "long",
@@ -3349,7 +3350,20 @@ with _pc_scroll_col:
     if st.button("↓ Ende", key="scroll_podcasts", use_container_width=True):
         _scroll_textarea("Podcast-Zusammenfassungen")
 _n_sp0 = len(split_special_topics(st.session_state.get("special_topics_text") or ""))
-with st.expander(f"🧠 Sonderthemen — eigene Fragen ins Briefing{f' ({_n_sp0})' if _n_sp0 else ''}", expanded=False):
+_wl_last = st.session_state.get("last_weltlage_check_iso")
+_wl_days = None
+if _wl_last:
+    try:
+        _wl_days = (datetime.datetime.now() - datetime.datetime.fromisoformat(_wl_last)).days
+    except Exception:
+        _wl_days = None
+_wl_hint = ""
+if _wl_days is None:
+    _wl_hint = " · 🌍 Weltlage-Check verfügbar"
+elif _wl_days >= 2:
+    _wl_hint = f" · 🌍 zuletzt vor {_wl_days} Tg."
+with st.expander(f"🧠 Sonderthemen & 🌍 Weltlage-Check{f' ({_n_sp0})' if _n_sp0 else ''}{_wl_hint}", expanded=False):
+    st.caption("**🌍 Weltlage-Check** (Knopf unten): findet Themen der letzten Tage, die dir entgangen sind, aber wichtig sind — vergleicht die Nachrichtenlage mit deinen Briefings. Darüber die **Sonderthemen**: eigene Fragen, die Opus recherchiert.")
     st.caption("Ein Thema pro Zeile — oder wie gewohnt mit mmm getrennt, dann darf ein Thema auch mehrere Zeilen/Sätze haben. Stichworte oder ganze Fragen. Opus recherchiert dazu gezielt im Netz (seriöse Quellen) und webt je einen angemessen langen Beitrag als eigenen Block ins Briefing. Zuschreibungs-Fragen (Hat X wirklich gesagt …?) werden ehrlich geprüft. Die App hat ein Gedächtnis für die letzten Tage: Schon Behandeltes wird erkannt und eingeordnet (wie neulich berichtet …) — Wichtiges oder Komplexes darf aber bewusst nochmal erklärt werden, nichts wird stur weggelassen. Nach erfolgreichem Lauf leert sich die Box (Fehlgeschlagenes bleibt drin).")
     st.text_area(
         "Sonderthemen",
@@ -3376,6 +3390,8 @@ with st.expander(f"🧠 Sonderthemen — eigene Fragen ins Briefing{f' ({_n_sp0}
                             _staged.append(_first9.strip("*# "))
                 _staged += split_special_topics(st.session_state.get("special_topics_text") or "")
                 st.session_state["_missing_topics_result"] = suggest_missing_topics_via_cli(staged_lines=_staged)
+                st.session_state["last_weltlage_check_iso"] = datetime.datetime.now().isoformat()
+                _save_draft()
     with _wl_c2:
         st.caption("Was ist gerade wichtig, kam aber in deinen Briefings noch nicht vor? Ein Klick, und du bekommst Vorschläge für Sonderthemen.")
     _mt = st.session_state.get("_missing_topics_result")
