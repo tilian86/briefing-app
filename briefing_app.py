@@ -5088,8 +5088,14 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "archive_dir": _resolve_archive_dir(for_write=True),
                 "title_base": f"Tagesbriefing {_wd_de9[_now9.weekday()]} {_now9.strftime('%d.%m.')}",
             }
+            _inp_counts = {
+                "urls": len([l for l in urls_text.splitlines() if l.strip().startswith("http")]),
+                "paywall": len(split_paywall_articles(paywall_text)) if paywall_text.strip() else 0,
+                "podcasts": len(split_podcast_summaries(podcast_text)) if podcast_text.strip() else 0,
+                "specials": len(_cfg["specials"]),
+            }
             _status = {"active": True, "started": _now9.isoformat(), "step": "Wird gestartet…",
-                       "ratio": 0.0, "done": False, "cancel": False, "results": []}
+                       "ratio": 0.0, "done": False, "cancel": False, "results": [], "inputs": _inp_counts}
             st.session_state["_briefing_job"] = _status
             st.session_state.pop("_briefing_job_finished_shown", None)
             _save_draft()
@@ -5159,6 +5165,17 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             st.success("✅ Briefing fertig — Hörversion(en) sind in der ElevenReader-Bibliothek." )
             if _job_done.get("reused_prepared"):
                 st.caption("♻️ Rohdaten (Fetch + Merge) aus dem vorherigen Lauf wiederverwendet — schneller & spart Kontingent.")
+        _inp = _job_done.get("inputs") or {}
+        if _inp:
+            _in_parts = []
+            if _inp.get("urls"): _in_parts.append(f"{_inp['urls']} Links")
+            if _inp.get("paywall"): _in_parts.append(f"{_inp['paywall']} Paywall")
+            if _inp.get("podcasts"): _in_parts.append(f"{_inp['podcasts']} Podcasts")
+            if _inp.get("specials"): _in_parts.append(f"{_inp['specials']} Sonderthemen")
+            _in_sum = sum(_inp.get(k, 0) for k in ("urls", "paywall", "podcasts", "specials")) + 1  # +Wetter
+            _main9 = next((r for r in (_job_done.get("results") or []) if r.get("ok") and not str(r.get("label","")).startswith("WhatsApp")), None)
+            _after = _main9.get("sections") if _main9 else "?"
+            st.caption(f"📥 **Eingang:** {' · '.join(_in_parts)} + Wetter (≈{_in_sum} Quellen) → 🧵 **nach Zusammenführung: {_after} Beiträge** im Briefing.")
         for _re9 in (_job_done.get("results") or []):
             _bits = [f"**{_re9['label']}**"]
             if _re9.get("ok"):
