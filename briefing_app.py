@@ -2446,7 +2446,7 @@ def _briefing_worker(cfg: dict, status: dict):
             )
             entry = {"label": rp["label"], "ok": bool(r.get("ok")), "pdf": str(out_pdf),
                      "eleven_txt": (r.get("artifacts") or {}).get("eleven_txt"),
-                     "sections": r.get("sections_count"), "elapsed": int(r.get("elapsed_seconds") or 0),
+                     "sections": r.get("beitrag_count") or r.get("sections_count"), "elapsed": int(r.get("elapsed_seconds") or 0),
                      "error": r.get("error"), "upload": None, "wa": rp["wa"]}
             cc = r.get("content_check") or {}
             if cc:

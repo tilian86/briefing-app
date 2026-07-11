@@ -12034,9 +12034,15 @@ def build_pdf_from_claude_json(
         if handoff_text:
             briefing_text = "\n\n".join(s.get("content", "") for s in clean_sections)
             completeness = _verify_briefing_completeness(handoff_text, briefing_text)
+        _beitrag_count = sum(1 for s in clean_sections
+                             if s.get("type") != "transition"
+                             and not s.get("_preview") and not s.get("_essenz")
+                             and not s.get("_verabschiedung") and not s.get("_ressort_header")
+                             and not s.get("_recap") and (s.get("content") or "").strip())
         return {
             "ok": True,
             "sections_count": len(clean_sections),
+            "beitrag_count": _beitrag_count,
             "error": None,
             "completeness": completeness,
             "artifacts": artifacts,
@@ -12608,6 +12614,7 @@ def run_briefing_via_claude_cli(
             "error": f"{pdf_result.get('error')} (Roh-Antwort gespeichert: {debug_path})" if debug_path else pdf_result.get("error"),
             "raw_response": raw_response,
             "sections_count": pdf_result.get("sections_count", 0),
+        "beitrag_count": pdf_result.get("beitrag_count", pdf_result.get("sections_count", 0)),
             "completeness": None,
             "output_pdf_path": None,
         }
@@ -15184,6 +15191,7 @@ def run_briefing_via_claude_cli_chunked(
     return {
         "ok": True, "error": None,
         "sections_count": pdf_result.get("sections_count", 0),
+        "beitrag_count": pdf_result.get("beitrag_count", pdf_result.get("sections_count", 0)),
         "completeness": pdf_result.get("completeness"),
         "output_lint": pdf_result.get("output_lint"),
         "sorting_diag": pdf_result.get("sorting_diag"),
