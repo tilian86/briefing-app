@@ -748,6 +748,16 @@ def _clear_briefing_state():
         if isinstance(_k, str) and _k.startswith("dup_"):
             st.session_state.pop(_k, None)
     st.session_state["url_quality_results"] = None
+    # Altes Lauf-Ergebnis (Beiträge/Tokens/Uploads) gehört zum ALTEN Briefing — weg damit.
+    # Nur wenn der Job fertig ist (laufende Jobs überleben ein "Neues Briefing").
+    _bj = st.session_state.get("_briefing_job")
+    if _bj is None or _bj.get("done"):
+        st.session_state.pop("_briefing_job", None)
+        st.session_state.pop("_briefing_job_finished_shown", None)
+        try:
+            _BRIEFING_JOB_STATUS_PATH.unlink()  # sonst holt der Datei-Spiegel-Fallback es zurück
+        except Exception:
+            pass
     st.session_state.client_draft_clear_token = datetime.datetime.now().isoformat()
     _clear_persisted_last_briefing()
     _save_draft()
@@ -2295,7 +2305,7 @@ with _pw_scroll_col:
 st.markdown('<div id="nav-podcast" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 st.markdown("#### Podcast-Zusammenfassungen")
 
-_BRIEFING_JOB_STATUS_PATH = _APP_DIR / ".briefing_job_status.json"
+_BRIEFING_JOB_STATUS_PATH = Path(os.environ.get("BRIEFING_JOB_STATUS_PATH") or (_APP_DIR / ".briefing_job_status.json"))
 _PREPARED_CACHE_PATH = _APP_DIR / ".briefing_prepared_cache.json"
 _PREPARED_CACHE_MAX_AGE_H = 4  # Rohdaten (Fetch+Merge) altern schnell — nach 4h neu holen
 
@@ -3121,10 +3131,15 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
     )
     _raw_blocks_now = [b.strip() for b in re.split(r"(?im)^\s*(?:m{3,}|-{3,}|={3,}|artikel ende)\s*$", _raw_inbox or "") if b.strip()]
     _n_bg_jobs = len(st.session_state.get("_round_jobs") or [])
+    _rti_c1, _rti_c2 = st.columns([6, 1])
     _cnt_bits = [f"Aktuell erkannt: **{len(_raw_blocks_now)}** Transkript(e)"]
     if _n_bg_jobs:
         _cnt_bits.append(f"⏳ {_n_bg_jobs} laufen im Hintergrund")
-    st.caption(" · ".join(_cnt_bits))
+    with _rti_c1:
+        st.caption(" · ".join(_cnt_bits))
+    with _rti_c2:
+        if st.button("↓ Ende", key="scroll_raw_inbox", use_container_width=True):
+            _scroll_textarea("Roh-Transkript")
     if st.button(f"✨ {len(_raw_blocks_now)} zusammenfassen (läuft im Hintergrund — Box wird frei für die nächsten)",
                  key="summarize_raw_transcripts",
                  use_container_width=True, disabled=not _raw_blocks_now):
