@@ -13006,39 +13006,45 @@ def list_apple_podcast_transcripts(limit: int = 15) -> List[dict]:
     Returns: [{"path", "mtime", "size_kb", "minutes", "lang", "preview"}, …]"""
     import glob as _glob
     import xml.etree.ElementTree as _ET
-    out = []
-    for p in _glob.glob(os.path.join(APPLE_PODCAST_TTML_DIR, "**", "*.ttml"), recursive=True):
-        try:
-            st_ = os.stat(p)
-            entry = {"path": p, "mtime": st_.st_mtime, "size_kb": st_.st_size // 1024,
-                     "minutes": 0, "lang": "?", "preview": ""}
-            try:
-                root = _ET.parse(p).getroot()
-                entry["lang"] = root.get("{http://www.w3.org/XML/1998/namespace}lang") or "?"
-                body = root.find("{http://www.w3.org/ns/ttml}body")
-                if body is not None and body.get("dur"):
-                    entry["minutes"] = int(float(body.get("dur")) / 60)
-                words = []
-                for pp in root.iter(_TTML_NS_P):
-                    words.extend(s.text for s in pp.iter(_TTML_NS_SPAN)
-                                 if s.get(_TTML_NS_UNIT) == "word" and s.text)
-                    if len(words) > 24:
-                        break
-                entry["preview"] = " ".join(words[:24])
-            except Exception:
-                pass
-            out.append(entry)
-        except Exception:
-            continue
-    # Bereits importierte/erledigte ausblenden (🗑️ und erfolgreiche Verdichtung
-    # markieren imported → Eintrag verschwindet hier und in der Nachlese).
+    # PERFORMANCE (12.07.): Früher wurde JEDE TTML-Datei geparst (XML), nur um die 10
+    # neuesten zu zeigen — bei gewachsenem Cache 5+ Sekunden pro Render (Seite blieb
+    # hängen). Jetzt: nur stat() für alle (billig), sortieren/filtern, und NUR die
+    # `limit` neuesten überhaupt XML-parsen.
+    _imported = set()
     try:
         _imported = set((_podcast_inbox_state_load().get("imported_ttml") or {}).keys())
-        out = [e for e in out if os.path.basename(e["path"]) not in _imported and e["path"] not in _imported]
     except Exception:
         pass
-    out.sort(key=lambda e: -e["mtime"])
-    out = out[:limit]
+    _cands = []
+    for p in _glob.glob(os.path.join(APPLE_PODCAST_TTML_DIR, "**", "*.ttml"), recursive=True):
+        if os.path.basename(p) in _imported or p in _imported:
+            continue
+        try:
+            st_ = os.stat(p)
+            _cands.append((st_.st_mtime, st_.st_size, p))
+        except Exception:
+            continue
+    _cands.sort(key=lambda t: -t[0])
+    out = []
+    for _mt, _sz, p in _cands[:limit]:
+        entry = {"path": p, "mtime": _mt, "size_kb": _sz // 1024,
+                 "minutes": 0, "lang": "?", "preview": ""}
+        try:
+            root = _ET.parse(p).getroot()
+            entry["lang"] = root.get("{http://www.w3.org/XML/1998/namespace}lang") or "?"
+            body = root.find("{http://www.w3.org/ns/ttml}body")
+            if body is not None and body.get("dur"):
+                entry["minutes"] = int(float(body.get("dur")) / 60)
+            words = []
+            for pp in root.iter(_TTML_NS_P):
+                words.extend(s.text for s in pp.iter(_TTML_NS_SPAN)
+                             if s.get(_TTML_NS_UNIT) == "word" and s.text)
+                if len(words) > 24:
+                    break
+            entry["preview"] = " ".join(words[:24])
+        except Exception:
+            pass
+        out.append(entry)
     titles = apple_transcript_titles([e["path"] for e in out])
     for e in out:
         e["title"] = titles.get(e["path"], "")
