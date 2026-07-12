@@ -2451,6 +2451,8 @@ def _briefing_worker(cfg: dict, status: dict):
             cc = r.get("content_check") or {}
             if cc:
                 entry["plausi"] = f"{cc.get('warnings', '?')}W/{cc.get('notices', '?')}N, repariert {r.get('content_repaired', 0)}"
+            if i == 0 and r.get("uncovered_sources"):
+                status["uncovered_sources"] = r["uncovered_sources"]
             if r.get("special_done") is not None:
                 entry["specials"] = r.get("special_done")
                 status["specials_failed"] = r.get("special_failed_topics") or []
@@ -5176,6 +5178,15 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             _main9 = next((r for r in (_job_done.get("results") or []) if r.get("ok") and not str(r.get("label","")).startswith("WhatsApp")), None)
             _after = _main9.get("sections") if _main9 else "?"
             st.caption(f"📥 **Eingang:** {' · '.join(_in_parts)} + Wetter (≈{_in_sum} Quellen) → 🧵 **nach Zusammenführung: {_after} Beiträge** im Briefing.")
+            _unc = _job_done.get("uncovered_sources") or []
+            if _unc:
+                with st.expander(f"⚠️ {len(_unc)} Quelle(n) haben es NICHT ins Briefing geschafft — prüfen", expanded=True):
+                    st.caption("Diese Quellen gingen verloren, weil ihr Thema beim Schreiben scheiterte (meist Limit/Auslastung). Nochmal erstellen holt sie nach.")
+                    for _u in _unc[:20]:
+                        _kind_de = {"podcast": "🎙️ Podcast", "paywall": "📰 Paywall", "article": "🔗 Link"}.get(_u.get("kind"), "Quelle")
+                        st.markdown(f"  ❌ {_kind_de} — {(_u.get('label') or '')}: {(_u.get('title') or '')[:70]}")
+            else:
+                st.caption("✅ Deckungs-Check: Alle eingegebenen Quellen sind im Briefing vertreten.")
         for _re9 in (_job_done.get("results") or []):
             _bits = [f"**{_re9['label']}**"]
             if _re9.get("ok"):

@@ -14033,11 +14033,17 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
     _mopus = sum(1 for t in topics if t.get("_model_used") == "opus")
     _msonnet = sum(1 for t in topics if t.get("_model_used") == "sonnet")
     print(f"[synthese] Modell-Mix: {_mopus} Themen auf Opus (Verwebung/schwer), {_msonnet} auf Sonnet 5 (Einzelquelle) — 8 parallel.", file=sys.stderr)
+    _uncovered = []
     for ti, t in enumerate(topics):
         md = results.get(ti)
         if not md:
             failed += 1
-            print(f"[synthese] Thema fehlgeschlagen: {t['title'][:60]}", file=sys.stderr)
+            # Quellen dieses gescheiterten Themas sind NICHT im Briefing → melden.
+            for _mu in t["members"]:
+                _iu = items[_mu - 1]
+                _tu = " ".join(_body_core(_iu).split())[:60] or (_iu.get("label") or "?")
+                _uncovered.append({"label": _iu.get("label", "?"), "kind": _iu.get("kind", "article"), "title": _tu})
+            print(f"[synthese] Thema fehlgeschlagen: {t['title'][:60]} ({len(t['members'])} Quelle(n) betroffen)", file=sys.stderr)
             continue
         labels = []
         for m_ in t["members"]:
@@ -14064,7 +14070,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         _w_md = _condense_weather_for_synthesis(weather_text, cli_path=cli)
         sections.insert(0, {"type": "article", "_weather": True, "source_label": "DWD",
                             "content": _w_md})
-    return sections, failed, len(topics)
+    return sections, failed, len(topics), _uncovered
 
 
 PODCAST_SUMMARY_PROMPT = """Fasse das folgende Podcast-Transkript zusammen.
@@ -14780,13 +14786,14 @@ def run_briefing_via_claude_cli_chunked(
         _rate_items_via_cli(items, cli_path=cli)
 
     if topic_synthesis:
-        _synth_sections, _synth_failed, _synth_topics = _synthesize_topics_from_items(
+        _synth_sections, _synth_failed, _synth_topics, _synth_uncovered = _synthesize_topics_from_items(
             items, weather_text=weather_text, compact_mode=compact_mode,
             ultra_compact=ultra_compact, cli_path=cli,
             progress_callback=progress_callback, timeout_seconds=timeout_seconds,
             narrative_style=synthesis_narrative, web_enrich=synthesis_web_enrich,
             smart_length=smart_length, smart_cap=smart_cap, podcast_mode=podcast_mode)
 
+    _uncovered_sources = []
     # In Gruppen teilen
     groups = [] if topic_synthesis else ([items[i:i + chunk_size] for i in range(0, len(items), chunk_size)] or [[]])
     n_groups = len(groups)
@@ -14881,6 +14888,7 @@ def run_briefing_via_claude_cli_chunked(
         all_sections = _synth_sections
         failed_groups = _synth_failed
         n_groups = _synth_topics
+        _uncovered_sources = _synth_uncovered
         # Massen-Ausfall (Limit/Auslastung): lieber LAUT scheitern als ein 2-Seiten-Stub
         # hochladen (07.07.: 2. Lauf direkt nach dem 1. → fast alle Themen fehlgeschlagen,
         # trotzdem als "fertig" hochgeladen). Ab 40% Ausfall: kein brauchbares Briefing.
@@ -15192,6 +15200,7 @@ def run_briefing_via_claude_cli_chunked(
         "ok": True, "error": None,
         "sections_count": pdf_result.get("sections_count", 0),
         "beitrag_count": pdf_result.get("beitrag_count", pdf_result.get("sections_count", 0)),
+        "uncovered_sources": _uncovered_sources,
         "completeness": pdf_result.get("completeness"),
         "output_lint": pdf_result.get("output_lint"),
         "sorting_diag": pdf_result.get("sorting_diag"),
