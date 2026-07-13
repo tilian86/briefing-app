@@ -2469,9 +2469,20 @@ def _briefing_worker(cfg: dict, status: dict):
             results.append(entry)
             _upd(results=results)
             if not r.get("ok"):
+                # Rohdaten-Cache auch bei Abbruch sichern (v.a. Limit) → Neuversuch spart Fetch+Merge.
+                if r.get("prepared"):
+                    try:
+                        import json as _cjf
+                        _PREPARED_CACHE_PATH.write_text(_cjf.dumps({
+                            "hash": cfg.get("inputs_hash"), "saved": datetime.datetime.now().isoformat(),
+                            "prepared": r["prepared"]}, ensure_ascii=False), encoding="utf-8")
+                    except Exception:
+                        pass
                 if i == 0:
                     # Hauptversion gescheitert → nichts Brauchbares, ganzer Job scheitert.
-                    _upd(step=f"❌ {rp['label']} fehlgeschlagen: {str(r.get('error'))[:120]}", done=True, failed=True)
+                    _lim = "⛔ Limit erreicht — " if r.get("limit_hit") else "❌ "
+                    _upd(step=f"{_lim}{rp['label']}: {str(r.get('error'))[:150]}", done=True, failed=True,
+                         limit_hit=bool(r.get("limit_hit")))
                     return
                 # Spätere Version (Limit/Auslastung): Hauptversion ist schon fertig+hochgeladen —
                 # diese Version überspringen statt den ganzen Job zu verwerfen (07.07.: int-m nach int-s).

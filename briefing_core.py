@@ -13861,7 +13861,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
 
     cli = cli_path or _locate_claude_cli()
     if not cli or not items:
-        return [], 0, 0
+        return [], 0, 0, [], False
 
     def _body_core(it):
         b = (it.get("body") or "").strip()
@@ -13882,7 +13882,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         excerpt = " ".join(_body_core(it).split())[:220]
         lines.append(f"[{i}] ({it.get('label', '?')}, {it.get('kind', 'article')}) {excerpt}")
     payload = _TOPIC_CLUSTER_PROMPT + "\n\n=== QUELLEN ===\n\n" + "\n".join(lines)
-    cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
+    cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_CLASSIFY_MODEL,
            "--dangerously-skip-permissions", "--effort", "low",
            "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."]
     topics = []
@@ -14025,6 +14025,8 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
     from concurrent.futures import ThreadPoolExecutor, as_completed
     results = {}
     done = [0]
+    _fail_count = 0
+    _limit_abort = False
     with ThreadPoolExecutor(max_workers=8) as pool:
         futs = {pool.submit(_write_topic, t): ti for ti, t in enumerate(topics)}
         for f in as_completed(futs):
@@ -14033,9 +14035,23 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
                 results[ti] = f.result()
             except Exception:
                 results[ti] = None
+            if not results.get(ti):
+                _fail_count += 1
             done[0] += 1
             _report(f"Themen-Synthese: Beitrag {done[0]}/{len(topics)} geschrieben…",
                     0.2 + 0.5 * done[0] / max(len(topics), 1))
+            # FRÜH-ABBRUCH bei Limit-Erschöpfung: wenn nach 12+ Themen die Mehrheit (und
+            # ≥8) scheitert, ist das Kontingent erschöpft — sofort abbrechen statt 2,5h
+            # weiterzukriechen (14.07. beobachtet). Ausstehende Futures canceln.
+            if not _limit_abort and done[0] >= 12 and _fail_count >= 8 and _fail_count >= done[0] * 0.5:
+                _limit_abort = True
+                print(f"[synthese] ⛔ LIMIT-ABBRUCH: {_fail_count}/{done[0]} Themen gescheitert — "
+                      "Lauf wird sofort beendet (Kontingent/Auslastung erschöpft).", file=sys.stderr)
+                for _pf in futs:
+                    _pf.cancel()
+                break
+    if _limit_abort:
+        return [], failed + _fail_count, len(topics), [], True
     _mopus = sum(1 for t in topics if t.get("_model_used") == "opus")
     _msonnet = sum(1 for t in topics if t.get("_model_used") == "sonnet")
     print(f"[synthese] Modell-Mix: {_mopus} Themen auf Opus (Verwebung/schwer), {_msonnet} auf Sonnet 5 (Einzelquelle) — 8 parallel.", file=sys.stderr)
@@ -14076,7 +14092,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         _w_md = _condense_weather_for_synthesis(weather_text, cli_path=cli)
         sections.insert(0, {"type": "article", "_weather": True, "source_label": "DWD",
                             "content": _w_md})
-    return sections, failed, len(topics), _uncovered
+    return sections, failed, len(topics), _uncovered, False
 
 
 PODCAST_SUMMARY_PROMPT = """Fasse das folgende Podcast-Transkript zusammen.
@@ -14310,7 +14326,7 @@ def _classify_sections_via_cli(titles_by_idx, cli_path=None, timeout_seconds=150
     lines = [f"{idx}. {title[:320]}" for idx, title in sorted(titles_by_idx.items())]
     payload = _RESSORT_CLASSIFY_PROMPT + "\n\n=== ÜBERSCHRIFTEN ===\n\n" + "\n".join(lines)
     cmd = [
-        cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
+        cli, "--print", "--output-format", "text", "--model", _CLI_CLASSIFY_MODEL,
         "--dangerously-skip-permissions", "--effort", "low",
         "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt, ohne Vorrede oder Erklärung.",
     ]
@@ -14550,7 +14566,7 @@ def _rate_items_via_cli(items, cli_path=None):
         excerpt = " ".join((it.get("body") or "").split())[:200]
         lines.append(f"[{i}] ({it.get('label', '?')}, {it.get('kind', 'article')}) {excerpt}")
     payload = _ITEM_RATE_PROMPT + "\n\n=== QUELLEN ===\n\n" + "\n".join(lines)
-    cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
+    cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_CLASSIFY_MODEL,
            "--dangerously-skip-permissions", "--effort", "low",
            "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."]
     try:
@@ -14643,6 +14659,10 @@ def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_comp
 # während die Masse (Artikel-Gruppen) auf dem schnelleren Sonnet bleibt. Opus läuft
 # ebenfalls kostenlos übers Max-Abo. Verifiziert am 04.06.2026, dass das Alias greift.
 _CLI_JUDGE_MODEL = "opus"
+# Struktur-/Einordnungs-Aufgaben (Clustering, Ressort-Zuordnung, Tragweite-Bewertung):
+# Sonnet 5 kann das genauso gut wie Opus, verbraucht aber weniger vom 5-Std-Limit und
+# läuft über ein eigenes Rate-Limit → entlastet Opus für die Verwebung/Qualität.
+_CLI_CLASSIFY_MODEL = "sonnet"
 
 
 def run_briefing_via_claude_cli_chunked(
@@ -14792,12 +14812,26 @@ def run_briefing_via_claude_cli_chunked(
         _rate_items_via_cli(items, cli_path=cli)
 
     if topic_synthesis:
-        _synth_sections, _synth_failed, _synth_topics, _synth_uncovered = _synthesize_topics_from_items(
+        _synth_sections, _synth_failed, _synth_topics, _synth_uncovered, _synth_limit = _synthesize_topics_from_items(
             items, weather_text=weather_text, compact_mode=compact_mode,
             ultra_compact=ultra_compact, cli_path=cli,
             progress_callback=progress_callback, timeout_seconds=timeout_seconds,
             narrative_style=synthesis_narrative, web_enrich=synthesis_web_enrich,
             smart_length=smart_length, smart_cap=smart_cap, podcast_mode=podcast_mode)
+        if _synth_limit:
+            # Kontingent erschöpft → SOFORT sauber raus (nicht stundenlang hängen). Die
+            # geladenen+gemergten Rohdaten mitgeben, damit der Neuversuch sie wiederverwendet.
+            _report("⛔ Limit erreicht — Lauf abgebrochen.", 0.5)
+            return {"ok": False, "limit_hit": True,
+                    "error": ("Dein 5-Stunden-Kontingent scheint erschöpft — der Lauf wurde nach vielen "
+                              "Fehlschlägen sofort abgebrochen (statt stundenlang zu hängen). Warte, bis sich "
+                              "dein Fenster erholt, dann neu bauen — die geladenen Rohdaten sind gecacht, "
+                              "der Neuversuch ist schnell."),
+                    "prepared": {"weather_text": weather_text, "items": items,
+                                 "weak_fetches": weak_fetches, "merged_topics": merged_topics,
+                                 "merge_notes": merge_notes},
+                    "raw_response": "", "sections_count": 0, "beitrag_count": 0,
+                    "completeness": None, "output_pdf_path": None}
 
     _uncovered_sources = []
     # In Gruppen teilen
