@@ -2117,6 +2117,11 @@ if st.session_state.get("raw_transcript_inbox_clear"):
     st.session_state["raw_transcript_inbox"] = ""
     st.session_state["raw_transcript_inbox_clear"] = False
     st.session_state["_raw_ls_clear_token"] = datetime.datetime.now().isoformat()
+if st.session_state.get("_raw_restore_pending"):
+    # Gescheiterte Transkripte zurück in die Einwurf-Box (an bestehenden Inhalt anhängen).
+    _rp = st.session_state.pop("_raw_restore_pending")
+    _cur_raw = (st.session_state.get("raw_transcript_inbox") or "").rstrip()
+    st.session_state["raw_transcript_inbox"] = (_cur_raw + "\n\nmmm\n\n" + _rp) if _cur_raw else _rp
 
 # --- Scroll-to-Bottom per Streamlit components.html ---
 
@@ -3163,7 +3168,7 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
         _jobs4 = st.session_state.get("_round_jobs") or []
         for _blk in _raw_blocks_now:
             _first = (_blk.splitlines() or ["?"])[0][:60]
-            _jobs4.append({"guid": None, "title": _first, "path": None,
+            _jobs4.append({"guid": None, "title": _first, "path": None, "raw": _blk,
                            "fut": st.session_state["_sum_pool"].submit(summarize_podcast_transcript_via_cli, _blk)})
         st.session_state["_round_jobs"] = _jobs4
         st.session_state["raw_transcript_inbox_clear"] = True
@@ -3314,6 +3319,20 @@ def _round_jobs_collector():
         else:
             st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [
                 f"{_j['title'][:40]}: {str(_r.get('error', '?'))[:100]}"]
+            # 🛟 DATENVERLUST-SCHUTZ: gescheiterte Einwurf-Zusammenfassung (z.B. Limit) →
+            # Roh-Transkript SOFORT auf Platte retten + für Anzeige/Wiederherstellung merken.
+            _rawtx = _j.get("raw")
+            if _rawtx:
+                try:
+                    _rdir = _APP_DIR / f"rettung_{datetime.datetime.now().strftime('%Y-%m-%d')}"
+                    _rdir.mkdir(exist_ok=True)
+                    with open(_rdir / "einwurf_fehlgeschlagen.txt", "a", encoding="utf-8") as _rf:
+                        _rf.write(_rawtx.strip() + "\n\nmmm\n\n")
+                except Exception:
+                    pass
+                _fr = st.session_state.get("_failed_raw_transcripts") or []
+                _fr.append({"title": _j.get("title", "?"), "raw": _rawtx})
+                st.session_state["_failed_raw_transcripts"] = _fr
     st.session_state["_round_jobs"] = _left
     _done_total = int(st.session_state.get("_bg_done_count") or 0) + _got
     st.session_state["_bg_done_count"] = _done_total
@@ -3352,6 +3371,23 @@ podcast_text = st.text_area(
 _podcast_blocks = split_podcast_summaries(podcast_text) if podcast_text.strip() else []
 if _podcast_blocks:
     st.caption(f"📦 **{len(_podcast_blocks)}** Podcast-Zusammenfassung(en) im Feld — bereit fürs Briefing.")
+# 🛟 Gescheiterte Einwurf-Zusammenfassungen (z.B. Limit) — Roh-Text ist gesichert, NICHT verloren
+_fraw = st.session_state.get("_failed_raw_transcripts") or []
+if _fraw:
+    with st.expander(f"🛟 {len(_fraw)} Transkript(e) konnten NICHT zusammengefasst werden (Limit?) — gesichert, nicht verloren", expanded=True):
+        st.caption(f"Der Roh-Text liegt auf der Platte (rettung_{datetime.datetime.now().strftime('%Y-%m-%d')}/einwurf_fehlgeschlagen.txt) UND kann mit einem Klick zurück in die Einwurf-Box.")
+        for _fe in _fraw:
+            st.markdown(f"  • {(_fe.get('title') or '?')[:70]}")
+        _fc1, _fc2 = st.columns(2)
+        with _fc1:
+            if st.button("↩️ Alle zurück in die Einwurf-Box", key="restore_failed_raw", use_container_width=True):
+                st.session_state["_raw_restore_pending"] = "\n\nmmm\n\n".join(x["raw"] for x in _fraw)
+                st.session_state["_failed_raw_transcripts"] = []
+                st.rerun()
+        with _fc2:
+            if st.button("✓ Erledigt — ausblenden", key="dismiss_failed_raw", use_container_width=True):
+                st.session_state["_failed_raw_transcripts"] = []
+                st.rerun()
 # 🔎 Fakten-Hinweise aus dem Podcast-Check (nur WARNUNG, Text wurde NICHT geändert)
 _pconc = st.session_state.get("_podcast_concerns") or []
 if _pconc:
