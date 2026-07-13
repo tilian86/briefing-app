@@ -6864,10 +6864,14 @@ st.markdown("""
 <style>
 html { scroll-behavior: smooth; }
 .st-key-side_nav {
-  position: fixed; right: 10px; top: 28%; z-index: 9999; width: 54px;
-  display: flex; flex-direction: column; gap: 4px;
-  background: rgba(252, 252, 253, 0.94); border: 1px solid #e4e4e7;
-  border-radius: 14px; padding: 8px 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.09);
+  position: fixed; right: 12px; top: 50%; transform: translateY(-50%); z-index: 9999; width: 56px;
+  display: flex; flex-direction: column; gap: 5px;
+  background: rgba(252, 252, 253, 0.97); border: 1px solid #d0d0d6;
+  border-radius: 16px; padding: 9px 7px; box-shadow: 0 4px 18px rgba(0,0,0,0.14);
+}
+.st-key-side_nav::before {
+  content: "Springen"; font-size: 9px; text-align: center; color: #8a8a92;
+  letter-spacing: 0.3px; margin-bottom: 2px;
 }
 .st-key-side_nav .stButton button {
   width: 40px; min-height: 40px; height: 40px; padding: 0;
@@ -6879,7 +6883,7 @@ html { scroll-behavior: smooth; }
   background: #ffffff;
 }
 .st-key-side_nav a.nav-jump:hover { background: #eef1f6; }
-@media (max-width: 1100px) { .st-key-side_nav { display: none; } }
+@media (max-width: 820px) { .st-key-side_nav { display: none; } }
 </style>
 """, unsafe_allow_html=True)
 
