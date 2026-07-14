@@ -5268,7 +5268,9 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         if _tok:
             _bm = _tok.get("by_model") or {}
             _parts = [f"{m.replace('claude-', '')}: {b['n']}× ({(b['in'] + b['cw']) // 1000}k rein / {b['out'] // 1000}k raus)" for m, b in sorted(_bm.items()) if b.get("n")]
-            st.caption(f"🪙 Verbrauch: ≈{_tok.get('usd_equiv', '?')} $-Äquivalent · geschätzt ~{_tok.get('pct_window_est', '?')} % deines 5-Stunden-Fensters (Schätzwert, eicht sich) · " + " · ".join(_parts))
+            _rel = "klein" if (_tok.get('usd_equiv') or 0) < 15 else ("mittel" if (_tok.get('usd_equiv') or 0) < 35 else "groß")
+            st.caption(f"🪙 Rechenaufwand dieses Laufs: **{_rel}** (~{_tok.get('usd_equiv','?')} \$-Äquivalent, relatives Maß) · " + " · ".join(_parts))
+            st.caption("Dein tatsächliches Kontingent steht in der Claude-Statusleiste (5-Std- & Wochen-Limit) — diese Zahl hier ist nur ein grober Größenvergleich, kein echter %-Wert.")
         _dl_items = [r9 for r9 in (_job_done.get("results") or []) if r9.get("ok")]
         if _dl_items:
             _dl_cols = st.columns(min(len(_dl_items), 3))
