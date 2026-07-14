@@ -14082,7 +14082,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         if _pbody:
             if not _pbody.lstrip().startswith("#"):
                 _pbody = "### " + _pbody
-            sections.append({"type": "podcast", "source_label": _pit.get("label", "Podcast"), "content": _pbody})
+            sections.append({"type": "podcast", "_verbatim": True, "source_label": _pit.get("label", "Podcast"), "content": _pbody})
     if _pod_verbatim:
         print(f"[synthese] {len(_pod_verbatim)} Podcast(s) im Original übernommen (verbatim).", file=sys.stderr)
 
@@ -15686,6 +15686,8 @@ def run_content_check_via_claude_cli(
         and not s.get("_preview")
         and not s.get("_ressort_header")
         and not s.get("_special")
+        and not s.get("_verbatim")   # Verbatim-Podcasts: unverändert übernommen → Check gegen
+                                     # sich selbst ist sinnlos und kostet vollen Opus-Input.
     ]
     if not checkable_sections:
         return {"ok": True, "error": None,
