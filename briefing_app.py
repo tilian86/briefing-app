@@ -2321,6 +2321,29 @@ def _inputs_hash(urls: str, paywall: str, podcast: str) -> str:
 _QUOTA_CAL_USD_PER_WINDOW = 120.0  # Startschätzung: „$-Äquivalent" pro 5h-Fenster — kalibriert sich mit Florians Limit-Anzeigen
 
 
+def _read_real_5h_usage():
+    """Liest die ECHTE 5-Std-Auslastung (0-100) aus dem Claude-Konto — gleicher Weg wie
+    der Limit-Wächter (Keychain-Token + /api/oauth/usage). Nur lesen, kein Fenster-Start,
+    kein Token-Renew (→ kein macOS-Dialog). Returns int % oder None."""
+    try:
+        import subprocess as _sp, urllib.request as _ur, json as _js
+        _raw = _sp.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                       capture_output=True, text=True, timeout=8).stdout
+        _tok = _js.loads(_raw).get("claudeAiOauth", {}).get("accessToken", "")
+        if not _tok:
+            return None
+        _req = _ur.Request("https://api.anthropic.com/api/oauth/usage",
+                           headers={"authorization": f"Bearer {_tok}", "anthropic-version": "2023-06-01",
+                                    "anthropic-beta": "oauth-2025-04-20"})
+        _d = _js.loads(_ur.urlopen(_req, timeout=15).read())
+        for _lim in _d.get("limits", []):
+            if _lim.get("kind") == "session":
+                return int(_lim.get("percent", 0) or 0)
+    except Exception:
+        return None
+    return None
+
+
 def _sum_cli_usage(t0_iso: str, t1_iso: str) -> dict:
     """Summiert Token-Verbrauch der Briefing-CLI-Aufrufe im Zeitfenster aus den
     Claude-Sitzungsprotokollen (~/.claude/projects). Fable = meine Steuer-Session → raus."""
@@ -2427,6 +2450,7 @@ def _briefing_worker(cfg: dict, status: dict):
                 _upd(step="♻️ Rohdaten aus dem letzten Lauf wiederverwendet (Fetch + Merge übersprungen)…", ratio=0.02)
         except Exception:
             pass
+        status["usage_5h_before"] = _read_real_5h_usage()
         _upd(step=("♻️ Start (Rohdaten aus Cache)…" if prepared else "Start — Rohdaten werden geholt…"),
              ratio=0.02, results=results)
 
@@ -2544,6 +2568,7 @@ def _briefing_worker(cfg: dict, status: dict):
         try:
             _upd(step="🪙 Token-Bilanz wird erstellt…", ratio=0.99)
             status["tokens"] = _sum_cli_usage(cfg["ts_iso"], datetime.datetime.now().isoformat())
+            status["usage_5h_after"] = _read_real_5h_usage()
         except Exception:
             pass
         _upd(step="✅ Fertig.", ratio=1.0, done=True)
@@ -5269,8 +5294,12 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             _bm = _tok.get("by_model") or {}
             _parts = [f"{m.replace('claude-', '')}: {b['n']}× ({(b['in'] + b['cw']) // 1000}k rein / {b['out'] // 1000}k raus)" for m, b in sorted(_bm.items()) if b.get("n")]
             _rel = "klein" if (_tok.get('usd_equiv') or 0) < 15 else ("mittel" if (_tok.get('usd_equiv') or 0) < 35 else "groß")
-            st.caption(f"🪙 Rechenaufwand dieses Laufs: **{_rel}** (~{_tok.get('usd_equiv','?')} \$-Äquivalent, relatives Maß) · " + " · ".join(_parts))
-            st.caption("Dein tatsächliches Kontingent steht in der Claude-Statusleiste (5-Std- & Wochen-Limit) — diese Zahl hier ist nur ein grober Größenvergleich, kein echter %-Wert.")
+            st.caption(f"🪙 Rechenaufwand: **{_rel}** (~{_tok.get('usd_equiv','?')} \$-Äquiv.) · " + " · ".join(_parts))
+        _u0, _u1 = _job_done.get("usage_5h_before"), _job_done.get("usage_5h_after")
+        if _u1 is not None:
+            _delta = (f" (dieser Lauf ~+{max(0, _u1 - _u0)} Punkte)" if _u0 is not None and _u1 >= _u0 else "")
+            st.caption(f"📊 **Echtes 5-Std-Limit: {_u1} % belegt**{_delta} — direkt aus deinem Claude-Konto. "
+                       "Hinweis: dieses Limit teilt sich das Briefing mit deinem Claude-Code-Chat.")
         _dl_items = [r9 for r9 in (_job_done.get("results") or []) if r9.get("ok")]
         if _dl_items:
             _dl_cols = st.columns(min(len(_dl_items), 3))
