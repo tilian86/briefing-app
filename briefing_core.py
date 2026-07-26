@@ -641,6 +641,7 @@ OPENAI_PRICING_USD_PER_MTOKEN = {
 }
 
 ANTHROPIC_PRICING_USD_PER_MTOKEN = {
+    "claude-opus-5": {"input": 5.0, "cache_write": 6.25, "cache_read": 0.50, "output": 25.0},
     "claude-opus-4-8": {"input": 5.0, "cache_write": 6.25, "cache_read": 0.50, "output": 25.0},
     "claude-sonnet-5": {"input": 3.0, "cache_write": 3.75, "cache_read": 0.30, "output": 15.0},
     "claude-sonnet-4": {"input": 3.0, "cache_write": 3.75, "cache_read": 0.30, "output": 15.0},
@@ -679,7 +680,10 @@ def _resolve_openai_pricing(model: str) -> tuple:
 def _resolve_anthropic_pricing(model: str) -> tuple:
     lowered = model.lower()
     if lowered.startswith("claude-opus"):
-        return ANTHROPIC_PRICING_USD_PER_MTOKEN["claude-opus-4-8"], "claude-opus-4-8", None
+        # Opus-Tier ist seit 4.5 durchgehend 5/25 — neue Opus-Versionen erben den Preis.
+        # Exakte Treffer (z. B. alte Logs mit claude-opus-4-8) behalten ihren Namen.
+        label = lowered if lowered in ANTHROPIC_PRICING_USD_PER_MTOKEN else "claude-opus-5"
+        return ANTHROPIC_PRICING_USD_PER_MTOKEN[label], label, None
     if lowered.startswith("claude-sonnet-5"):
         return ANTHROPIC_PRICING_USD_PER_MTOKEN["claude-sonnet-5"], "claude-sonnet-5", "Konservativ mit Listenpreis 3/15 gerechnet — bis 31.08.2026 gilt der günstigere Einführungspreis (2/10). Achtung: Sonnet 5 zählt ~30% mehr Tokens für denselben Text."
     if lowered.startswith("claude-sonnet-4-6") or lowered.startswith("claude-sonnet-4"):
@@ -687,6 +691,145 @@ def _resolve_anthropic_pricing(model: str) -> tuple:
     if lowered.startswith("claude-haiku-4-5") or lowered.startswith("claude-haiku"):
         return ANTHROPIC_PRICING_USD_PER_MTOKEN["claude-haiku-4-5"], "claude-haiku-4-5", None
     return None, None, f"Für {model} ist kein Preis hinterlegt."
+
+
+# --- Denkstufen (--effort) für den CLI-Pfad ----------------------------------
+#
+# Zentral an EINER Stelle, damit die Balance zwischen Qualität und
+# 5-Stunden-Fenster justierbar bleibt. Faustregel: alles was oft läuft (Artikel,
+# Klassifizierung) auf low — da hängt das Quota dran. Alles was ein- bis zweimal
+# pro Briefing läuft und den Endtext formt, darf teurer denken.
+#
+# Mit BRIEFING_CLI_EFFORT=low|medium|high|xhigh|max global überschreibbar
+# (z.B. für einen sparsamen Lauf, wenn das Fenster schon halb weg ist).
+
+CLI_EFFORT = {
+    "mechanik":  "low",     # Login-Ping, Titel-Übersetzung, Wetter kürzen, Duplikat-Ja/Nein
+    "klassifik": "low",     # Ressort-Zuordnung, Relevanz-Rating, Abschnittstitel
+    "artikel":   "low",     # Artikel-Masse — größter Quota-Posten, bleibt sparsam
+    "verwebung": "medium",  # Themen aus mehreren Quellen zusammenführen (~35 Aufrufe/Lauf)
+    "podcast":   "medium",  # Transkript-Zusammenfassung
+    "pruefen":   "medium",  # Qualitätscheck, Treue-Check, Repair (je ~1 Aufruf)
+    "synthese":  "high",    # Kompaktfassung — der Text, den du liest/hörst
+    "meta":      "xhigh",   # Wochen-Meta: ein einziger Aufruf, reine Analyse
+}
+_CLI_EFFORT_VALID = {"low", "medium", "high", "xhigh", "max"}
+
+
+def cli_effort(task: str) -> str:
+    """Denkstufe für einen Aufgabentyp (siehe CLI_EFFORT)."""
+    override = (os.getenv("BRIEFING_CLI_EFFORT") or "").strip().lower()
+    if override in _CLI_EFFORT_VALID:
+        return override
+    return CLI_EFFORT.get(task, "medium")
+
+
+# --- Automatische Modellwahl: immer das neueste Modell einer Familie ---------
+#
+# Der CLI-Pfad (Max-Abo) übergibt ohnehin nur die Aliase "opus"/"sonnet"/"haiku"
+# und die Claude-CLI löst die selbst auf das jeweils neueste Modell auf.
+# Für den API-Pfad brauchen wir konkrete Modell-IDs — die holen wir uns einmal
+# täglich von der Models-API, damit ein neues Opus/Sonnet automatisch genutzt
+# wird, ohne den Code anzufassen.
+
+CLAUDE_MODEL_FALLBACKS = {
+    "opus": "claude-opus-5",
+    "sonnet": "claude-sonnet-5",
+    "haiku": "claude-haiku-4-5",
+}
+_MODEL_CACHE_PATH = os.getenv("BRIEFING_MODEL_CACHE_PATH") or os.path.expanduser("~/.briefing_model_cache.json")
+_MODEL_CACHE_TTL_S = 24 * 3600
+_model_cache_lock = threading.Lock()
+_model_cache_mem: Dict[str, str] = {}
+
+
+def _load_model_cache() -> dict:
+    try:
+        with open(_MODEL_CACHE_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+        if time.time() - float(data.get("fetched_at", 0)) > _MODEL_CACHE_TTL_S:
+            return {}
+        models = data.get("models")
+        return models if isinstance(models, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_model_cache(models: dict) -> None:
+    try:
+        with open(_MODEL_CACHE_PATH, "w", encoding="utf-8") as fh:
+            json.dump({"fetched_at": time.time(), "models": models}, fh)
+    except Exception:
+        pass
+
+
+def _fetch_latest_claude_models(api_key: str = "") -> Dict[str, str]:
+    """Fragt die Models-API und gibt pro Familie die neueste Modell-ID zurück.
+
+    Die API liefert die Modelle neueste-zuerst. Wir filtern streng auf die
+    Familien-Präfixe, damit teurere Sonderlinien (Fable/Mythos) und
+    Premium-Varianten (`-fast`) nie versehentlich gewählt werden.
+    """
+    key = api_key or os.getenv("ANTHROPIC_API_KEY") or ""
+    if not key:
+        return {}
+    client = anthropic.Anthropic(api_key=key)
+    found: Dict[str, str] = {}
+    for model in client.models.list(limit=50):
+        model_id = (getattr(model, "id", "") or "").lower()
+        if "fast" in model_id:
+            continue
+        for family in CLAUDE_MODEL_FALLBACKS:
+            if family in found:
+                continue
+            if model_id.startswith(f"claude-{family}-"):
+                found[family] = model_id
+    return found
+
+
+def latest_claude_model(family: str = "opus", api_key: str = "") -> str:
+    """Neueste Modell-ID der Familie ("opus"/"sonnet"/"haiku").
+
+    Fällt bei fehlendem Key, Netzproblem oder API-Fehler still auf die
+    hinterlegte Konstante zurück — das Briefing läuft also immer weiter.
+    """
+    family = (family or "opus").lower()
+    fallback = CLAUDE_MODEL_FALLBACKS.get(family, CLAUDE_MODEL_FALLBACKS["opus"])
+
+    with _model_cache_lock:
+        cached = _model_cache_mem.get(family)
+        if cached:
+            return cached
+
+        disk = _load_model_cache()
+        if disk:
+            _model_cache_mem.update({k: v for k, v in disk.items() if isinstance(v, str)})
+            if disk.get(family):
+                return disk[family]
+
+        try:
+            fresh = _fetch_latest_claude_models(api_key)
+        except Exception as exc:
+            print(f"[modelle] Models-API nicht erreichbar ({exc}) — nutze {fallback}.", file=sys.stderr)
+            fresh = {}
+
+        if fresh:
+            merged = {**{k: v for k, v in CLAUDE_MODEL_FALLBACKS.items()}, **fresh}
+            _save_model_cache(merged)
+            _model_cache_mem.update(merged)
+            if merged.get(family) and merged[family] != fallback:
+                print(f"[modelle] Neueste {family}-Version: {merged[family]}", file=sys.stderr)
+            return merged.get(family, fallback)
+
+        # Kein Ergebnis. Nur wenn ein Key da war (= echter API-Fehler) merken wir
+        # den Fallback für diesen Prozess, damit wir nicht bei jedem Aufruf erneut
+        # ins Netz gehen. Ohne Key nichts merken — sonst greift die Erkennung
+        # nicht mehr, wenn der Key erst später in der App eingetippt wird.
+        if api_key or os.getenv("ANTHROPIC_API_KEY"):
+            _model_cache_mem.update(CLAUDE_MODEL_FALLBACKS)
+        return fallback
 
 
 class _BriefingCostTracker:
@@ -1509,7 +1652,7 @@ def llm_confirm_duplicate_clusters(clusters, model="sonnet", cli_path=None, time
     payload = _DEDUP_CONFIRM_PROMPT + "\n\n=== KANDIDATEN ===\n\n" + "\n".join(lines)
     cmd = [
         cli, "--print", "--output-format", "text", "--model", model,
-        "--dangerously-skip-permissions", "--effort", "low",
+        "--dangerously-skip-permissions", "--effort", cli_effort("mechanik"),
         "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt, ohne Vorrede oder Erklärung.",
     ]
     try:
@@ -1782,7 +1925,7 @@ def _best_model_for_provider(model: str) -> str:
     """Gibt das stärkste Modell für den gleichen Provider zurück."""
     if model.startswith("gpt-"):
         return "gpt-5.5"
-    return "claude-opus-4-8"
+    return latest_claude_model("opus")
 
 
 def inspect_similar_article_topics(
@@ -1988,6 +2131,19 @@ SOURCE_DOMAIN_MAP = {
     "stern.de": "stern",
     "bild.de": "BILD",
     "t-online.de": "t-online",
+    "schwaebische.de": "Schwäbische Zeitung",
+    "swr3.de": "SWR3",
+    "bunte.de": "BUNTE",
+    "tagesspiegel.de": "Tagesspiegel",
+    "lr-online.de": "Lausitzer Rundschau",
+    "euronews.com": "euronews",
+    "merkur.de": "Merkur",
+    "rnd.de": "RND",
+    "swr.de": "SWR",
+    "wdr.de": "WDR",
+    "ndr.de": "NDR",
+    "br.de": "BR",
+    "dw.com": "DW",
 }
 
 SOURCE_TEXT_MARKERS = (
@@ -2033,7 +2189,9 @@ def _fallback_source_label(host: str) -> str:
 
     if base.isalpha() and len(base) <= 4:
         return base.upper()
-    return base.replace("-", " ")
+    # Unbekannte Domain: mindestens groß schreiben, damit nie roh-kleingeschriebene
+    # Labels wie „tagesspiegel"/„lr online" durchrutschen (fürs Vorlesen wichtig).
+    return base.replace("-", " ").title()
 
 
 def source_label_from_url(url: str) -> str:
@@ -2068,6 +2226,28 @@ def source_label_from_text(text: str) -> Optional[str]:
     if url_match:
         return source_label_from_url(url_match.group(0))
     return "Quelle unbekannt"
+
+
+def _dedup_source_labels(raw_labels, cap: int = 4) -> str:
+    """Baut aus (evtl. schon zusammengesetzten) Quell-Labels EIN sauberes Label.
+
+    Zerlegt jedes Label an ' + ' und ', ' in atomare Namen, entfernt Duplikate
+    (Reihenfolge bleibt) und lässt 'Quelle unbekannt'/'?' nur stehen, wenn es KEINE
+    echte Quelle gibt. Verhindert Ausgaben wie
+    'Schwäbisches Tagblatt + Schwäbisches Tagblatt + Quelle unbekannt + Quelle unbekannt'
+    (entsteht, weil Item-Merge und Themen-Synthese Labels nacheinander verketten)."""
+    parts = []
+    for lab in raw_labels:
+        for piece in re.split(r"\s*\+\s*|\s*,\s*", str(lab or "")):
+            piece = piece.strip()
+            if piece and piece not in parts:
+                parts.append(piece)
+    known = [p for p in parts if p not in ("Quelle unbekannt", "?")]
+    if known:
+        parts = known
+    elif parts:
+        parts = ["Quelle unbekannt"]
+    return " + ".join(parts[:cap])
 
 
 def _infer_paywall_chunk_source_hints(chunks: List[str]) -> List[Optional[str]]:
@@ -7569,8 +7749,7 @@ def _llm_check_genius_summary(
     if not m:
         return {"issues": [], "coverage_ok": None, "cluster_ok": None}
     try:
-        import json as _json
-        data = _json.loads(m.group(0))
+        data = _loads_llm_json(m.group(0))
         if not isinstance(data, dict):
             return {"issues": [], "coverage_ok": None, "cluster_ok": None}
         if not isinstance(data.get("issues"), list):
@@ -11903,6 +12082,21 @@ def _repair_llm_json_quotes(raw: str) -> str:
     return ''.join(out)
 
 
+def _loads_llm_json(text: str):
+    """json.loads für LLM-Antworten: erst direkt, bei Fehler mit repariertem
+    Quote-Escaping (häufigster LLM-JSON-Fehler: nacktes " im String-Wert).
+    Gibt None zurück, wenn beides scheitert — Aufrufer behandeln das wie bisher
+    ihre Exception/Leer-Fälle."""
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    try:
+        return json.loads(_repair_llm_json_quotes(text))
+    except Exception:
+        return None
+
+
 def build_pdf_from_claude_json(
     claude_json_text: str,
     output_path: str,
@@ -12531,7 +12725,7 @@ def run_briefing_via_claude_cli(
         "--output-format", "text",
         "--model", model,
         "--dangerously-skip-permissions",
-        "--effort", "low",
+        "--effort", cli_effort("artikel"),
         "--append-system-prompt", _CLAUDE_CLI_RESPONSE_PROMPT,
     ]
 
@@ -12869,7 +13063,7 @@ def _merge_duplicate_story_items(items, cli_path=None, progress_callback=None):
                 f"einzigartige Details einarbeiten, nichts doppeln ---\n\n"
                 + (items[o].get("body") or "")
             )
-        merged_label = items[keep].get("label", "?") + " + " + ", ".join(items[o].get("label", "?") for o in others)
+        merged_label = _dedup_source_labels([items[keep].get("label", "?")] + [items[o].get("label", "?") for o in others])
         items[keep] = {**items[keep], "body": merged_body[:16000], "label": merged_label}
         to_remove.update(others)
         merge_notes.append(f"{merged_label}: {v.get('reason', '')[:120]}")
@@ -12905,7 +13099,7 @@ def check_cli_login(cli_path: Optional[str] = None) -> Optional[str]:
     try:
         sr = _run_claude_cli_subprocess_streaming(
             [cli, "--print", "--output-format", "text", "--model", "haiku",
-             "--dangerously-skip-permissions", "--effort", "low"],
+             "--dangerously-skip-permissions", "--effort", cli_effort("mechanik")],
             "Antworte nur: OK", timeout_seconds=60, expected_duration_s=6.0,
             label="Anmelde-Check")
     except Exception as exc:
@@ -13460,11 +13654,11 @@ def attach_inbox_translations(episodes: List[dict], cli_path: Optional[str] = No
     try:
         sr = _run_claude_cli_subprocess_streaming(
             [cli, "--print", "--output-format", "text", "--model", "haiku",
-             "--dangerously-skip-permissions", "--effort", "low",
+             "--dangerously-skip-permissions", "--effort", cli_effort("mechanik"),
              "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."],
             payload, timeout_seconds=240, expected_duration_s=45.0, label="Titel-Übersetzung")
         m = re.search(r"\{.*\}", (sr.get("stdout") or ""), re.DOTALL)
-        data = json.loads(m.group(0)) if (sr.get("ok") and m) else {}
+        data = (_loads_llm_json(m.group(0)) or {}) if (sr.get("ok") and m) else {}
     except Exception as exc:
         print(f"[übersetzung] fehlgeschlagen: {exc}", file=sys.stderr)
         return 0
@@ -13577,11 +13771,15 @@ def split_special_topics(text: str) -> List[str]:
 
 _MISSING_TOPICS_PROMPT = """Du bist Nachrichten-Redakteur für ein persönliches deutsches Audio-Briefing.
 
-AUFGABE Recherchiere im Netz (3-5 gezielte Suchen, seriöse Quellen), was HEUTE die wichtigsten Nachrichten-Themen sind: Weltgeschehen, Deutschland, Baden-Württemberg/Region Tübingen — plus die erkennbaren Interessensfelder des Hörers (aus den Listen unten ablesbar, z.B. Tech/KI). Vergleiche mit BEIDEM — was der Hörer in den letzten Tagen bereits im Briefing hatte UND was er für das heutige Briefing schon eingesammelt hat:
+HEUTE IST {today}. Dein Trainingswissen ist Monate alt — es zählt NICHT als Nachrichtenlage.
+
+AUFGABE Recherchiere im Netz (3-5 gezielte Suchen, seriöse Quellen), was JETZT — in den letzten 72 Stunden — die wichtigsten Nachrichten-Themen sind: Weltgeschehen, Deutschland, Baden-Württemberg/Region Tübingen — plus die erkennbaren Interessensfelder des Hörers (aus den Listen unten ablesbar, z.B. Tech/KI). Vergleiche mit BEIDEM — was der Hörer in den letzten Tagen bereits im Briefing hatte UND was er für das heutige Briefing schon eingesammelt hat:
 {history}
 {staged}
 
-ERGEBNIS Nenne die 3-6 WICHTIGSTEN Themen, die in KEINER der beiden Listen (auch nicht im heute Eingesammelten) vorkommen oder nur am Rand — Dinge mit echter Tragweite, kein Promi-Klatsch, nichts Kleinteiliges. Für jedes: ein prägnanter Sonderthema-Vorschlag (als recherchierbare Frage oder Stichwort formuliert) plus EIN Satz, warum es gerade relevant ist. Fehlt nichts Wesentliches, gib eine leere Liste zurück — lieber ehrlich leer als künstlich gefüllt.
+AKTUALITÄTS-PFLICHT (hart): Jedes vorgeschlagene Thema braucht einen konkreten AUFHÄNGER aus den letzten 72 Stunden (Ereignis, Beschluss, Veröffentlichung, Eskalation), den du per Websuche VERIFIZIERT hast — nenne das Datum des Aufhängers im why-Satz (z.B. „… (Stand {today_short})"). Ein Thema, für das du keinen datierten frischen Beleg gefunden hast, lässt du WEG — auch wenn es dir wichtig erscheint. Laufende Dauerlagen (Kriege, Verhandlungen) nur bei NEUER Entwicklung der letzten 72h.
+
+ERGEBNIS Nenne die 3-6 WICHTIGSTEN Themen, die in KEINER der beiden Listen (auch nicht im heute Eingesammelten) vorkommen oder nur am Rand — Dinge mit echter Tragweite, kein Promi-Klatsch, nichts Kleinteiliges. Für jedes: ein prägnanter Sonderthema-Vorschlag (als recherchierbare Frage oder Stichwort formuliert) plus EIN Satz, warum es GERADE JETZT relevant ist (mit Datum des Aufhängers). Fehlt nichts Wesentliches, gib eine leere Liste zurück — lieber ehrlich leer als künstlich gefüllt.
 
 ANTWORT NUR ALS JSON:
 {{"missing": [{{"topic": "…", "why": "…"}}]}}"""
@@ -13595,15 +13793,19 @@ def suggest_missing_topics_via_cli(cli_path: Optional[str] = None, timeout_secon
     cli = cli_path or _locate_claude_cli()
     if not cli:
         return {"ok": False, "error": "Claude CLI nicht gefunden.", "topics": []}
-    hist = _recent_topic_history_block(days=4, cap=60) or "\n(keine Historie vorhanden)"
+    hist = _recent_topic_history_block(days=6, cap=80) or "\n(keine Historie vorhanden)"
     staged = ""
     if staged_lines:
         staged = ("\nBEREITS FÜR HEUTE EINGESAMMELT (geht ins heutige Briefing — zählt als abgedeckt; "
                   "Links anhand ihres Sprech-Pfads deuten):\n"
                   + "\n".join(f"- {l[:200]}" for l in staged_lines[:80]))
-    payload = _MISSING_TOPICS_PROMPT.format(history=hist, staged=staged)
+    _now = datetime.datetime.now()
+    _wd = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][_now.weekday()]
+    payload = _MISSING_TOPICS_PROMPT.format(history=hist, staged=staged,
+                                            today=f"{_wd}, der {_now.strftime('%d.%m.%Y')}",
+                                            today_short=_now.strftime("%d.%m."))
     cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
-           "--dangerously-skip-permissions", "--effort", "medium",
+           "--dangerously-skip-permissions", "--effort", cli_effort("verwebung"),
            "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."]
     try:
         sr = _run_claude_cli_subprocess_streaming(cmd, payload, timeout_seconds=timeout_seconds,
@@ -13612,7 +13814,13 @@ def suggest_missing_topics_via_cli(cli_path: Optional[str] = None, timeout_secon
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if not (sr.get("ok") and m):
             return {"ok": False, "error": (sr.get("error") or raw[:200] or "leere Antwort"), "topics": []}
-        data = json.loads(m.group(0))
+        candidate = m.group(0)
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            # Häufigster Fehler: nicht-escapte Anführungszeichen in den "why"-Texten
+            # (Zitate, deutsche „…") beenden den String vorzeitig → reparieren.
+            data = json.loads(_repair_llm_json_quotes(candidate))
         topics = [{"topic": str(t.get("topic") or "")[:300], "why": str(t.get("why") or "")[:300]}
                   for t in (data.get("missing") or []) if t.get("topic")]
         return {"ok": True, "error": None, "topics": topics}
@@ -13829,7 +14037,7 @@ def _condense_weather_for_synthesis(weather_text: str, cli_path: Optional[str] =
         try:
             sr = _run_claude_cli_subprocess_streaming(
                 [cli, "--print", "--output-format", "text", "--model", "sonnet",
-                 "--dangerously-skip-permissions", "--effort", "low"],
+                 "--dangerously-skip-permissions", "--effort", cli_effort("mechanik")],
                 _WEATHER_CONDENSE_PROMPT + "\n\n=== ROHBERICHT ===\n\n" + raw[:8000],
                 timeout_seconds=150, expected_duration_s=25.0, label="Wetter verdichten")
             out = (sr.get("stdout") or "").strip()
@@ -13883,14 +14091,14 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         lines.append(f"[{i}] ({it.get('label', '?')}, {it.get('kind', 'article')}) {excerpt}")
     payload = _TOPIC_CLUSTER_PROMPT + "\n\n=== QUELLEN ===\n\n" + "\n".join(lines)
     cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_CLASSIFY_MODEL,
-           "--dangerously-skip-permissions", "--effort", "low",
+           "--dangerously-skip-permissions", "--effort", cli_effort("klassifik"),
            "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."]
     topics = []
     try:
         sr = _run_claude_cli_subprocess_streaming(cmd, payload, timeout_seconds=300,
                                                   expected_duration_s=40.0, label="Themen-Bündelung (Claude)")
         m = re.search(r"\{.*\}", (sr.get("stdout") or ""), re.DOTALL)
-        data = json.loads(m.group(0)) if (sr.get("ok") and m) else {}
+        data = (_loads_llm_json(m.group(0)) or {}) if (sr.get("ok") and m) else {}
         for t in (data.get("topics") or []):
             members = [int(x) for x in (t.get("members") or []) if str(x).strip().isdigit() or isinstance(x, int)]
             members = [x for x in members if 1 <= x <= len(items)]
@@ -13990,7 +14198,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         _model = _CLI_JUDGE_MODEL if _use_opus else "sonnet"
         t["_model_used"] = "opus" if _use_opus else "sonnet"
         c = [cli, "--print", "--output-format", "text", "--model", _model,
-             "--dangerously-skip-permissions", "--effort", "medium"]
+             "--dangerously-skip-permissions", "--effort", cli_effort("verwebung")]
         for attempt in (1, 2):
             try:
                 sr2 = _run_claude_cli_subprocess_streaming(
@@ -14004,7 +14212,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
                         try:
                             _cut = _run_claude_cli_subprocess_streaming(
                                 [cli, "--print", "--output-format", "text", "--model", "sonnet",
-                                 "--dangerously-skip-permissions", "--effort", "low"],
+                                 "--dangerously-skip-permissions", "--effort", cli_effort("artikel")],
                                 f"Kürze diesen Vorlese-Beitrag auf HÖCHSTENS {wmax} Wörter, ohne wichtige Fakten/Namen/Zahlen "
                                 f"zu verlieren. Behalte Format exakt bei: ### Titel, Fließtext, am Ende eine Zeile 'Was bleibt:' "
                                 f"mit einem Satz. NUR den gekürzten Beitrag ausgeben.\n\n{out}",
@@ -14067,12 +14275,15 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
                 _uncovered.append({"label": _iu.get("label", "?"), "kind": _iu.get("kind", "article"), "title": _tu})
             print(f"[synthese] Thema fehlgeschlagen: {t['title'][:60]} ({len(t['members'])} Quelle(n) betroffen)", file=sys.stderr)
             continue
-        labels = []
-        for m_ in t["members"]:
-            lab = (items[m_ - 1].get("label") or "").strip()
-            if lab and lab not in labels:
-                labels.append(lab)
-        sections.append({"type": "article", "content": md, "source_label": " + ".join(labels[:4])})
+        _label = _dedup_source_labels([items[m_ - 1].get("label") for m_ in t["members"]])
+        # Reine Podcast-Themen als type="podcast" stempeln → der Ressort-Bucket-Sort
+        # stellt sie ans ENDE (Podcast-Block), statt sie nach Inhalt zwischen die
+        # Artikel zu streuen. Ohne das erben Synthese-Beiträge pauschal "article" und
+        # ein "Länger erhalten"-Podcast landete mitten im Briefing (Bug 19.07.).
+        # Gemischte Themen (Podcast + News zum selben Ereignis) bleiben bewusst Artikel.
+        _kinds = [items[m_ - 1].get("kind") for m_ in t["members"]]
+        _stype = "podcast" if (_kinds and all(k == "podcast" for k in _kinds)) else "article"
+        sections.append({"type": _stype, "content": md, "source_label": _label})
 
     # 🎙️ Verbatim-Podcasts: Original-Zusammenfassungen 1:1 anhängen (type=podcast →
     # sortiert ans Ende, wird als eigener Podcast-Block vorgelesen, unverändert).
@@ -14152,7 +14363,7 @@ def _check_podcast_summary_faithfulness(summary: str, transcript: str, cli_path=
                    + "\n\n=== TRANSKRIPT (Auszug) ===\n\n" + _tx)
         sr = _run_claude_cli_subprocess_streaming(
             [cli, "--print", "--output-format", "text", "--model", "sonnet",
-             "--dangerously-skip-permissions", "--effort", "low",
+             "--dangerously-skip-permissions", "--effort", cli_effort("pruefen"),
              "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."],
             payload, timeout_seconds=200, expected_duration_s=30.0, label="Podcast-Faktencheck")
         if not sr.get("ok"):
@@ -14160,7 +14371,7 @@ def _check_podcast_summary_faithfulness(summary: str, transcript: str, cli_path=
         m = re.search(r"\{.*\}", (sr.get("stdout") or ""), re.DOTALL)
         if not m:
             return []
-        data = json.loads(m.group(0))
+        data = _loads_llm_json(m.group(0)) or {}
         out = [str(c).strip() for c in (data.get("concerns") or []) if str(c).strip()]
         return out[:5]
     except Exception as exc:
@@ -14206,7 +14417,9 @@ def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str
                + "\n\n=== TRANSKRIPT ===\n\n" + cleaned)
     cmd = [
         cli, "--print", "--output-format", "text", "--model", model,
-        "--dangerously-skip-permissions", "--effort", ("high" if _n_chars >= 80_000 else "medium"),
+        "--dangerously-skip-permissions",
+        # Sehr lange Transkripte brauchen mehr Denkstufe, um nichts zu verlieren.
+        "--effort", (cli_effort("synthese") if _n_chars >= 80_000 else cli_effort("podcast")),
     ]
     try:
         sr = _run_claude_cli_subprocess_streaming(
@@ -14327,7 +14540,7 @@ def _classify_sections_via_cli(titles_by_idx, cli_path=None, timeout_seconds=150
     payload = _RESSORT_CLASSIFY_PROMPT + "\n\n=== ÜBERSCHRIFTEN ===\n\n" + "\n".join(lines)
     cmd = [
         cli, "--print", "--output-format", "text", "--model", _CLI_CLASSIFY_MODEL,
-        "--dangerously-skip-permissions", "--effort", "low",
+        "--dangerously-skip-permissions", "--effort", cli_effort("klassifik"),
         "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt, ohne Vorrede oder Erklärung.",
     ]
     try:
@@ -14344,7 +14557,7 @@ def _classify_sections_via_cli(titles_by_idx, cli_path=None, timeout_seconds=150
     if not match:
         return {}
     try:
-        data = json.loads(match.group(0))
+        data = _loads_llm_json(match.group(0)) or {}
     except Exception:
         return {}
     if not isinstance(data, dict):
@@ -14429,15 +14642,11 @@ def _drop_condensed_duplicates(sections, cli_path=None):
         keep, drop = (a, b) if len_a >= len_b else (b, a)
         if drop in to_drop or keep in to_drop:
             continue
-        labels = []
-        for x in (keep, drop):
-            lab = (sections[x].get("source_label") or "").strip()
-            if lab and lab not in labels:
-                labels.append(lab)
-        if labels:
-            sections[keep]["source_label"] = " + ".join(labels)
+        _merged_label = _dedup_source_labels([sections[keep].get("source_label"), sections[drop].get("source_label")])
+        if _merged_label:
+            sections[keep]["source_label"] = _merged_label
         to_drop.add(drop)
-        notes.append(f"{' + '.join(labels) or '?'}: {str(v.get('reason', ''))[:100]}")
+        notes.append(f"{_merged_label or '?'}: {str(v.get('reason', ''))[:100]}")
 
     if not to_drop:
         print("[post-dedup] Opus: keine echte Dublette — nichts entfernt.", file=sys.stderr)
@@ -14567,13 +14776,13 @@ def _rate_items_via_cli(items, cli_path=None):
         lines.append(f"[{i}] ({it.get('label', '?')}, {it.get('kind', 'article')}) {excerpt}")
     payload = _ITEM_RATE_PROMPT + "\n\n=== QUELLEN ===\n\n" + "\n".join(lines)
     cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_CLASSIFY_MODEL,
-           "--dangerously-skip-permissions", "--effort", "low",
+           "--dangerously-skip-permissions", "--effort", cli_effort("klassifik"),
            "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."]
     try:
         sr = _run_claude_cli_subprocess_streaming(cmd, payload, timeout_seconds=240,
                                                   expected_duration_s=40.0, label="Tragweite-Bewertung")
         m = re.search(r"\{.*\}", (sr.get("stdout") or ""), re.DOTALL)
-        data = json.loads(m.group(0)) if (sr.get("ok") and m) else {}
+        data = (_loads_llm_json(m.group(0)) or {}) if (sr.get("ok") and m) else {}
     except Exception as exc:
         print(f"[intelligent] Bewertung fehlgeschlagen: {exc}", file=sys.stderr)
         return 0
@@ -14712,7 +14921,7 @@ def run_briefing_via_claude_cli_chunked(
 
     cmd = [
         cli, "--print", "--output-format", "text", "--model", model,
-        "--dangerously-skip-permissions", "--effort", "low",
+        "--dangerously-skip-permissions", "--effort", cli_effort("artikel"),
         "--append-system-prompt", _CLAUDE_CLI_RESPONSE_PROMPT,
     ]
     cwd = os.path.dirname(os.path.abspath(output_pdf_path)) or os.getcwd()
@@ -15015,7 +15224,7 @@ def run_briefing_via_claude_cli_chunked(
         def _one_special(_topic):
             _pl = _SPECIAL_TOPIC_PROMPT.format(topic=_topic) + _hist_block
             _c = [cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
-                  "--dangerously-skip-permissions", "--effort", "medium"]
+                  "--dangerously-skip-permissions", "--effort", cli_effort("verwebung")]
             for _try in (1, 2):
                 try:
                     _sr = _run_claude_cli_subprocess_streaming(
@@ -15079,7 +15288,7 @@ def run_briefing_via_claude_cli_chunked(
         try:
             _sr = _run_claude_cli_subprocess_streaming(
                 [cli, "--print", "--output-format", "text", "--model", "sonnet",
-                 "--dangerously-skip-permissions", "--effort", "low",
+                 "--dangerously-skip-permissions", "--effort", cli_effort("klassifik"),
                  "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."],
                 _pl, timeout_seconds=120, expected_duration_s=20.0, label="Ressort-Anmoderationen")
             _m = re.search(r"\{.*\}", (_sr.get("stdout") or ""), re.DOTALL)
@@ -15198,6 +15407,14 @@ def run_briefing_via_claude_cli_chunked(
         if content_check_data.get("ok"):
             print(f"[plausi] {content_check_data.get('checked', 0)} Beiträge geprüft: "
                   f"{content_check_data.get('warnings', 0)} Warnungen, {content_check_data.get('notices', 0)} Hinweise.", file=sys.stderr)
+            # Tippfehler direkt korrigieren — wortgenaue Ersetzung, kein Modell-Aufruf.
+            # Muss vor dem PDF-Bau passieren, damit PDF, TXT, ePub und der
+            # Reader-Upload alle die korrigierte Fassung tragen.
+            _typos = content_check_data.get("typos") or []
+            if _typos:
+                _n_fixed = apply_typo_fixes(all_sections, _typos)
+                content_check_data["typos_fixed"] = _n_fixed
+                print(f"[plausi] {_n_fixed} Tippfehler korrigiert.", file=sys.stderr)
         else:
             print(f"[plausi] Check fehlgeschlagen: {content_check_data.get('error')}", file=sys.stderr)
         if auto_repair and content_check_data.get("ok") and content_check_data.get("warnings", 0) > 0:
@@ -15625,6 +15842,9 @@ Antworte ausschließlich mit EINEM JSON-Codeblock (```json … ```), nichts davo
       "soft_issues": ["max 3 kurze Hinweise"]
     }
   ],
+  "typos": [
+    {"falsch": "exaktes falsch geschriebenes Wort", "richtig": "korrigiertes Wort"}
+  ],
   "warnings": 0,
   "notices": 0,
   "ok": 0,
@@ -15634,7 +15854,117 @@ Antworte ausschließlich mit EINEM JSON-Codeblock (```json … ```), nichts davo
 
 Reihenfolge der `items` = Reihenfolge der Beiträge im fertigen Briefing.
 Zähler `warnings`/`notices`/`ok` müssen mit den Levels in `items` übereinstimmen.
+
+═══════════════════════════════════════════════
+ZUSÄTZLICH: TIPPFEHLER-SUCHE (`typos`)
+═══════════════════════════════════════════════
+Das Briefing wird vorgelesen — ein verrutschter Buchstabe wird auch falsch
+ausgesprochen. Sammle deshalb in `typos` eindeutige Schreibfehler.
+
+NUR DIESE FÄLLE:
+- Fehlender, doppelter oder vertauschter Buchstabe („Süwestfrankreich" → „Südwestfrankreich")
+- Offensichtlicher Vertipper in einem Namen oder Fachbegriff
+- Falsche Gross-/Kleinschreibung am Wortanfang eines Substantivs
+
+NIEMALS AUFNEHMEN (das ist kein Tippfehler):
+- Stil, Wortwahl, Synonyme, Formulierungen, Satzbau, Zeichensetzung
+- Korrekte deutsche Komposita, auch ungewöhnliche („Feuerwalze", „Brandkatastrophe")
+- Eigennamen, Marken, Ortsnamen, fremdsprachige Begriffe, die nur ungewohnt aussehen
+- Zahlen, Datums- oder Einheitenformate
+- Alles, wo du dir nicht sicher bist
+
+REGELN:
+- `falsch` muss EXAKT so im Briefing stehen (zeichengenau), sonst wird es verworfen.
+- `falsch` ist immer genau EIN Wort ohne Leerzeichen. Keine Wortgruppen, keine Sätze.
+- `richtig` unterscheidet sich nur minimal von `falsch` — es ist dasselbe Wort, korrigiert.
+- Im Zweifel weglassen. Eine leere Liste `"typos": []` ist ein völlig normales Ergebnis
+  und besser als eine unsichere Korrektur.
+
+Die Tippfehler-Suche gilt für ALLE Textblöcke — auch für die unter
+„NUR SPRACHPRÜFUNG" aufgeführten, die inhaltlich nicht geprüft werden.
+Diese Blöcke bekommen KEINEN Eintrag in `items`.
 """
+
+
+def _sanitize_typo_suggestions(raw_typos, briefing_text: str) -> List[dict]:
+    """Filtert Tippfehler-Vorschläge auf das, was nachweislich sicher ist.
+
+    Das Modell darf hier NICHT umformulieren — es darf nur einen Vertipper
+    geradeziehen. Deshalb muss jeder Vorschlag alle Hürden nehmen:
+      - genau ein Wort, keine Wortgruppe
+      - steht zeichengenau so im Briefing
+      - Korrektur ist demselben Wort sehr ähnlich (kein Wortaustausch)
+      - Gross-/Kleinschreibung am Wortanfang bleibt erhalten
+    """
+    if not isinstance(raw_typos, list):
+        return []
+
+    out, seen = [], set()
+    for entry in raw_typos[:40]:
+        if not isinstance(entry, dict):
+            continue
+        wrong = str(entry.get("falsch") or "").strip()
+        right = str(entry.get("richtig") or "").strip()
+
+        if not wrong or not right or wrong == right:
+            continue
+        if len(wrong) < 3 or len(wrong) > 40 or len(right) > 40:
+            continue
+        # Nur einzelne Wörter — verhindert, dass ganze Passagen ersetzt werden.
+        if any(c.isspace() for c in wrong) or any(c.isspace() for c in right):
+            continue
+        # Muss wirklich im Text stehen, sonst ist der Vorschlag halluziniert.
+        if wrong not in briefing_text:
+            continue
+        # Ähnlichkeit: ein Vertipper ändert wenig. Ein Wortaustausch ändert viel.
+        if SequenceMatcher(None, wrong.lower(), right.lower()).ratio() < 0.72:
+            continue
+        # Erster Buchstabe darf die Gross-/Kleinschreibung nicht wechseln, ausser
+        # das Modell korrigiert genau das (dann ist der Rest identisch).
+        if wrong[0] != right[0] and wrong[1:] != right[1:]:
+            continue
+        if wrong in seen:
+            continue
+        seen.add(wrong)
+        out.append({"falsch": wrong, "richtig": right})
+
+    return out[:15]
+
+
+def apply_typo_fixes(sections: List[dict], typos: List[dict]) -> int:
+    """Ersetzt bestätigte Tippfehler wortgenau in den Sections.
+
+    Bewusst simpel: literale Ersetzung mit Wortgrenzen, kein Neuschreiben durch
+    ein Modell. Gibt die Zahl der tatsächlich ersetzten Vorkommen zurück.
+    """
+    if not sections or not typos:
+        return 0
+
+    # Deutsche Beugung mitnehmen: „Süwestfrankreich" soll auch „Süwestfrankreichs"
+    # korrigieren. Bewusst eine feste Endungsliste statt \w* — sonst würde ein
+    # Tippfehler auch echte Wörter treffen, die zufällig so anfangen.
+    endings = "|".join(("es", "en", "er", "em", "ns", "s", "e", "n"))
+
+    replaced = 0
+    for section in sections:
+        for field in ("content", "title"):
+            text = section.get(field)
+            if not isinstance(text, str) or not text:
+                continue
+            new_text = text
+            for t in typos:
+                pattern = (r"(?<!\w)" + re.escape(t["falsch"])
+                           + r"(" + endings + r")?(?!\w)")
+                repl = t["richtig"].replace("\\", "\\\\") + r"\1"
+                new_text, n = re.subn(
+                    pattern,
+                    lambda m, _r=t["richtig"]: _r + (m.group(1) or ""),
+                    new_text,
+                )
+                replaced += n
+            if new_text != text:
+                section[field] = new_text
+    return replaced
 
 
 def run_content_check_via_claude_cli(
@@ -15705,6 +16035,22 @@ def run_content_check_via_claude_cli(
         briefing_lines.append("")
     briefing_block = "\n".join(briefing_lines)
 
+    # Synthetische Blöcke (Top 3, Essenz, Recap, Verabschiedung, Ressort-Titel)
+    # haben keine einzelne Quelle → kein Faktencheck möglich. Sie stehen aber ganz
+    # oben im Briefing und werden zuerst vorgelesen, also gehen sie wenigstens in
+    # die Tippfehler-Suche. Sie bekommen bewusst KEINE Beitragsnummer, damit sie
+    # nicht in `items` auftauchen und die Zähler nicht verfälschen.
+    language_only_sections = [
+        s for s in briefing_sections
+        if s not in checkable_sections
+        and s.get("type") != "transition"
+        and (s.get("content") or "").strip()
+    ]
+    language_block = "\n".join(
+        f"--- {s.get('source_label') or 'Block'} ---\n{(s.get('content') or '').strip()}\n"
+        for s in language_only_sections
+    )
+
     prompt_input = (
         "═══════════════════════════════════════════════════════════\n"
         "ORIGINAL-ROHDATEN (was Claude beim Briefing-Schreiben bekam)\n"
@@ -15715,13 +16061,22 @@ def run_content_check_via_claude_cli(
         "═══════════════════════════════════════════════════════════\n\n"
         f"{briefing_block}\n"
     )
+    if language_block:
+        prompt_input += (
+            "\n═══════════════════════════════════════════════════════════\n"
+            "NUR SPRACHPRÜFUNG (kein Faktencheck, kein `items`-Eintrag)\n"
+            "Diese Blöcke sind Zusammenfassungen ohne einzelne Quelle.\n"
+            "Prüfe sie ausschliesslich auf Tippfehler für `typos`.\n"
+            "═══════════════════════════════════════════════════════════\n\n"
+            f"{language_block}\n"
+        )
 
     cmd = [
         cli,
         "--print",
         "--model", model,
         "--dangerously-skip-permissions",
-        "--effort", "low",
+        "--effort", cli_effort("pruefen"),
         "--system-prompt", _CLAUDE_CLI_CONTENT_CHECK_SYSTEM_PROMPT,
     ]
 
@@ -15773,11 +16128,10 @@ def run_content_check_via_claude_cli(
         first = raw_response.find("{")
         last = raw_response.rfind("}")
         candidate = raw_response[first:last + 1] if first >= 0 and last > first else raw_response
-    try:
-        parsed = _json.loads(candidate)
-    except Exception as exc:
+    parsed = _loads_llm_json(candidate)
+    if parsed is None:
         return {"ok": False,
-                "error": f"Content-Check JSON-Parsing fehlgeschlagen: {exc}",
+                "error": "Content-Check JSON-Parsing fehlgeschlagen (auch nach Quote-Reparatur)",
                 "enabled": True, "mode": "warn", "checked": 0, "warnings": 0,
                 "notices": 0, "items": [], "raw_response": raw_response}
 
@@ -15813,6 +16167,12 @@ def run_content_check_via_claude_cli(
         else:
             ok_count += 1
 
+    all_text = briefing_block + "\n" + language_block
+    typos = _sanitize_typo_suggestions(parsed.get("typos"), all_text)
+    if typos:
+        print("[plausi] Tippfehler gefunden: "
+              + ", ".join(f"{t['falsch']} → {t['richtig']}" for t in typos), file=sys.stderr)
+
     return {
         "ok": True,
         "error": None,
@@ -15824,6 +16184,7 @@ def run_content_check_via_claude_cli(
         "notices": notices,
         "ok_count": ok_count,
         "items": clean_items,
+        "typos": typos,
         "raw_response": raw_response,
         "elapsed_seconds": elapsed,
         "usage": stream_result.get("usage"),
@@ -15867,7 +16228,7 @@ def _run_genius_quality_check_via_cli(
         cli, "--print",
         "--model", model,
         "--dangerously-skip-permissions",
-        "--effort", "low",
+        "--effort", cli_effort("pruefen"),
         "--system-prompt", _GENIUS_QUALITY_CHECK_PROMPT,
     ]
 
@@ -15893,7 +16254,7 @@ def _run_genius_quality_check_via_cli(
     if not m:
         return {"issues": [], "coverage_ok": None, "cluster_ok": None}
     try:
-        data = _json.loads(m.group(0))
+        data = _loads_llm_json(m.group(0))
         if not isinstance(data, dict):
             return {"issues": [], "coverage_ok": None, "cluster_ok": None, "usage": stream_result.get("usage")}
         if not isinstance(data.get("issues"), list):
@@ -15944,7 +16305,7 @@ def _run_genius_repair_via_cli(
         cli, "--print",
         "--model", model,
         "--dangerously-skip-permissions",
-        "--effort", "low",
+        "--effort", cli_effort("pruefen"),
         "--system-prompt", _GENIUS_REPAIR_PROMPT,
     ]
 
@@ -16130,7 +16491,7 @@ def run_briefing_repair_via_claude_cli(
         "--print",
         "--model", model,
         "--dangerously-skip-permissions",
-        "--effort", "low",
+        "--effort", cli_effort("pruefen"),
         "--system-prompt", _CLAUDE_CLI_REPAIR_SYSTEM_PROMPT,
     ]
 
@@ -16180,10 +16541,9 @@ def run_briefing_repair_via_claude_cli(
         first = raw_response.find("{")
         last = raw_response.rfind("}")
         candidate = raw_response[first:last + 1] if first >= 0 and last > first else raw_response
-    try:
-        parsed = _json.loads(candidate)
-    except Exception as exc:
-        return {"ok": False, "error": f"Auto-Repair JSON-Parsing fehlgeschlagen: {exc}",
+    parsed = _loads_llm_json(candidate)
+    if parsed is None:
+        return {"ok": False, "error": "Auto-Repair JSON-Parsing fehlgeschlagen (auch nach Quote-Reparatur)",
                 "repaired_count": 0, "repaired_indices": [],
                 "sections": briefing_sections, "raw_response": raw_response}
 
@@ -16346,7 +16706,7 @@ def _enrich_section_titles_via_cli(sections, text_by_idx, cli_path=None, model="
         "der Eingabe. Keine Vorrede, keine Erklärungen."
     )
     cmd = [cli, "--print", "--output-format", "text", "--model", model,
-           "--dangerously-skip-permissions", "--effort", "low",
+           "--dangerously-skip-permissions", "--effort", cli_effort("klassifik"),
            "--system-prompt", system_prompt]
     try:
         res = _run_claude_cli_subprocess_streaming(
@@ -16473,7 +16833,7 @@ def run_genius_summary_via_claude_cli(
         "--output-format", "text",
         "--model", model,
         "--dangerously-skip-permissions",
-        "--effort", "low",
+        "--effort", cli_effort("synthese"),
         "--system-prompt", system_prompt,
         "--append-system-prompt", _CLAUDE_CLI_GENIUS_RESPONSE_PROMPT,
     ]
@@ -16774,7 +17134,7 @@ def run_direct_genius_via_claude_cli(
     # Mit Opus heben wir den Aufwand daher auf "medium", damit die einmalige
     # Roh-zu-Kompakt-Verdichtung dieselbe Qualität wie der Voll-Weg erreicht.
     # Sonnet bleibt aus Kostengründen bei "low".
-    _direct_effort = "medium" if (model or "").lower() == "opus" else "low"
+    _direct_effort = cli_effort("synthese") if (model or "").lower() == "opus" else cli_effort("artikel")
 
     cmd = [
         cli,
@@ -17124,7 +17484,7 @@ def run_meta_briefing_via_claude_cli(
         # Synthese-Aufgabe (Muster/Querverbindungen/Coach) → hohe Sorgfalt. Ein
         # einziger Aufruf, kostenlos. „low" ließ Opus gelegentlich abbrechen und
         # nur die Schlusszeile liefern.
-        "--effort", "high",
+        "--effort", cli_effort("meta"),
         "--append-system-prompt", _CLAUDE_CLI_META_RESPONSE_PROMPT,
     ]
 

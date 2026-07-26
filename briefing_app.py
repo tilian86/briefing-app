@@ -80,6 +80,7 @@ from briefing_core import (
     run_briefing_via_claude_cli,
     run_briefing_via_claude_cli_chunked,
     run_content_check_via_claude_cli,
+    apply_typo_fixes,
     run_direct_genius_via_claude_cli,
     run_genius_summary_via_claude_cli,
     run_meta_briefing_via_claude_cli,
@@ -174,6 +175,11 @@ _DRAFT_DEFAULTS = {
     "reader_cleanup_days": 14,
     "whatsapp_pdf_additional": True,
     "last_meta_created_iso": "",
+    "weekly_auto_7d": True,        # alle 7 Tage automatisch nach einem Tagesbriefing
+    "weekly_after_daily": False,   # Einmal-Häkchen: direkt nach dem nächsten Tagesbriefing
+    # Einwurf-Feld (rohe Podcast-Transkripte) MUSS persistiert werden: lebte vorher
+    # nur in session_state + localStorage — App-Restart hat 13 Transkripte gekostet (16.07.).
+    "raw_transcript_inbox": "",
     "last_weltlage_check_iso": "",
     "briefing_depth_multi": ["Kürzer"],
     "export_pdf": True,
@@ -337,7 +343,7 @@ def _backup_draft_before_shrink(new_data: dict):
         if not _DRAFT_PATH.exists():
             return
         old = json.loads(_DRAFT_PATH.read_text(encoding="utf-8"))
-        for f in ("urls_text", "paywall_text", "podcast_text"):
+        for f in ("urls_text", "paywall_text", "podcast_text", "raw_transcript_inbox"):
             o, n = len(old.get(f) or ""), len(new_data.get(f) or "")
             if o >= 200 and n < o * 0.2:
                 bdir = _APP_DIR / ".briefing_draft_backups"
@@ -2378,7 +2384,9 @@ def _sum_cli_usage(t0_iso: str, t1_iso: str) -> dict:
                 b["n"] += 1
         except Exception:
             continue
-    price = {"claude-sonnet-5": (3, 15, 3.75, 0.3), "claude-opus-4": (5, 25, 6.25, 0.5), "claude-haiku": (1, 5, 1.25, 0.1)}
+    # Präfixe absichtlich ohne Versionsnummer beim Opus: neue Opus-Generationen
+    # (5, 6, …) erben den Preis 5/25 automatisch statt auf Sonnet zurückzufallen.
+    price = {"claude-sonnet-5": (3, 15, 3.75, 0.3), "claude-opus": (5, 25, 6.25, 0.5), "claude-haiku": (1, 5, 1.25, 0.1)}
     usd = 0.0
     for m, b in by_model.items():
         pi, po, pcw, pcr = next((v for k, v in price.items() if m.startswith(k)), (3, 15, 3.75, 0.3))
@@ -3202,6 +3210,103 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             "füge gern direkt weitere ein. Fertige Zusammenfassungen erscheinen automatisch unten."
         )
         st.rerun()
+
+    # 🎧 Pocket Casts — ZWEI-SCHRITT: erst PRÜFEN (welche Folgen ein Transkript haben,
+    # kostet KEIN Limit — nur HTTP), dann farbcodiert AUSWÄHLEN und nur die Ausgewählten
+    # zusammenfassen (Limit nur dafür). Verhindert, dass Ungewolltes automatisch reinrutscht.
+    st.markdown("---")
+    st.caption("🎧 **Pocket Casts:** prüft deine New-Releases-Folgen (am Handy kuratiert) und zeigt farbcodiert, "
+               "welche ein Transkript haben — du wählst, was zusammengefasst wird. **Prüfen kostet kein Limit**, nur das Zusammenfassen.")
+
+    def _pc_submit_and_summarize(_items):
+        """Ausgewählte Transkripte in den Hintergrund-Pool geben (gleiche Maschinerie
+        wie Roh-Box/Apple-Runde — Ergebnisse erscheinen automatisch im Podcast-Feld)."""
+        if st.session_state.get("_sum_pool") is None:
+            from concurrent.futures import ThreadPoolExecutor as _PcPool
+            st.session_state["_sum_pool"] = _PcPool(max_workers=2)
+        _jobs = st.session_state.get("_round_jobs") or []
+        for _t in _items:
+            _pt = _t.get("podcast_title") or ""
+            _hdr = (f"Podcast: {_pt} — Episode: {_t['title']}" if _pt else f"Podcast: {_t['title']}")
+            _blk = f"{_hdr}\n\n{_t['text']}"
+            _lbl = (f"{_pt}: {_t['title']}" if _pt else _t["title"])[:60]
+            _jobs.append({"guid": None, "title": _lbl, "path": None, "raw": _blk,
+                          "fut": st.session_state["_sum_pool"].submit(summarize_podcast_transcript_via_cli, _blk)})
+        st.session_state["_round_jobs"] = _jobs
+
+    def _pc_in_field(_title):
+        _f = (st.session_state.get("podcast_text", "") or "").lower()
+        return bool(_title) and (_title[:25].lower() in _f)
+
+    _pc_preview = st.session_state.get("_pc_preview")
+    if not _pc_preview:
+        _pcb1, _pcb2 = st.columns([3, 2])
+        with _pcb1:
+            if st.button("🎧 Pocket Casts prüfen", key="pocketcasts_preview_btn", use_container_width=True, type="primary"):
+                try:
+                    import pocketcasts_fetch as _pcf
+                    with st.spinner("🎧 New Releases laden + Transkripte prüfen (kostet kein Limit)…"):
+                        _items, _pst = _pcf.preview_new_releases()
+                except Exception as _pce:
+                    st.session_state["_podcast_inbox_last_msg"] = f"🎧 Pocket-Casts-Prüfung fehlgeschlagen: {str(_pce)[:120]}"
+                    _items, _pst = [], "error"
+                if _pst == "ok":
+                    st.session_state["_pc_preview"] = _items
+                elif _pst == "no_login_or_empty":
+                    st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login (oder keine Folgen). Einmal-Login nötig — sag mir Bescheid."
+                st.rerun()
+        with _pcb2:
+            if st.button("⚡ alle direkt holen", key="pocketcasts_direct_btn", use_container_width=True,
+                         help="Ohne Vorschau: holt + fasst alle noch nicht im Feld befindlichen sofort zusammen (hands-off)."):
+                try:
+                    import pocketcasts_fetch as _pcf
+                    with st.spinner("🎧 Holen + zusammenfassen…"):
+                        _items, _pst = _pcf.preview_new_releases()
+                except Exception:
+                    _items, _pst = [], "error"
+                if _pst == "ok":
+                    _avail = [it for it in _items if it.get("has_transcript") and not _pc_in_field(it.get("title"))]
+                    _pc_submit_and_summarize(_avail)
+                    _pcf.summarize_selection_mark([it["episode"] for it in _avail])
+                    st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_avail)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
+                else:
+                    st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Login / keine Folgen."
+                st.rerun()
+    else:
+        _new = [it for it in _pc_preview if it["has_transcript"] and not _pc_in_field(it["title"])]
+        _inf = [it for it in _pc_preview if it["has_transcript"] and _pc_in_field(it["title"])]
+        _non = [it for it in _pc_preview if not it["has_transcript"]]
+        st.markdown(f"**🎧 {len(_pc_preview)} Folgen geprüft** — 🟢 {len(_new)} neu · ⚪ {len(_inf)} schon im Feld · ⏭️ {len(_non)} ohne Transkript")
+        st.caption("🟢 ist vorausgewählt. Hake ab/an, was zusammengefasst werden soll — nur das kostet Limit. ⏭️ hat kein Transkript.")
+        _sel_idx = []
+        for _i, _it in enumerate(_pc_preview):
+            _lbl = ((f"**{_it['podcast_title']}** — {_it['title']}") if _it.get("podcast_title") else _it["title"])[:90]
+            if not _it["has_transcript"]:
+                st.caption(f"⏭️ {_lbl} · _kein Transkript_")
+            else:
+                _already = _pc_in_field(_it["title"])
+                _icon = "⚪" if _already else "🟢"
+                if st.checkbox(f"{_icon} {_lbl}" + (" · _schon im Feld_" if _already else ""),
+                               value=(not _already), key=f"pcsel_{_i}"):
+                    _sel_idx.append(_i)
+        _pcg1, _pcg2 = st.columns([3, 1])
+        with _pcg1:
+            if _sel_idx and st.button(f"✂️ {len(_sel_idx)} holen & zusammenfassen", key="pc_go_btn", type="primary", use_container_width=True):
+                import pocketcasts_fetch as _pcf
+                _chosen = [_pc_preview[i] for i in _sel_idx]
+                _pc_submit_and_summarize(_chosen)
+                _pcf.summarize_selection_mark([c["episode"] for c in _chosen])
+                for _k in range(len(_pc_preview)):
+                    st.session_state.pop(f"pcsel_{_k}", None)
+                st.session_state.pop("_pc_preview", None)
+                st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_chosen)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
+                st.rerun()
+        with _pcg2:
+            if st.button("Verwerfen", key="pc_discard_btn", use_container_width=True):
+                for _k in range(len(_pc_preview)):
+                    st.session_state.pop(f"pcsel_{_k}", None)
+                st.session_state.pop("_pc_preview", None)
+                st.rerun()
     # 🍎 Apple-Podcasts-Import: Die Podcasts-App cached jedes einmal GEÖFFNETE
     # Transkript lokal als TTML — von dort holen wir den VOLLEN Text (das manuelle
     # Kopieren in der App schneidet ab). Workflow: Episode in Apple Podcasts öffnen →
@@ -3341,7 +3446,13 @@ def _round_jobs_collector():
                 _d7["episodes"] = [x for x in (_d7.get("episodes") or []) if x.get("guid") != _j["guid"]]
                 st.session_state["podcast_inbox_data"] = _d7
             _got += 1
+            _bgs = st.session_state.get("_bg_status") or []
+            _bgs.append({"t": (_j.get("title") or "Podcast")[:55], "s": "✅"})
+            st.session_state["_bg_status"] = _bgs
         else:
+            _bgs = st.session_state.get("_bg_status") or []
+            _bgs.append({"t": (_j.get("title") or "Podcast")[:55], "s": "❌"})
+            st.session_state["_bg_status"] = _bgs
             st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [
                 f"{_j['title'][:40]}: {str(_r.get('error', '?'))[:100]}"]
             # 🛟 DATENVERLUST-SCHUTZ: gescheiterte Einwurf-Zusammenfassung (z.B. Limit) →
@@ -3362,12 +3473,22 @@ def _round_jobs_collector():
     _done_total = int(st.session_state.get("_bg_done_count") or 0) + _got
     st.session_state["_bg_done_count"] = _done_total
     if _left:
-        # Nur die Fragment-Anzeige aktualisieren — KEIN App-weiter Rerun pro Job:
-        # der würde bei vielen Jobs die Seite dauer-umbauen und Klicks verschlucken.
-        st.caption(f"⏳ {len(_left)} laufen noch · ✅ {_done_total} fertig (werden gesammelt eingefügt)…")
+        # Live-Checkliste (aktualisiert sich alle 4s): welche Podcasts fertig sind,
+        # welche gerade laufen (die vordersten — so viele wie Worker: 2), welche warten.
+        # KEIN App-weiter Rerun pro Job — nur diese Fragment-Anzeige.
+        _bgs = st.session_state.get("_bg_status") or []
+        _running = min(len(_left), 2)
+        _queued = len(_left) - _running
+        st.markdown(f"**🎧 Podcast-Zusammenfassungen läuft** — ✅ {_done_total} fertig · "
+                    f"🔄 {_running} gerade in Arbeit" + (f" · ⏳ {_queued} in Warteschlange" if _queued else ""))
+        for _it in _bgs:
+            st.caption(f"　{_it['s']} {_it['t']}")
+        for _k, _pj in enumerate(_left):
+            st.caption(f"　{'🔄' if _k < _running else '⏳'} {(_pj.get('title') or 'Podcast')[:55]}")
     if not _left and _jobs:
         st.session_state["_podcast_inbox_last_msg"] = f"✅ Alle {_done_total} Hintergrund-Zusammenfassung(en) fertig und eingefügt."
         st.session_state["_bg_done_count"] = 0
+        st.session_state["_bg_status"] = []
         _maybe_autostart_briefing("Hintergrund-Zusammenfassungen")
         st.rerun(scope="app")
 
@@ -3396,6 +3517,27 @@ podcast_text = st.text_area(
 _podcast_blocks = split_podcast_summaries(podcast_text) if podcast_text.strip() else []
 if _podcast_blocks:
     st.caption(f"📦 **{len(_podcast_blocks)}** Podcast-Zusammenfassung(en) im Feld — bereit fürs Briefing.")
+    # 🎧 Übersicht + gezielt einzelne rausnehmen (z.B. was der Automatismus versehentlich
+    # reingezogen hat). Baut das Feld sauber neu zusammen — der Rest bleibt unberührt.
+    with st.expander(f"🎧 Übersicht — einzelne rausnehmen ({len(_podcast_blocks)})", expanded=False):
+        st.caption('Hake an, was NICHT ins Briefing soll, dann „entfernen“. Der Rest bleibt wie er ist.')
+        import re as _re_pc
+        _pc_remove = []
+        for _bi, _blk in enumerate(_podcast_blocks):
+            _m = _re_pc.match(r"\s*\*\*(.+?)\*\*", _blk)
+            _lbl = (_m.group(1) if _m else next((l.strip() for l in _blk.splitlines() if l.strip()), "?"))
+            if st.checkbox(_lbl[:90], key=f"pcrm_{_bi}"):
+                _pc_remove.append(_bi)
+        if _pc_remove:
+            if st.button(f"✂️ {len(_pc_remove)} Zusammenfassung(en) entfernen", key="pc_remove_btn", type="primary"):
+                _kept = [b for i, b in enumerate(_podcast_blocks) if i not in _pc_remove]
+                st.session_state["podcast_text_pending_value"] = combine_podcast_field("", _kept)
+                for _bi in range(len(_podcast_blocks)):
+                    st.session_state.pop(f"pcrm_{_bi}", None)  # Häkchen zurücksetzen (Indizes verschieben sich)
+                st.session_state["_podcast_inbox_last_msg"] = f"✂️ {len(_pc_remove)} Podcast-Zusammenfassung(en) entfernt — {len(_kept)} bleiben."
+                st.rerun()
+        else:
+            st.caption("_(nichts angehakt)_")
 # 🛟 Gescheiterte Einwurf-Zusammenfassungen (z.B. Limit) — Roh-Text ist gesichert, NICHT verloren
 _fraw = st.session_state.get("_failed_raw_transcripts") or []
 if _fraw:
@@ -5061,7 +5203,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             "🧠 Kompaktfassung mit Opus (beste Qualität)",
             value=True,
             key="claude_cli_genius_opus",
-            help="Erzeugt die Kompaktfassung mit Opus 4.8 statt mit dem Artikel-Modell. Verdichtung + Qualitätscheck + ggf. Repair laufen auf Opus (bis zu 3 Opus-Aufrufe pro Kompaktfassung — kein Pro-Artikel-Aufruf, also quota-schonend). Etwas langsamer. Die Artikel-Masse bleibt beim Artikel-Modell.",
+            help="Erzeugt die Kompaktfassung mit Opus statt mit dem Artikel-Modell — die CLI nimmt automatisch das neueste Opus (aktuell Opus 5). Verdichtung + Qualitätscheck + ggf. Repair laufen auf Opus (bis zu 3 Opus-Aufrufe pro Kompaktfassung — kein Pro-Artikel-Aufruf, also quota-schonend). Etwas langsamer. Die Artikel-Masse bleibt beim Artikel-Modell.",
             disabled=not _cli_available or _cli_genius_mode == "Keine",
         )
         _cli_genius_model = "opus" if _cli_genius_opus else _cli_model
@@ -5190,6 +5332,62 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             _save_draft()
             _threading.Thread(target=_briefing_worker, args=(_cfg, _status), daemon=True).start()
             st.rerun()
+
+    # ⏰ Optionale Terminierung — einmaliger Zeitplan, baut aus dem AKTUELLEN Entwurf.
+    with st.expander("⏰ Briefing terminieren (optional)", expanded=False):
+        try:
+            import briefing_schedule as _sched
+            _sched_cur = _sched.current()
+            if _sched_cur:
+                try:
+                    _sdt = datetime.datetime.fromisoformat(_sched_cur["start"])
+                    _wd_s = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"][_sdt.weekday()]
+                    _when = f"{_wd_s} {_sdt.strftime('%d.%m. %H:%M')} Uhr"
+                except Exception:
+                    _when = "?"
+                st.success(f"⏰ Scharfgestellt: Start **{_when}** · "
+                           + ("Mac wird automatisch geweckt ✅" if _sched_cur.get("wake_set")
+                              else "⚠️ ohne Auto-Wake (Mac muss wach sein)"))
+                st.caption("Baut aus den Quellen im Entwurf → lädt in den Reader → räumt sich danach selbst auf.")
+                if st.button("Terminierung aufheben", key="sched_disarm_btn"):
+                    _sched.disarm()
+                    st.rerun()
+            else:
+                _sc1, _sc2 = st.columns(2)
+                _s_date = _sc1.date_input("Datum", value=(datetime.date.today() + datetime.timedelta(days=1)), key="sched_date")
+                _s_time = _sc2.time_input("Startzeit", value=datetime.time(5, 45), key="sched_time")
+                st.caption("⚠️ Gebaut wird aus den Quellen, die JETZT in den Feldern stehen — also abends vorbereiten. "
+                           "~10–15 Min nach Start ist es fertig im ElevenReader.")
+                _wr = _sched.wake_ready()
+                if not _wr:
+                    st.caption("🔕 Auto-Wake noch nicht eingerichtet — der Lauf kommt nur, wenn der Mac zur Startzeit wach ist "
+                               "(Einmal-Setup unten).")
+                if st.button("⏰ Scharfstellen", key="sched_arm_btn", type="primary"):
+                    _s_dt = datetime.datetime.combine(_s_date, _s_time)
+                    if _s_dt <= datetime.datetime.now():
+                        st.warning("Startzeit liegt in der Vergangenheit — bitte später wählen.")
+                    else:
+                        _save_draft()
+                        _res = _sched.arm(_s_dt)
+                        if _res.get("loaded"):
+                            st.rerun()
+                        else:
+                            st.error("Konnte den Zeitplan nicht laden (launchctl).")
+                if not _wr:
+                    st.markdown("**Einmal-Setup für Auto-Wake** — einmal ins Terminal einfügen, "
+                                "Mac-Passwort/Fingerabdruck bestätigen. Danach läuft alles ohne Nachfrage:")
+                    st.code(
+                        "# 1) Touch ID für sudo (Fingerabdruck statt Passwort; übersteht Updates)\n"
+                        "sudo sh -c 'F=/etc/pam.d/sudo_local; [ -f \"$F\" ] || { [ -f \"$F.template\" ] && "
+                        "sed \"s/^#auth/auth/\" \"$F.template\" > \"$F\"; }; grep -q pam_tid \"$F\" 2>/dev/null || "
+                        "printf \"auth       sufficient     pam_tid.so\\n\" >> \"$F\"'\n\n"
+                        "# 2) Passwortlose Erlaubnis NUR für den Weck-Befehl pmset\n"
+                        "echo 'florian ALL=(root) NOPASSWD: /usr/bin/pmset' | sudo tee /etc/sudoers.d/briefing-pmset >/dev/null && "
+                        "sudo chmod 440 /etc/sudoers.d/briefing-pmset && sudo visudo -cf /etc/sudoers.d/briefing-pmset",
+                        language="bash")
+        except Exception as _sched_exc:
+            st.caption(f"Terminierung nicht verfügbar: {str(_sched_exc)[:120]}")
+
     _bjf_active = bool(st.session_state.get("_briefing_job") and not st.session_state.get("_briefing_job", {}).get("done"))
     if not _bjf_active:
         try:
@@ -5251,7 +5449,26 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         elif _job_done.get("cancelled"):
             st.warning("⏹️ Briefing-Lauf abgebrochen.")
         else:
-            st.success("✅ Briefing fertig — Hörversion(en) sind in der ElevenReader-Bibliothek." )
+            # Upload-Status der Läufe auswerten: Bau kann fertig sein, die Zustellung
+            # in den ElevenReader aber trotzdem gescheitert (z.B. geänderte Reader-UI).
+            # Das NICHT still als Erfolg verkaufen — sonst hört Florian ins Leere.
+            _ups = [str(r.get("upload") or "") for r in (_job_done.get("results") or [])]
+            _up_fail = [u for u in _ups if u.startswith("fail")]
+            _up_ok = any(u.startswith("ok") for u in _ups)
+            if _up_fail:
+                _reason = _up_fail[0][6:].strip() if _up_fail[0].startswith("fail:") else _up_fail[0]
+                st.error(
+                    "🎧 **Briefing gebaut — aber der Upload in den ElevenReader ist FEHLGESCHLAGEN.**  \n"
+                    "Die Hörversion liegt **nicht** in deiner Reader-Bibliothek. "
+                    "PDF + Hörtext sind aber sicher im iCloud-Archiv — es ist nichts verloren, "
+                    "nur die Zustellung hakt.  \n"
+                    f"Grund: _{_reason[:180]}_")
+                st.caption("💡 Meist hat ElevenReader die Oberfläche geändert. Kein Neu-Erstellen nötig "
+                           "(das Briefing ist fertig) — die Datei kann einfach nachgeladen werden.")
+            elif _up_ok:
+                st.success("✅ Briefing fertig — Hörversion(en) sind in der ElevenReader-Bibliothek.")
+            else:
+                st.success("✅ Briefing fertig — PDF + Hörtext liegen im Archiv.")
             if _job_done.get("reused_prepared"):
                 st.caption("♻️ Rohdaten (Fetch + Merge) aus dem vorherigen Lauf wiederverwendet — schneller & spart Kontingent.")
         _inp = _job_done.get("inputs") or {}
@@ -5315,6 +5532,55 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                         st.download_button(f"⬇️ {_r9['label']} (Hörtext)", data=open(_txp9, "rb").read(),
                                            file_name=os.path.basename(_txp9), mime="text/plain",
                                            key=f"dl_txt_{_di9}", use_container_width=True)
+
+        # ── 🗓️ Wochenbriefing automatisch anstoßen ──
+        # Nach einem ERFOLGREICHEN Tagesbriefing das Wochen-Meta bauen, wenn
+        # (a) für heute angehakt ODER (b) das letzte ist 7+ Tage her.
+        # Idempotent pro Tagesjob (_weekly_auto_done_for) und nur wenn kein
+        # Wochen-Meta bereits läuft.
+        # Nur bei einem LIVE in dieser Sitzung fertiggestellten Tagesjob auslösen —
+        # nicht beim App-Öffnen (da käme _job_done aus dem Datei-Spiegel und würde
+        # unerwartet einen Wochen-Lauf zünden, der Limit kostet).
+        _job_is_live = bool(st.session_state.get("_briefing_job")) and st.session_state.get("_briefing_job", {}).get("done")
+        _daily_ok = _job_is_live and (not _job_done.get("failed")) and (not _job_done.get("cancelled"))
+        _job_key = _job_done.get("started") or ""
+        _meta_running = bool(st.session_state.get("_meta_job") and not st.session_state.get("_meta_job", {}).get("done"))
+        _lm_iso = st.session_state.get("last_meta_created_iso") or ""
+        try:
+            _lm_age = (datetime.datetime.now() - datetime.datetime.fromisoformat(_lm_iso)).days if _lm_iso else 999
+        except Exception:
+            _lm_age = 999
+        _built_today = _lm_iso.startswith(datetime.datetime.now().strftime("%Y-%m-%d"))
+        _want_oneshot = bool(st.session_state.get("weekly_after_daily"))
+        _want_auto = bool(st.session_state.get("weekly_auto_7d", True)) and _lm_age >= 7
+        if (_daily_ok and _job_key and not _built_today
+                and st.session_state.get("_weekly_auto_done_for") != _job_key
+                and not _meta_running
+                and (_want_oneshot or _want_auto)):
+            st.session_state["_weekly_auto_done_for"] = _job_key
+            if _want_oneshot:
+                st.session_state["weekly_after_daily"] = False   # Einmal-Häkchen zurücksetzen
+            _w_cli_path = _locate_claude_cli()
+            if not _w_cli_path:
+                st.caption("🗓️ Wochenbriefing wollte automatisch starten, aber die Claude CLI fehlt — bitte manuell im Wochen-Meta-Block erstellen.")
+            else:
+                import threading as _wth
+                _wcfg = {
+                    "archive_dir": str(_resolve_archive_dir()),
+                    "days": 7,
+                    "model": st.session_state.get("meta_cli_model", "opus"),
+                    "cli_path": _w_cli_path,
+                    "upload": bool(st.session_state.get("auto_reader_upload", True)),
+                    "title": f"Wochenbriefing bis {datetime.datetime.now().strftime('%d.%m.')}",
+                }
+                _wstatus = {"started": datetime.datetime.now().isoformat(), "step": "Wird gestartet…", "ratio": 0.0, "done": False}
+                st.session_state["_meta_job"] = _wstatus
+                st.session_state.pop("_meta_job_shown", None)
+                _wth.Thread(target=_meta_worker, args=(_wcfg, _wstatus), daemon=True).start()
+                _reason_txt = "Häkchen gesetzt" if _want_oneshot else f"letztes ist {_lm_age} Tage her"
+                st.info(f"🗓️ **Wochenbriefing wird jetzt im Hintergrund gebaut** ({_reason_txt}) — es landet automatisch im ElevenReader. Fortschritt siehst du im Wochen-Meta-Block.")
+                _save_draft()
+                st.rerun()
 
     if False:  # LEGACY-Blockier-Pfad — 04.07. durch den Hintergrund-Lauf ersetzt (Code als Referenz erhalten)
 
@@ -5832,6 +6098,30 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
 
                             if _cc_result.get("ok"):
                                 _accumulate_usage(_cc_result.get("usage") if isinstance(_cc_result, dict) else None)
+                                # Tippfehler wortgenau korrigieren (kein Modell-Aufruf) und
+                                # PDF + Vorlese-TXT neu schreiben, damit auch die Audio-Fassung
+                                # die Korrektur trägt.
+                                _cc_typos = _cc_result.get("typos") or []
+                                if _cc_typos and _clean_sections_for_check:
+                                    _n_typo = apply_typo_fixes(_clean_sections_for_check, _cc_typos)
+                                    if _n_typo:
+                                        try:
+                                            create_pdf(_clean_sections_for_check, str(out_path),
+                                                       datetime.datetime.now(),
+                                                       document_title="Audio-Briefing")
+                                            _texte_dir = out_path.parent / "Texte"
+                                            _texte_dir.mkdir(parents=True, exist_ok=True)
+                                            _et = create_eleven_reader_text(_clean_sections_for_check,
+                                                                            datetime.datetime.now())
+                                            _tp = _texte_dir / f"{out_path.stem}_eleven-reader.txt"
+                                            _tp.write_text(_et, encoding="utf-8")
+                                            _mirror_txt_to_local(_tp.name, _et)
+                                        except Exception:
+                                            pass
+                                        st.success(
+                                            f"✏️ {_n_typo} Tippfehler korrigiert: "
+                                            + ", ".join(f"{t['falsch']} → {t['richtig']}" for t in _cc_typos[:5])
+                                        )
                                 _cc_warn = _cc_result.get("warnings", 0)
                                 _cc_notice = _cc_result.get("notices", 0)
                                 _cc_ok = _cc_result.get("ok_count", 0)
@@ -6215,6 +6505,19 @@ st.markdown("---")
 st.markdown('<div id="nav-meta" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
     st.caption("Liest die archivierten Tagesbriefings und baut daraus Wochenrückblick, Metaebene und Coach-Blick für die nächste Woche.")
+
+    # ── Automatik: kein manuelles Anstoßen mehr nötig ──
+    st.checkbox(
+        "🔄 Automatisch alle 7 Tage erstellen (nach einem Tagesbriefing)",
+        key="weekly_auto_7d",
+        help="Sobald dein letztes Wochenbriefing 7+ Tage her ist, wird es beim nächsten fertigen Tagesbriefing automatisch mitgebaut und in den ElevenReader gepusht. Kostenlos übers Max-Abo.",
+    )
+    st.checkbox(
+        "⬇️ Direkt nach dem nächsten Tagesbriefing erstellen (einmalig)",
+        key="weekly_after_daily",
+        help="Häkchen setzen, dann ein Tagesbriefing bauen — im Anschluss läuft das Wochenbriefing automatisch. Das Häkchen setzt sich danach von selbst zurück.",
+    )
+
     # Eigener API-Key-Bezug (der API-Block steht weiter unten): nur für den Backup-Knopf.
     _meta_api_key = os.getenv("OPENAI_API_KEY") or ""
     _meta_cli_path = _locate_claude_cli()
@@ -6243,7 +6546,7 @@ with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
             options=["opus", "sonnet", "haiku"],
             index=0,
             key="meta_cli_model",
-            help="Opus 4.8 ist hier Standard: Das Wochen-Meta ist reine Synthese/Analyse (Muster, Querverbindungen, Coach-Blick) — genau Opus' Stärke. Nur ein Aufruf, also kein Tempo-Nachteil. Alles gratis übers Max-Abo.",
+            help="Opus ist hier Standard (die CLI nimmt automatisch das neueste, aktuell Opus 5): Das Wochen-Meta ist reine Synthese/Analyse (Muster, Querverbindungen, Coach-Blick) — genau Opus' Stärke. Nur ein Aufruf, also kein Tempo-Nachteil. Alles gratis übers Max-Abo.",
             disabled=not _meta_cli_available,
         )
     with meta_col3:
@@ -6557,14 +6860,21 @@ with st.expander("💸 API-Version (kostenpflichtig · OpenAI/Anthropic) — nur
                 help="GPT-5.4-mini: empfohlener Standard für tägliche Briefings. GPT-5.5/GPT-5.4: stärker, aber teurer. GPT-5.4-nano: sehr günstig, eher für einfache Checks.",
             )
         else:
-            _api_models = ["claude-sonnet-5", "claude-haiku-4-5-20251001"]
+            # IDs kommen aus der Models-API (1x täglich gecacht), damit ein neues
+            # Sonnet/Opus/Haiku automatisch auftaucht — ohne Code-Änderung.
+            from briefing_core import latest_claude_model
+            _api_models = [
+                latest_claude_model("sonnet", api_key),
+                latest_claude_model("opus", api_key),
+                latest_claude_model("haiku", api_key),
+            ]
             if st.session_state.get("model") not in _api_models:
-                st.session_state["model"] = "claude-sonnet-5"
+                st.session_state["model"] = _api_models[0]
             model = st.selectbox(
                 "Modell",
                 _api_models,
                 key="model",
-                help="claude-sonnet-5 = beste Qualität (bis 31.08.2026 sogar günstiger dank Einführungspreis). claude-haiku-4-5 = schneller und günstiger.",
+                help=f"{_api_models[0]} = empfohlener Standard, bestes Preis-Leistungs-Verhältnis (bis 31.08.2026 sogar günstiger dank Einführungspreis). {_api_models[1]} = beste Qualität, aber ca. 1,7× teurer. {_api_models[2]} = schnell und günstig. Die Liste zeigt automatisch die jeweils neueste Version.",
             )
     with _opt_col2:
         include_weather = True

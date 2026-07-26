@@ -6,8 +6,9 @@ das iPhone, dort erscheint das Briefing als "Hörbuch bereit".
 
 Technik: Playwright-Chromium mit PERSISTENTEM Profil (~/.briefing_reader_profile).
 Einmal-Login im sichtbaren Fenster (--login), danach laufen Uploads headless.
-Verifizierter UI-Flow (03.07.2026): Bibliothek → Button "Upload your content" →
-Tab "Upload file" → input[type=file] → Import → Eintrag erscheint in der Library.
+Verifizierter UI-Flow (15.07.2026): Bibliothek → Button "Import" (früher
+"Upload your content") → Tab "Upload file" → input[type=file] → "Import"-
+Bestätigung → Eintrag erscheint in der Library.
 
 CLI:  python3 reader_upload.py --login     (sichtbares Fenster, einmalig)
       python3 reader_upload.py --status    (angemeldet? Exit 0/1)
@@ -23,7 +24,10 @@ import time
 
 PROFILE_DIR = os.path.expanduser("~/.briefing_reader_profile")
 READER_LIBRARY_URL = "https://elevenreader.io/reader/library"
-_UPLOAD_BUTTON_TEXT = "Upload your content"
+# ElevenReader hat den Einstiegsknopf am 15.07.2026 von "Upload your content"
+# auf "Import" umbenannt. Der Dialog dahinter (Tabs Paste link / Upload file /
+# Write text) ist unverändert. Wird für Klick UND Login-Erkennung genutzt.
+_UPLOAD_BUTTON_TEXT = "Import"
 
 
 def _launch(headless: bool = True):
@@ -73,8 +77,15 @@ def _open_library(page) -> None:
         page.wait_for_selector(f"text={_UPLOAD_BUTTON_TEXT}", timeout=12000)
     except Exception:
         pass
-    # Benachrichtigungs-Toasts (Your next listen is ready …) wegklicken — die legen
-    # sich sonst über Einträge/Menüs und fangen Klicks ab (Fehlerquelle 03.07.).
+    _dismiss_overlays(page)
+    page.wait_for_timeout(2500)  # Liste rendert asynchron nach
+
+
+def _dismiss_overlays(page) -> None:
+    """Toasts + Promo-Banner (Dismiss-Button) wegklicken — legen sich sonst über
+    Buttons und fangen Klicks ab (Fehlerquelle 03.07.; erneut 16.07.: Banner
+    erschien VERZÖGERT nach dem frühen Sweep und blockte den Import-Klick —
+    deshalb vor jedem kritischen Klick erneut aufrufen)."""
     for _ in range(5):
         try:
             d = page.get_by_role("button", name="Dismiss")
@@ -84,7 +95,6 @@ def _open_library(page) -> None:
             page.wait_for_timeout(300)
         except Exception:
             break
-    page.wait_for_timeout(2500)  # Liste rendert asynchron nach
 
 
 def _looks_logged_in(page) -> bool:
@@ -237,17 +247,32 @@ def _do_upload(file_path: str, expect_title: str, timeout_s: int, t0: float) -> 
         if not _looks_logged_in(page):
             return {"ok": False, "error": "ElevenReader-Login abgelaufen — bitte Einmal-Login in der App wiederholen.",
                     "elapsed_seconds": time.time() - t0}
-        page.locator(f"text={_UPLOAD_BUTTON_TEXT}").first.click(timeout=10000)
+        # Einstiegsknopf "Import" (exakt, sonst greift "Import from URL" /
+        # "Import content in one click" mit). Öffnet den Upload-Dialog.
+        # Vorher Overlays räumen; bei Timeout: nochmal räumen + EIN Retry
+        # (Promo-Banner erscheinen teils erst nach Sekunden — 16.07.).
+        _dismiss_overlays(page)
+        try:
+            page.get_by_role("button", name="Import", exact=True).first.click(timeout=10000)
+        except Exception:
+            _dismiss_overlays(page)
+            page.get_by_role("button", name="Import", exact=True).first.click(timeout=10000)
+        page.wait_for_timeout(600)
+        _dismiss_overlays(page)
         page.get_by_role("tab", name="Upload file").click(timeout=10000)
         page.wait_for_timeout(400)
         file_input = page.locator('input[type="file"]').first
         file_input.set_input_files(file_path, timeout=10000)
         page.wait_for_timeout(800)
-        # Import bestätigen, falls der Dialog nicht schon von selbst importiert
+        # Import bestätigen: Der Dialog hat einen zweiten "Import"-Button. Da jetzt
+        # mehrere existieren (Library-Knopf + Dialog-Bestätigung), den LETZTEN
+        # sichtbaren klicken — das ist die Dialog-Bestätigung.
         try:
-            imp = page.get_by_role("button", name="Import")
-            if imp.count() > 0 and imp.first.is_visible():
-                imp.first.click(timeout=5000)
+            imp = page.get_by_role("button", name="Import", exact=True)
+            for j in range(imp.count() - 1, -1, -1):
+                if imp.nth(j).is_visible():
+                    imp.nth(j).click(timeout=5000)
+                    break
         except Exception:
             pass
         # Erfolg: Eintrag mit unserem Titel taucht auf (Library oder Reader-Ansicht)
