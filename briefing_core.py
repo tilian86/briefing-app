@@ -14014,6 +14014,23 @@ ANTWORT NUR ALS JSON:
 {{"missing": [{{"topic": "…", "why": "…"}}]}}"""
 
 
+def _clean_ui_text(value, limit: int = 300) -> str:
+    """Modellausgabe für die Oberfläche entschärfen.
+
+    Am 27.07. lieferte der Weltlage-Check ein Element, in dem Überschrift und
+    Begründung samt `**` und `<small style=…>` in EINEM Feld steckten. Streamlit
+    rendert darin zusätzlich `$…$` als Formelsatz — im Ergebnis stand die Hälfte
+    des Vorschlags in Mathe-Kursiv. Modelle halten Formatvorgaben nicht immer
+    ein; die Anzeige muss das aushalten, statt darauf zu vertrauen.
+    """
+    text = str(value or "")
+    text = re.sub(r"<[^>]{0,200}>", " ", text)          # HTML-Tags raus
+    text = re.sub(r"\*{1,3}|_{2,}|`+|^#{1,6}\s*", "", text, flags=re.M)   # Markdown-Marker
+    text = text.replace("$", "\\$")                      # kein Formelsatz in Streamlit
+    text = re.sub(r"\s+", " ", text).strip(" -–—:·|")
+    return text[:limit].strip()
+
+
 def suggest_missing_topics_via_cli(cli_path: Optional[str] = None, timeout_seconds: int = 300,
                                    staged_lines: Optional[List[str]] = None) -> dict:
     """🌍 Weltlage-Check: Was ist gerade wichtig, fehlt aber in den letzten Briefings?
@@ -14022,7 +14039,10 @@ def suggest_missing_topics_via_cli(cli_path: Optional[str] = None, timeout_secon
     cli = cli_path or _locate_claude_cli()
     if not cli:
         return {"ok": False, "error": "Claude CLI nicht gefunden.", "topics": []}
-    hist = _recent_topic_history_block(days=6, cap=80) or "\n(keine Historie vorhanden)"
+    # Cap hoch: Bei ~56 Beiträgen taeglich deckten 80 Titel nur ~14% der letzten
+    # sechs Tage ab — der Check schlug deshalb Themen vor, die laengst im Briefing
+    # standen (27.07. gemeldet). Titel sind billig, Vollstaendigkeit ist hier alles.
+    hist = _recent_topic_history_block(days=6, cap=600) or "\n(keine Historie vorhanden)"
     staged = ""
     if staged_lines:
         staged = ("\nBEREITS FÜR HEUTE EINGESAMMELT (geht ins heutige Briefing — zählt als abgedeckt; "
@@ -14033,8 +14053,10 @@ def suggest_missing_topics_via_cli(cli_path: Optional[str] = None, timeout_secon
     payload = _MISSING_TOPICS_PROMPT.format(history=hist, staged=staged,
                                             today=f"{_wd}, der {_now.strftime('%d.%m.%Y')}",
                                             today_short=_now.strftime("%d.%m."))
+    # Ein einziger Aufruf, reine Urteilsfrage („was ist wirklich wichtig und fehlt?")
+    # — hier lohnt die hoehere Denkstufe, sie kostet nur diesen einen Call.
     cmd = [cli, "--print", "--output-format", "text", "--model", _CLI_JUDGE_MODEL,
-           "--dangerously-skip-permissions", "--effort", cli_effort("verwebung"),
+           "--dangerously-skip-permissions", "--effort", cli_effort("meta"),
            "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."]
     try:
         sr = _run_claude_cli_subprocess_streaming(cmd, payload, timeout_seconds=timeout_seconds,
@@ -14050,8 +14072,10 @@ def suggest_missing_topics_via_cli(cli_path: Optional[str] = None, timeout_secon
             # Häufigster Fehler: nicht-escapte Anführungszeichen in den "why"-Texten
             # (Zitate, deutsche „…") beenden den String vorzeitig → reparieren.
             data = json.loads(_repair_llm_json_quotes(candidate))
-        topics = [{"topic": str(t.get("topic") or "")[:300], "why": str(t.get("why") or "")[:300]}
+        topics = [{"topic": _clean_ui_text(t.get("topic"), 300),
+                   "why": _clean_ui_text(t.get("why"), 300)}
                   for t in (data.get("missing") or []) if t.get("topic")]
+        topics = [t for t in topics if t["topic"]]
         return {"ok": True, "error": None, "topics": topics}
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:200], "topics": []}
