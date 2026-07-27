@@ -14421,9 +14421,22 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
             wmax = min(base_max + per_src * (n_src - 1), cap)
         # 🎙️ Soft-Modus: Podcast-Themen behalten mehr Substanz (Mindestbudget), damit
         # Florians kuratierte Zusammenfassungen nicht auf ~100 Wörter eingedampft werden.
-        if podcast_mode == "soft" and any(items[m_ - 1].get("kind") == "podcast" for m_ in t["members"]):
+        _ist_podcast = any(items[m_ - 1].get("kind") == "podcast" for m_ in t["members"])
+        if podcast_mode == "soft" and _ist_podcast:
             wmin, wmax = max(wmin, 220), max(wmax, 340)
         prompt = _TOPIC_SYNTH_PROMPT.format(topic_title=t["title"], word_min=wmin, word_max=wmax)
+        if podcast_mode == "soft" and _ist_podcast:
+            # Ohne diese Ausnahme greift unten „bei einer Quelle nah am Minimum,
+            # 2-4 Sätze" — und nach der Entbündelung ist JEDER Podcast ein
+            # Ein-Quellen-Thema. Genau so entstand am 27.07. ein Satz aus zwei
+            # Stunden Gespräch. Für Podcasts ist die Untergrenze bindend.
+            prompt += (f"\n\nPODCAST-REGEL (bindend): Diese Quelle ist eine Podcast-Folge — oft ein bis "
+                       f"drei Stunden Gespräch. Schreibe MINDESTENS {wmin} Wörter. Die Kürze-Hinweise "
+                       "weiter unten gelten hier NICHT. Nenne konkret: worum es ging, wer spricht, die "
+                       "zentralen Aussagen mit Zahlen und Namen, und was daran bemerkenswert war. "
+                       "Ein oder zwei Sätze sind KEIN zulässiges Ergebnis — wer die Folge nicht gehört "
+                       "hat, muss danach wissen, was drinstand. Reicht das Material dafür nicht aus, "
+                       "schreibe stattdessen nur: ZU_DUENN")
         prompt += (f"\n\nHARTE OBERGRENZE: HÖCHSTENS {wmax} Wörter — das ist eine feste Grenze, kein Ziel. "
                    "Lieber deutlich darunter. Der Magazin-Stil ändert Ton und Dramaturgie, NICHT die Länge. "
                    "Bei Themen mit nur einer Quelle bleib nah am Minimum. Ein einzelner Strandfund oder eine "
@@ -14523,6 +14536,18 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
     _uncovered = []
     for ti, t in enumerate(topics):
         md = results.get(ti)
+        # 🎙️ Lieber weglassen als verstümmeln: Ein Podcast-Beitrag, der auf ein
+        # paar Sätze zusammenschnurrt, bringt dem Hörer nichts — er kostet nur
+        # Sendezeit und täuscht Abdeckung vor. Solche Beiträge fliegen raus und
+        # werden als „nicht abgedeckt" gemeldet, statt als Alibi mitzulaufen.
+        if md and podcast_mode == "soft" and any(
+                items[m_ - 1].get("kind") == "podcast" for m_ in t["members"]):
+            _txt = re.sub(r"^###.*$|^Was bleibt.*$", "", md, flags=re.M)
+            _woerter = len(_txt.split())
+            if "ZU_DUENN" in md.upper() or _woerter < 120:
+                print(f"[synthese] Podcast „{t['title'][:40]}“ nur {_woerter} Wörter — "
+                      "weggelassen statt verstümmelt anzubieten.", file=sys.stderr)
+                md, results[ti] = None, None
         if not md:
             failed += 1
             # Quellen dieses gescheiterten Themas sind NICHT im Briefing → melden.
