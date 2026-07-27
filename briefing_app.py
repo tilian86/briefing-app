@@ -2417,10 +2417,22 @@ def _render_quality_score(self_check):
         return "#c0392b"          # rot
 
     total = int(self_check.get("score") or 0)
-    with st.expander(f"📊 Qualitätsscore: {total} / 100", expanded=(total < 85)):
+    vorher = self_check.get("score_before")
+    _titel = f"📊 Qualitätsscore: {total} / 100"
+    if vorher is not None and vorher != total:
+        _titel += f"  (vor der Selbstheilung: {vorher})"
+    with st.expander(_titel, expanded=(total < 85)):
         st.caption("Regelbasierte Prüfung ohne KI — kostet kein Kontingent. "
                    "Findet genau das, was der Plausibilitäts-Check strukturell nicht sieht: "
                    "leere Beiträge, verrutschte Wochentage, Struktur- und Textreste.")
+        _rep = self_check.get("repaired") or {}
+        _rep_bits = []
+        if _rep.get("artefakte"):
+            _rep_bits.append(f"{_rep['artefakte']} Beitrag/Beiträge von Textresten befreit")
+        for _s in (_rep.get("stubs") or []):
+            _rep_bits.append(f"Beitrag {_s['index']} nachgeschrieben ({_s['chars']} Zeichen)")
+        if _rep_bits:
+            st.success("🔧 Automatisch behoben: " + " · ".join(_rep_bits))
         rows = []
         for c in self_check["criteria"]:
             pct = int(c.get("score") or 0)

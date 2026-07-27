@@ -15788,11 +15788,33 @@ def run_briefing_via_claude_cli_chunked(
     # nichts und findet die Fehlerklassen, die der KI-Check nicht sieht.
     try:
         self_check = run_self_check(all_sections, now=now, content_check=content_check_data)
-        print(f"[selbsttest] Qualitätsscore {self_check['score']}/100 — "
+        _score_vorher = self_check["score"]
+        print(f"[selbsttest] Qualitätsscore {_score_vorher}/100 — "
               + ", ".join(f"{c['label']} {c['score']}%" for c in self_check["criteria"]),
               file=sys.stderr)
         for _iss in self_check["issues"][:8]:
             print(f"[selbsttest] {_iss}", file=sys.stderr)
+
+        # --- Selbstheilung: beheben statt nur melden ---
+        _heilung = {"artefakte": 0, "stubs": []}
+        if auto_repair:
+            _report("Selbsttest: gefundene Mängel werden behoben…", 0.97)
+            # 1) Textreste — deterministisch, kostenlos
+            _heilung["artefakte"] = clean_text_artifacts(all_sections)
+            # 2) Leere Beiträge quellenbasiert nachschreiben
+            _stubs_now = find_stub_sections(all_sections)
+            if _stubs_now and content_check:
+                _heilung["stubs"] = repair_stub_sections(
+                    all_sections, "\n\n".join(_src_lines), _stubs_now,
+                    cli_path=cli, model=_CLI_JUDGE_MODEL)
+            if _heilung["artefakte"] or _heilung["stubs"]:
+                self_check = run_self_check(all_sections, now=now,
+                                            content_check=content_check_data)
+                self_check["repaired"] = _heilung
+                self_check["score_before"] = _score_vorher
+                print(f"[selbstheilung] Score {_score_vorher} → {self_check['score']} "
+                      f"({_heilung['artefakte']} Textreste, "
+                      f"{len(_heilung['stubs'])} Beitrag/Beiträge ergänzt)", file=sys.stderr)
     except Exception as _sc_exc:
         print(f"[selbsttest] übersprungen: {_sc_exc}", file=sys.stderr)
         self_check = None
@@ -16528,6 +16550,102 @@ def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None
     gesamt = sum(c["score"] * c["weight"] for c in criteria) / sum(c["weight"] for c in criteria)
     return {"score": round(gesamt), "criteria": criteria, "issues": issues_all,
             "sections_checked": len(regular)}
+
+
+def clean_text_artifacts(sections: List[dict]) -> int:
+    """Entfernt Reste, die im Vorlesetext nichts verloren haben — ohne Modell.
+
+    Rohe Links, Template-Klammern und Programmier-Artefakte werden im Audio
+    Zeichen für Zeichen vorgelesen. Das hier ist reine Textkosmetik: nichts wird
+    umformuliert, nur Unaussprechliches entfernt.
+    """
+    fixes = 0
+    for section in sections:
+        content = section.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        neu = content
+        # Rohe URLs in Klammern hinter Text: „… (https://…)" → weg
+        neu = re.sub(r"\s*\(\s*https?://[^\s)]+\s*\)", "", neu)
+        # Freistehende URLs am Satz-/Zeilenende
+        neu = re.sub(r"\s+https?://[^\s]+(?=\s|$)", "", neu)
+        neu = neu.replace("{{", "").replace("}}", "")
+        neu = re.sub(r"\b(undefined|NaN)\b", "", neu)
+        neu = re.sub(r"[ \t]{2,}", " ", neu)
+        neu = re.sub(r" +([,.;:!?])", r"\1", neu)
+        if neu != content:
+            section["content"] = neu
+            fixes += 1
+    return fixes
+
+
+_STUB_REPAIR_PROMPT = """Du ergänzt EINEN Beitrag eines deutschen Audio-Briefings, dessen Fließtext fehlt.
+
+Unten stehen die ORIGINAL-ROHDATEN des Briefings und die Überschrift des lückenhaften Beitrags.
+
+AUFGABE
+Finde in den Rohdaten die Quelle, die zu dieser Überschrift gehört, und schreibe den fehlenden
+Fließtext: 3 bis 6 Sätze, sachlich, gesprochene Sprache, keine Aufzählungen, keine Überschrift.
+
+HARTE REGELN
+- NUR Fakten aus den Rohdaten. Nichts ergänzen, nichts vermuten, nichts ausschmücken.
+- Findest du KEINE passende Quelle, antworte exakt mit: KEINE_QUELLE
+- Keine Überschrift, kein „Was bleibt", keine Meta-Kommentare — nur der Fließtext.
+
+Antworte ausschließlich mit dem Fließtext (oder KEINE_QUELLE)."""
+
+
+def repair_stub_sections(sections: List[dict], handoff_text: str, stubs: List[dict],
+                         cli_path: Optional[str] = None, model: str = "sonnet",
+                         max_repairs: int = 3) -> List[dict]:
+    """Schreibt fehlenden Fließtext für leere Beiträge nach — quellenbasiert.
+
+    Ein Beitrag mit Überschrift aber ohne Text klingt im Audio wie ein Abbruch.
+    Statt ihn nur zu melden, holen wir den Text aus denselben Rohdaten, aus denen
+    das Briefing gebaut wurde. Findet das Modell dort nichts, bleibt der Beitrag
+    unverändert — erfunden wird nichts.
+    """
+    cli = cli_path or _locate_claude_cli()
+    if not cli or not handoff_text or not stubs:
+        return []
+
+    repariert = []
+    for stub in stubs[:max_repairs]:
+        idx = stub.get("index")
+        if not idx or idx > len(sections):
+            continue
+        section = sections[idx - 1]
+        payload = (f"ÜBERSCHRIFT DES LÜCKENHAFTEN BEITRAGS:\n{stub.get('title')}\n"
+                   f"QUELLE LAUT BRIEFING: {stub.get('source')}\n\n"
+                   f"=== ORIGINAL-ROHDATEN ===\n\n{handoff_text[:120000]}")
+        try:
+            sr = _run_claude_cli_subprocess_streaming(
+                [cli, "--print", "--output-format", "text", "--model", model,
+                 "--dangerously-skip-permissions", "--effort", cli_effort("pruefen"),
+                 "--system-prompt", _STUB_REPAIR_PROMPT],
+                payload, timeout_seconds=240, expected_duration_s=40.0,
+                label=f"Leerer Beitrag {idx}")
+        except Exception as exc:
+            print(f"[selbstheilung] Beitrag {idx}: {exc}", file=sys.stderr)
+            continue
+        if not sr.get("ok") or sr.get("returncode") != 0:
+            continue
+        text = (sr.get("stdout") or "").strip()
+        if not text or "KEINE_QUELLE" in text.upper() or len(text) < 200:
+            print(f"[selbstheilung] Beitrag {idx}: keine belegbare Quelle — unverändert.",
+                  file=sys.stderr)
+            continue
+
+        # Text VOR „Was bleibt" einsetzen, Überschrift und Fazit bleiben stehen.
+        content = section.get("content") or ""
+        marker = content.find("Was bleibt")
+        if marker > 0:
+            section["content"] = content[:marker].rstrip() + "\n\n" + text + "\n\n" + content[marker:]
+        else:
+            section["content"] = content.rstrip() + "\n\n" + text
+        repariert.append({"index": idx, "title": stub.get("title"), "chars": len(text)})
+        print(f"[selbstheilung] Beitrag {idx} ergänzt ({len(text)} Zeichen).", file=sys.stderr)
+    return repariert
 
 
 def run_content_check_via_claude_cli(
