@@ -14538,16 +14538,114 @@ KEIN Fehler (NICHT melden): Kürzungen, Auslassungen, Paraphrasen, andere Wortwa
 Zusammenfassen mehrerer Aussagen. Im Zweifel NICHT melden — lieber eine echte Warnung
 zu wenig als Fehlalarme. Wenn alles stimmig ist: leere Liste.
 
-Antworte AUSSCHLIESSLICH als JSON: {"concerns": ["<Ort/Aussage>: <was widerspricht>", ...]}"""
+KORREKTURVORSCHLÄGE (`fixes`)
+Die Zusammenfassung wird unbeaufsichtigt weiterverarbeitet und vorgelesen. Für jeden
+Widerspruch, bei dem das Transkript EINEN eindeutigen Wert nennt, gib zusätzlich eine
+Korrektur an. Jede Korrektur braucht einen wörtlichen Beleg aus dem Transkript.
+
+  {"falsch": "<Textstelle EXAKT aus der Zusammenfassung>",
+   "richtig": "<korrigierte Fassung derselben Stelle>",
+   "beleg": "<wörtliches Zitat aus dem TRANSKRIPT, das den richtigen Wert enthält>"}
+
+HARTE REGELN für `fixes`:
+- `falsch` muss zeichengenau in der Zusammenfassung stehen, `beleg` zeichengenau
+  im Transkript. Beides wird maschinell nachgeprüft; erfundene Stellen fliegen raus.
+- Der korrigierte Wert MUSS wörtlich im `beleg` vorkommen.
+- Nur eine kurze, lokale Stelle austauschen (eine Zahl, ein Name, ein Halbsatz) —
+  niemals einen ganzen Absatz neu schreiben.
+- Nennt das Transkript MEHRERE widersprüchliche Werte, ist das KEIN `fix`. Dann nur
+  `concerns` — eine Korrektur, die du selbst nicht sicher belegen kannst, richtet
+  mehr Schaden an als der Fehler.
+- Stil, Wortwahl und Kürzungen sind niemals ein `fix`.
+- Lieber `concerns` ohne `fix` als ein unsicherer `fix`. Leere Liste ist normal.
+
+Antworte AUSSCHLIESSLICH als JSON:
+{"concerns": ["<Ort/Aussage>: <was widerspricht>", ...],
+ "fixes": [{"falsch": "...", "richtig": "...", "beleg": "..."}]}"""
+
+
+def _verify_podcast_fixes(raw_fixes, summary: str, transcript: str) -> List[dict]:
+    """Prüft Korrekturvorschläge gegen das Transkript — bevor irgendetwas geändert wird.
+
+    Die Zuverlässigkeit kommt NICHT daher, dass das Modell klug urteilt, sondern
+    daher, dass jede Änderung hier gegen den Originaltext gegengeprüft wird. Was
+    sich nicht wörtlich belegen lässt, wird verworfen und bleibt blosser Hinweis.
+    """
+    if not isinstance(raw_fixes, list) or not summary or not transcript:
+        return []
+
+    def _flat(s: str) -> str:
+        return " ".join((s or "").split()).lower()
+
+    flat_summary, flat_transcript = _flat(summary), _flat(transcript)
+    out = []
+    for entry in raw_fixes[:10]:
+        if not isinstance(entry, dict):
+            continue
+        wrong = str(entry.get("falsch") or "").strip()
+        right = str(entry.get("richtig") or "").strip()
+        proof = str(entry.get("beleg") or "").strip()
+
+        if not wrong or not right or not proof or wrong == right:
+            continue
+        # Lokale Korrektur, kein Umschreiben ganzer Passagen. Die Längengrenze
+        # allein reicht nicht — ein Modell kann einen Satz in ähnlicher Länge
+        # komplett neu formulieren. Deshalb zusätzlich Ähnlichkeit verlangen.
+        if len(wrong) > 100 or len(right) > 100:
+            continue
+        if len(right) > len(wrong) * 1.5 + 10:
+            continue
+        if SequenceMatcher(None, wrong.lower(), right.lower()).ratio() < 0.55:
+            continue
+        # Stelle muss wirklich so in der Zusammenfassung stehen.
+        if _flat(wrong) not in flat_summary:
+            continue
+        # Beleg muss wirklich so im Transkript stehen — das ist der Anker.
+        if len(proof) < 12 or _flat(proof) not in flat_transcript:
+            continue
+        # Zahlen sind der häufigste Fehlerfall — und der gefährlichste.
+        nums_right = set(re.findall(r"\d+", right))
+        nums_proof = set(re.findall(r"\d+", proof))
+        if nums_right:
+            # Der korrigierte Wert muss im Beleg stehen …
+            if not nums_right.issubset(nums_proof):
+                continue
+            # … und der Beleg darf nicht selbst mehrere Werte anbieten. Nennt das
+            # Transkript „37 Minuten, oder waren es 38", ist nichts belegt — dann
+            # bleibt es ein Hinweis statt einer stillen Korrektur.
+            if len(nums_proof) > 1:
+                continue
+
+        # Kernregel: Was die Korrektur NEU einbringt, muss aus dem Beleg stammen.
+        # Eine echte Faktenkorrektur holt ihren Inhalt aus dem Transkript; eine
+        # Stil-Umformulierung erfindet Wörter, die dort nirgends stehen.
+        def _tokens(s):
+            return set(re.findall(r"\w+", s.lower()))
+
+        new_tokens = _tokens(right) - _tokens(wrong)
+        # Kurze Füllwörter (der, die, ein, und) sind grammatikalischer Kitt,
+        # kein Inhalt — Zahlen zählen dagegen immer.
+        new_tokens = {t for t in new_tokens if t.isdigit() or len(t) > 3}
+        if not new_tokens or not new_tokens.issubset(_tokens(proof)):
+            continue
+        out.append({"falsch": wrong, "richtig": right, "beleg": proof[:300]})
+
+    return out[:5]
 
 
 def _check_podcast_summary_faithfulness(summary: str, transcript: str, cli_path=None) -> list:
-    """Vergleicht die fertige Zusammenfassung mit dem Transkript und meldet NUR klare
-    faktische Widersprüche. Ändert NICHTS — reine Warnung (kein Verschlimmbesserungs-Risiko).
-    Returns: Liste kurzer Hinweise (leer, wenn alles stimmig oder Check nicht möglich)."""
+    """Vergleicht die fertige Zusammenfassung mit dem Transkript.
+
+    Liefert {"concerns": [...], "fixes": [...]}:
+      concerns — Hinweise zum Selberanschauen (unverändert wie bisher)
+      fixes    — belegte Korrekturen, die gefahrlos automatisch greifen können.
+                 Jede ist gegen ein wörtliches Transkript-Zitat geprüft
+                 (siehe _verify_podcast_fixes); unklare Fälle bleiben concerns.
+    """
+    empty = {"concerns": [], "fixes": []}
     cli = cli_path or _locate_claude_cli()
     if not cli or not summary or not transcript:
-        return []
+        return empty
     try:
         _tx = " ".join(transcript.split())[:55000]
         payload = (_PODCAST_FAITHFULNESS_PROMPT
@@ -14559,16 +14657,17 @@ def _check_podcast_summary_faithfulness(summary: str, transcript: str, cli_path=
              "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt."],
             payload, timeout_seconds=200, expected_duration_s=30.0, label="Podcast-Faktencheck")
         if not sr.get("ok"):
-            return []
+            return empty
         m = re.search(r"\{.*\}", (sr.get("stdout") or ""), re.DOTALL)
         if not m:
-            return []
+            return empty
         data = _loads_llm_json(m.group(0)) or {}
-        out = [str(c).strip() for c in (data.get("concerns") or []) if str(c).strip()]
-        return out[:5]
+        concerns = [str(c).strip() for c in (data.get("concerns") or []) if str(c).strip()]
+        fixes = _verify_podcast_fixes(data.get("fixes"), summary, transcript)
+        return {"concerns": concerns[:5], "fixes": fixes}
     except Exception as exc:
         print(f"[podcast-faktencheck] übersprungen: {exc}", file=sys.stderr)
-        return []
+        return empty
 
 
 def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str] = None,
@@ -14631,11 +14730,25 @@ def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str
         summary += "\n\nEnde der Podcastzusammenfassung"
     if truncated_note:
         summary = summary.replace("Ende der Podcastzusammenfassung", f"{truncated_note}\n\nEnde der Podcastzusammenfassung", 1)
-    _concerns = _check_podcast_summary_faithfulness(summary, cleaned, cli_path=cli)
+    _check = _check_podcast_summary_faithfulness(summary, cleaned, cli_path=cli)
+    _concerns = _check.get("concerns") or []
+    _applied = []
+    for _fix in (_check.get("fixes") or []):
+        # Whitespace-tolerant ersetzen: der Modelltext kann anders umgebrochen sein
+        # als die Zusammenfassung, gemeint ist aber dieselbe Stelle.
+        _pat = r"\s+".join(re.escape(tok) for tok in _fix["falsch"].split())
+        _new, _n = re.subn(_pat, lambda _m, _r=_fix["richtig"]: _r, summary, count=1)
+        if _n:
+            summary = _new
+            _applied.append(_fix)
+    if _applied:
+        for _fix in _applied:
+            print(f"[podcast-faktencheck] korrigiert: '{_fix['falsch']}' → '{_fix['richtig']}' "
+                  f"(Beleg: '{_fix['beleg'][:80]}…')", file=sys.stderr)
     if _concerns:
         print(f"[podcast-faktencheck] {len(_concerns)} Hinweis(e): {_concerns}", file=sys.stderr)
     return {"ok": True, "summary": summary, "error": None, "concerns": _concerns,
-            "elapsed_seconds": time.time() - t0}
+            "fixes_applied": _applied, "elapsed_seconds": time.time() - t0}
 
 
 _RAW_TRANSCRIPT_MIN_CHARS = 4000  # ohne Endmarker + länger als das = rohes Transkript
