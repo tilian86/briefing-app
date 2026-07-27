@@ -13253,6 +13253,176 @@ PODCAST_INBOX_STATE_PATH = os.getenv("BRIEFING_INBOX_STATE_PATH") or os.path.exp
 PODCAST_OPML_LOCAL_MIRROR = os.path.expanduser("~/.briefing_podcast_feeds.opml")
 
 
+PODCAST_FEEDMAP_PATH = os.path.expanduser("~/.briefing_podcast_feedmap.json")
+_PODCAST_SYNC_MIN_HOURS = 20     # höchstens ~1x pro Tag ins Netz
+_PODCAST_ITUNES_MAX_NEW = 12     # neue Abos pro Lauf auflösen (Rest beim nächsten Mal)
+
+
+def _norm_podcast_title(s: str) -> str:
+    """Titel für den Abgleich vereinheitlichen (Zeichensetzung/Case sind unzuverlässig)."""
+    s = (s or "").lower()
+    s = re.sub(r"[–—]", "-", s)
+    s = re.sub(r"[^a-z0-9äöüß]+", " ", s)
+    return " ".join(s.split())
+
+
+def _resolve_feed_url_via_itunes(title: str, author: str = "") -> Optional[str]:
+    """RSS-Adresse über die öffentliche iTunes-Podcastsuche finden.
+
+    Pocket Casts gibt die Feed-Adresse selbst nicht heraus (geprüft: weder
+    /user/podcast/list noch /podcast/full liefern sie). iTunes tut es, kostenlos
+    und ohne Anmeldung.
+    """
+    from urllib.parse import quote
+
+    term = quote(f"{title} {author}".strip()[:200])
+    url = f"https://itunes.apple.com/search?media=podcast&limit=5&term={term}"
+    try:
+        req = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        results = req.json().get("results") or []
+    except Exception:
+        return None
+
+    want = _norm_podcast_title(title)
+    # Nur sichere Treffer. Ein loser „nimm das erste Ergebnis" holt sonst einen
+    # fremden Podcast ins Briefing — beim ersten Testlauf wurde so aus
+    # „Das Fitnessmagazin" das „Das Magazin zum Leben".
+    best, best_score = None, 0.0
+    for entry in results:
+        feed = entry.get("feedUrl")
+        if not feed:
+            continue
+        score = SequenceMatcher(None, want, _norm_podcast_title(entry.get("collectionName", ""))).ratio()
+        if score > best_score:
+            best, best_score = feed, score
+    if best_score >= 0.85:
+        return best
+    return None
+
+
+def _feed_looks_valid(url: str) -> bool:
+    """Kurzer Sanity-Check: Ist das wirklich ein Podcast-Feed mit Episoden?
+
+    Fängt Fälle ab, in denen die Suche zwar den richtigen Titel, aber die Adresse
+    einer einzelnen Folge oder eine tote Seite liefert.
+    """
+    try:
+        resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"}, stream=True)
+        if resp.status_code != 200:
+            return False
+        head = resp.raw.read(20000, decode_content=True) or b""
+        resp.close()
+    except Exception:
+        return False
+    text = head.decode("utf-8", errors="ignore").lower()
+    return ("<rss" in text or "<feed" in text) and ("<item" in text or "<entry" in text)
+
+
+def _write_podcast_opml(feeds: List[dict], path: str) -> None:
+    """Feeds als OPML schreiben — dasselbe Format, das Pocket Casts exportiert,
+    damit der bestehende Lese-Weg unverändert funktioniert."""
+    from xml.sax.saxutils import quoteattr
+
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<opml version="1.0">', "  <head>",
+             "    <title>Pocket Casts Feeds</title>", "  </head>", "  <body>",
+             '    <outline text="feeds">']
+    for feed in feeds:
+        lines.append('      <outline type="rss" text={} xmlUrl={} />'.format(
+            quoteattr(feed["name"]), quoteattr(feed["url"])))
+    lines += ["    </outline>", "  </body>", "</opml>", ""]
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    os.replace(tmp, path)   # atomar: nie eine halb geschriebene Liste hinterlassen
+
+
+def sync_podcast_feeds_from_pocketcasts(force: bool = False,
+                                        progress: Optional[Callable] = None) -> dict:
+    """Holt die Abo-Liste aus Pocket Casts und schreibt sie als OPML.
+
+    Damit wirkt sich ein neues Abo auf dem Handy automatisch aufs Briefing aus —
+    vorher musste die OPML-Datei von Hand exportiert werden.
+
+    Schlägt der Abgleich fehl (nicht angemeldet, offline), bleibt die vorhandene
+    Liste unangetastet. Ein leeres Ergebnis überschreibt NIE die alte Liste.
+    """
+    def _say(msg):
+        print(f"[podcasts] {msg}", file=sys.stderr)
+        if progress:
+            try:
+                progress(msg)
+            except Exception:
+                pass
+
+    try:
+        state = json.load(open(PODCAST_FEEDMAP_PATH, encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+    feedmap = state.get("feeds") if isinstance(state.get("feeds"), dict) else {}
+
+    if not force:
+        try:
+            last = float(state.get("synced_at") or 0)
+            if (time.time() - last) < _PODCAST_SYNC_MIN_HOURS * 3600:
+                return {"ok": True, "skipped": "frisch", "total": len(feedmap)}
+        except Exception:
+            pass
+
+    try:
+        import pocketcasts_fetch as _pc
+        subs = _pc.list_subscriptions()
+    except Exception as exc:
+        _say(f"Abgleich nicht möglich ({exc}) — bestehende Liste bleibt.")
+        return {"ok": False, "error": str(exc)[:200]}
+
+    if not subs:
+        _say("Keine Abo-Liste erhalten (nicht angemeldet oder offline) — bestehende Liste bleibt.")
+        return {"ok": False, "error": "keine Abo-Liste"}
+
+    # Bekannte Feeds aus der bisherigen OPML als Startbestand: für die ~160
+    # vorhandenen Podcasts ist die Adresse schon bekannt und muss nicht neu
+    # gesucht werden.
+    known_by_title = {}
+    for existing in load_podcast_feeds_from_opml():
+        known_by_title[_norm_podcast_title(existing["name"])] = existing["url"]
+
+    feeds, unresolved, newly = [], [], 0
+    for sub in subs:
+        url = feedmap.get(sub["uuid"]) or known_by_title.get(_norm_podcast_title(sub["title"]))
+        if not url and newly < _PODCAST_ITUNES_MAX_NEW:
+            candidate = _resolve_feed_url_via_itunes(sub["title"], sub["author"])
+            newly += 1
+            if candidate and _feed_looks_valid(candidate):
+                url = candidate
+                _say(f"Neu aufgelöst: {sub['title']} → {url}")
+            elif candidate:
+                _say(f"Verworfen (kein gültiger Feed): {sub['title']} → {candidate}")
+            time.sleep(0.4)          # iTunes nicht hämmern
+        if url:
+            feedmap[sub["uuid"]] = url
+            feeds.append({"name": sub["title"], "url": url})
+        else:
+            unresolved.append(sub["title"])
+
+    if not feeds:
+        _say("Keine Feed-Adressen auflösbar — bestehende Liste bleibt.")
+        return {"ok": False, "error": "keine Feeds auflösbar"}
+
+    _write_podcast_opml(feeds, PODCAST_OPML_LOCAL_MIRROR)
+    try:
+        with open(PODCAST_FEEDMAP_PATH, "w", encoding="utf-8") as fh:
+            json.dump({"synced_at": time.time(), "feeds": feedmap}, fh, ensure_ascii=False)
+    except Exception:
+        pass
+
+    _say(f"{len(feeds)} Podcasts abgeglichen"
+         + (f", {len(unresolved)} ohne Feed-Adresse: {', '.join(unresolved[:5])}" if unresolved else ""))
+    return {"ok": True, "total": len(feeds), "unresolved": unresolved,
+            "newly_resolved": newly, "subscriptions": len(subs)}
+
+
 def load_podcast_feeds_from_opml(path: Optional[str] = None) -> List[dict]:
     """Liest Florians Podcast-Liste aus dem Pocket-Casts-OPML-Export.
 
@@ -13276,6 +13446,21 @@ def load_podcast_feeds_from_opml(path: Optional[str] = None) -> List[dict]:
 
     if path:
         return _parse(path)
+
+    # Der Pocket-Casts-Abgleich schreibt in den Spiegel. Ist der neuer als der
+    # OneDrive-Export, hat er Vorrang — sonst würde ein alter Handexport die
+    # frisch abgeglichene Liste wieder verdrängen.
+    try:
+        if os.path.exists(PODCAST_OPML_LOCAL_MIRROR) and (
+            not os.path.exists(PODCAST_OPML_PATH)
+            or os.path.getmtime(PODCAST_OPML_LOCAL_MIRROR) > os.path.getmtime(PODCAST_OPML_PATH)
+        ):
+            mirrored = _parse(PODCAST_OPML_LOCAL_MIRROR)
+            if mirrored:
+                return mirrored
+    except Exception:
+        pass
+
     feeds = []
     try:
         if os.path.exists(PODCAST_OPML_PATH):
@@ -13369,6 +13554,13 @@ def fetch_new_podcast_episodes(days: int = 3, max_per_feed: int = 6,
     import ssl as _ssl
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from email.utils import parsedate_to_datetime
+
+    # Abo-Liste mit Pocket Casts abgleichen (höchstens 1x/Tag, still bei Fehler).
+    # Dadurch landen auf dem Handy neu abonnierte Podcasts von selbst im Briefing.
+    try:
+        sync_podcast_feeds_from_pocketcasts()
+    except Exception as _sync_exc:
+        print(f"[podcasts] Abgleich übersprungen: {_sync_exc}", file=sys.stderr)
 
     feeds = load_podcast_feeds_from_opml()
     if not feeds:

@@ -486,8 +486,72 @@ def summarize_selection_mark(episode_uuids):
         _mark_fetched(list(episode_uuids))
 
 
+PODCASTS_ALL_URL = "https://pocketcasts.com/podcasts/all"
+
+
+def list_subscriptions(timeout_s: int = 45) -> list:
+    """Die abonnierten Podcasts direkt aus dem eingeloggten Konto.
+
+    Wir rufen die API nicht selbst auf — sie verlangt einen JWT, den sich die
+    Web-App erst über /user/token holt. Stattdessen laden wir die Abo-Seite und
+    fangen die Antwort ab, die die App ohnehin lädt. Das ist unabhängig davon,
+    wie Pocket Casts seine Anmeldung intern regelt.
+
+    Rückgabe: Liste aus {uuid, title, author, site}. Leere Liste heisst
+    „nicht ermittelbar" (nicht angemeldet, offline) — NIE „keine Abos".
+    """
+    box = {}
+
+    def _on_resp(resp):
+        if "/user/podcast/list" in (resp.url or ""):
+            try:
+                box["data"] = resp.json()
+            except Exception:
+                pass
+
+    p, ctx = _launch(headless=True)
+    try:
+        page = _page(ctx)
+        page.on("response", _on_resp)
+        page.goto(PODCASTS_ALL_URL, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+        deadline = time.time() + 20
+        while "data" not in box and time.time() < deadline:
+            page.wait_for_timeout(500)
+    except Exception:
+        return []
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        p.stop()
+
+    data = box.get("data") or {}
+    pods = data.get("podcasts") if isinstance(data, dict) else None
+    if not isinstance(pods, list):
+        return []
+    out = []
+    for entry in pods:
+        if not isinstance(entry, dict):
+            continue
+        uuid = (entry.get("uuid") or "").strip()
+        title = (entry.get("title") or "").strip()
+        if uuid and title:
+            out.append({
+                "uuid": uuid,
+                "title": title,
+                "author": (entry.get("author") or "").strip(),
+                "site": (entry.get("url") or "").strip(),
+            })
+    return out
+
+
 if __name__ == "__main__":
     import sys
+    if len(sys.argv) >= 2 and sys.argv[1] == "--subs":
+        for s in list_subscriptions():
+            print(s["uuid"], "|", s["title"][:45], "|", s["author"][:30])
+        sys.exit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "--login":
         ok = login_interactive()
         print("LOGIN_OK" if ok else "LOGIN_ABGEBROCHEN")
