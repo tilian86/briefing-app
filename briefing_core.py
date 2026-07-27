@@ -710,7 +710,11 @@ CLI_EFFORT = {
     "verwebung": "medium",  # Themen aus mehreren Quellen zusammenführen (~35 Aufrufe/Lauf)
     "podcast":   "medium",  # Transkript-Zusammenfassung
     "pruefen":   "medium",  # Qualitätscheck, Treue-Check, Repair (je ~1 Aufruf)
-    "synthese":  "high",    # Kompaktfassung — der Text, den du liest/hörst
+    # 27.07. von "high" auf "medium": der Lauf kostete 0,57 Prozentpunkte des
+    # 5-Std-Fensters pro Beitrag statt 0,24 am 25.07. Beim naechsten Lauf
+    # gegenmessen — dann zeigt sich, wieviel davon an der Stufe hing und
+    # wieviel schlicht an Opus 5.
+    "synthese":  "medium",  # Kompaktfassung — der Text, den du liest/hörst
     "meta":      "xhigh",   # Wochen-Meta: ein einziger Aufruf, reine Analyse
 }
 _CLI_EFFORT_VALID = {"low", "medium", "high", "xhigh", "max"}
@@ -3000,7 +3004,16 @@ def _build_weather_text(primary: dict,
     } if secondary else {}
 
     current_hour = now.strftime("%H:%M")
-    weather_text = f"Stand: {current_hour} Uhr.\n"
+    # Wochentag und Datum MÜSSEN hier stehen. Ohne sie muss das Modell den Tag
+    # raten und verschiebt den ganzen Bericht — am 27.07. wurde aus dem Montag
+    # ein „warmer Sonntag" samt „ab Montag dreht sich alles". Der DWD-Text
+    # arbeitet mit „Heute / am Dienstag / am Mittwoch"; erst mit dem bekannten
+    # Heute-Tag ist das eindeutig auflösbar.
+    _wd = ["Montag", "Dienstag", "Mittwoch", "Donnerstag",
+           "Freitag", "Samstag", "Sonntag"][now.weekday()]
+    weather_text = f"Stand: {_wd}, {now.strftime('%d.%m.%Y')}, {current_hour} Uhr.\n"
+    weather_text += (f"HEUTE ist {_wd}, der {now.strftime('%d.%m.%Y')}. Alle Tagesangaben "
+                     f"beziehen sich darauf: „heute\" = {_wd}. Verschiebe die Tage nicht.\n")
     weather_text += f"Primärmodell: {primary_name}.\n"
     if secondary:
         weather_text += f"Gegencheck: {secondary_name}.\n"
@@ -3451,7 +3464,11 @@ def fetch_weather() -> Optional[str]:
         # Letzter Strohhalm: nur regionalen DWD-Text liefern
         if regional_text:
             print("[weather] Nur DWD-Regionaltext verfügbar", file=sys.stderr)
-            return f"Stand: {now.strftime('%H:%M')} Uhr.\nQuelle: DWD-Regionaltext (alle anderen Wetterquellen nicht erreichbar).\n\n{regional_text}\n"
+            _wd_fb = ["Montag", "Dienstag", "Mittwoch", "Donnerstag",
+                      "Freitag", "Samstag", "Sonntag"][now.weekday()]
+            return (f"Stand: {_wd_fb}, {now.strftime('%d.%m.%Y')}, {now.strftime('%H:%M')} Uhr.\n"
+                    f"HEUTE ist {_wd_fb}, der {now.strftime('%d.%m.%Y')}. „heute\" = {_wd_fb}.\n"
+                    f"Quelle: DWD-Regionaltext (alle anderen Wetterquellen nicht erreichbar).\n\n{regional_text}\n")
 
         return None
 
@@ -15739,6 +15756,12 @@ def run_briefing_via_claude_cli_chunked(
                 _n_fixed = apply_typo_fixes(all_sections, _typos)
                 content_check_data["typos_fixed"] = _n_fixed
                 print(f"[plausi] {_n_fixed} Tippfehler korrigiert.", file=sys.stderr)
+            # Inhaltsleere Beiträge melden (still gekürzte Zusammenfassungen)
+            _stubs = find_stub_sections(all_sections)
+            content_check_data["stubs"] = _stubs
+            for _s in _stubs:
+                print(f"[plausi] Beitrag {_s['index']} fast ohne Text "
+                      f"({_s['chars']} Zeichen, {_s['source']}): {_s['title']}", file=sys.stderr)
         else:
             print(f"[plausi] Check fehlgeschlagen: {content_check_data.get('error')}", file=sys.stderr)
         if auto_repair and content_check_data.get("ok") and content_check_data.get("warnings", 0) > 0:
@@ -16289,6 +16312,44 @@ def apply_typo_fixes(sections: List[dict], typos: List[dict]) -> int:
             if new_text != text:
                 section[field] = new_text
     return replaced
+
+
+def find_stub_sections(sections: List[dict], min_chars: int = 250) -> List[dict]:
+    """Beiträge, die praktisch nur aus Überschrift und „Was bleibt" bestehen.
+
+    Am 27.07. war das Beitrag 41 (Yung Filly): 152 Zeichen gegen 957 im Median —
+    im Audio hört sich das an, als hätte jemand mitten im Satz abgebrochen.
+    Passiert selten (1 von 55), fällt aber genau deshalb niemandem auf, der
+    nicht zählt. Wir melden es, statt still zu kürzen oder zu erfinden.
+    """
+    out = []
+    for idx, section in enumerate(sections, start=1):
+        if section.get("type") == "transition" or any(
+                section.get(f) for f in ("_weather", "_recap", "_essenz",
+                                         "_verabschiedung", "_preview",
+                                         "_ressort_header", "_verbatim")):
+            continue
+        content = (section.get("content") or "").strip()
+        if not content:
+            continue
+        # Überschrift, „Was bleibt", Überleitungen und Quellenzeilen abziehen —
+        # übrig bleibt der eigentliche Fließtext.
+        body = []
+        for line in content.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith(("Was bleibt", "Weiter geht", "Ende der")):
+                continue
+            body.append(line)
+        n = sum(len(line) for line in body)
+        if n < min_chars:
+            title = next((l.lstrip("# ").strip() for l in content.split("\n")
+                          if l.strip().startswith("#")), "")
+            out.append({"index": idx, "chars": n,
+                        "title": (title or content[:60]).strip()[:80],
+                        "source": section.get("source_label") or "?"})
+    return out
 
 
 def run_content_check_via_claude_cli(
