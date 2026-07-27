@@ -81,6 +81,7 @@ from briefing_core import (
     run_briefing_via_claude_cli_chunked,
     run_content_check_via_claude_cli,
     apply_typo_fixes,
+    load_podcast_feeds_from_opml,
     run_direct_genius_via_claude_cli,
     run_genius_summary_via_claude_cli,
     run_meta_briefing_via_claude_cli,
@@ -3252,17 +3253,29 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
         # unabhaengig vom Alter. "New Releases" bleibt der schnelle Weg fuer
         # frisch Erschienenes; die Auswahl findet auch aeltere Folgen, die
         # Pocket Casts serverseitig nicht mehr als "neu" ausliefert.
-        st.caption("⭐ nutzt deinen Pocket-Casts-Filter **New Releases** — dieselben Regeln "
-                   "wie auf dem iPhone (ungespielt + angefangen, nicht beendet, kein Zeitlimit).")
+        import pocketcasts_fetch as _pcf0
+        _deep_saved = _pcf0.load_deep_podcasts()
+        with st.expander(f"⭐ Rückkatalog durchsuchen für… ({len(_deep_saved)} Podcast(s))", expanded=False):
+            st.caption("Pocket Casts rechnet seine Filter auf dem Handy aus — von außen ist nur die "
+                       "aktuelle Liste exakt abrufbar. Für selten sendende Podcasts, die dadurch "
+                       "durchrutschen, wird zusätzlich der Rückkatalog nach offenen Folgen durchsucht.")
+            _feed_names = sorted({f["name"] for f in load_podcast_feeds_from_opml()})
+            _deep_pick = st.multiselect("Podcasts", options=_feed_names, default=
+                                        [d for d in _deep_saved if d in _feed_names],
+                                        key="pc_deep_podcasts",
+                                        label_visibility="collapsed")
+            if st.button("Merken", key="pc_deep_save"):
+                _pcf0.save_deep_podcasts(_deep_pick)
+                st.success(f"{len(_deep_pick)} Podcast(s) gemerkt.")
+
         if st.button("⭐ Meine Pocket-Casts-Auswahl laden", key="pocketcasts_curated_btn",
                      use_container_width=True, type="primary",
-                     help="Liest deinen Filter direkt aus dem Pocket-Casts-Konto und wendet "
-                          "seine Regeln auf alle Abos an — auch auf ältere Folgen. "
-                          "~40s, kostet kein Limit."):
+                     help="Aktuelles aus Pocket Casts' eigener Liste (exakt) plus den "
+                          "Rückkatalog der oben gemerkten Podcasts. Kostet kein Limit."):
             try:
                 import pocketcasts_fetch as _pcf
-                with st.spinner("⭐ Deine Auswahl aus allen Abos zusammentragen + Transkripte prüfen (~40s)…"):
-                    _items, _pst = _pcf.preview_curated()
+                with st.spinner("⭐ Auswahl zusammentragen + Transkripte prüfen…"):
+                    _items, _pst = _pcf.preview_selection()
             except Exception as _cue:
                 st.session_state["_podcast_inbox_last_msg"] = f"⭐ Auswahl laden fehlgeschlagen: {str(_cue)[:120]}"
                 _items, _pst = [], "error"

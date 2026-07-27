@@ -751,6 +751,84 @@ def list_curated_episodes(podcasts=None, token: str = None, max_workers: int = 1
     return {"episodes": episodes, "scanned": len(subs), "filter": used_filter, "errors": []}
 
 
+DEEP_PODCASTS_PATH = os.path.expanduser("~/.briefing_pocketcasts_deep.json")
+
+
+def load_deep_podcasts() -> list:
+    """Podcasts, für die zusätzlich der Rückkatalog durchsucht wird."""
+    import json as _json
+    try:
+        d = _json.loads(open(DEEP_PODCASTS_PATH, encoding="utf-8").read())
+        return [t for t in d.get("titles", []) if isinstance(t, str)]
+    except Exception:
+        return []
+
+
+def save_deep_podcasts(titles) -> None:
+    import json as _json
+    try:
+        with open(DEEP_PODCASTS_PATH, "w", encoding="utf-8") as fh:
+            _json.dump({"titles": sorted(set(titles))}, fh, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def preview_selection(deep_titles=None, progress=None):
+    """Der praktikable Mittelweg zwischen "zu wenig" und "viel zu viel".
+
+    Warum nicht einfach der Filter? Pocket Casts rechnet Filter auf dem GERÄT
+    aus, über die dort lokal bekannten Folgen. Der Server gibt die Regeln her,
+    aber nicht das Ergebnis — und er kennt auch nicht, welche alten Folgen die
+    App lokal führt. Ein serverseitiger Nachbau sammelt darum zwangsläufig zu
+    viel (gemessen: 219 statt 19).
+
+    Deshalb zweigleisig:
+      - Aktuelles kommt aus Pocket Casts' eigener New-Releases-Liste (exakt).
+      - Für benannte Podcasts (selten sendend, aber wichtig) wird zusätzlich der
+        Rückkatalog nach offenen Folgen durchsucht.
+    Rückgabe wie preview_new_releases: (items, status).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    deep_titles = list(deep_titles if deep_titles is not None else load_deep_podcasts())
+    episodes = list_new_releases() or []
+    seen = {e.get("episode") for e in episodes}
+
+    if deep_titles:
+        subs = list_subscriptions()
+        token = get_api_token()
+        wanted = [s for s in subs if s["title"] in deep_titles]
+        if token and wanted:
+            data = list_curated_episodes(podcasts=wanted, token=token)
+            for e in data.get("episodes") or []:
+                if e.get("episode") not in seen:
+                    seen.add(e.get("episode"))
+                    episodes.append(e)
+
+    if not episodes:
+        return [], "no_login_or_empty"
+
+    done = {"n": 0}
+
+    def _one(ep):
+        title = ep.get("title") or "?"
+        text, _err = fetch_transcript(ep["podcast"], ep["episode"], title=title)
+        done["n"] += 1
+        if progress:
+            try:
+                progress(done["n"], len(episodes), title)
+            except Exception:
+                pass
+        return {"title": title, "podcast_title": ep.get("podcastTitle") or "",
+                "podcast": ep["podcast"], "episode": ep["episode"],
+                "published": ep.get("published") or "",
+                "text": text, "has_transcript": bool(text)}
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        items = list(ex.map(_one, episodes))
+    return items, "ok"
+
+
 def preview_curated(limit: int = 250, progress=None, filter_title: str = "New Releases"):
     """Wie preview_new_releases, aber Quelle ist die eigene Auswahl (siehe
     list_curated_episodes) statt der zeitlich begrenzten New-Releases-Liste.
