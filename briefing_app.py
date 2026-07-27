@@ -3252,10 +3252,13 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
         # unabhaengig vom Alter. "New Releases" bleibt der schnelle Weg fuer
         # frisch Erschienenes; die Auswahl findet auch aeltere Folgen, die
         # Pocket Casts serverseitig nicht mehr als "neu" ausliefert.
+        st.caption("⭐ nutzt deinen Pocket-Casts-Filter **New Releases** — dieselben Regeln "
+                   "wie auf dem iPhone (ungespielt + angefangen, nicht beendet, kein Zeitlimit).")
         if st.button("⭐ Meine Pocket-Casts-Auswahl laden", key="pocketcasts_curated_btn",
                      use_container_width=True, type="primary",
-                     help="Alles, was du auf dem Handy NICHT archiviert hast — auch ältere Folgen. "
-                          "Scannt alle Abos (~40s, kostet kein Limit)."):
+                     help="Liest deinen Filter direkt aus dem Pocket-Casts-Konto und wendet "
+                          "seine Regeln auf alle Abos an — auch auf ältere Folgen. "
+                          "~40s, kostet kein Limit."):
             try:
                 import pocketcasts_fetch as _pcf
                 with st.spinner("⭐ Deine Auswahl aus allen Abos zusammentragen + Transkripte prüfen (~40s)…"):

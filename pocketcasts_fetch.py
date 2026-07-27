@@ -615,8 +615,76 @@ def _podcast_catalogue(podcast_uuid: str, timeout: int = 25) -> list:
         return []
 
 
+_API_PLAYLIST_URL = "https://api.pocketcasts.com/user/playlist/list"
+
+
+def list_filters(token: str = None) -> list:
+    """Die in Pocket Casts angelegten Filter (intelligente Playlisten), so wie sie
+    auf dem iPhone stehen — inklusive ihrer Regeln."""
+    import json as _json
+    token = token or get_api_token()
+    if not token:
+        return []
+    req = urllib.request.Request(_API_PLAYLIST_URL, data=_json.dumps({"v": 1}).encode(),
+                                 method="POST", headers={
+                                     "Authorization": f"Bearer {token}",
+                                     "Content-Type": "application/json", "User-Agent": _UA})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = _json.loads(resp.read())
+    except Exception:
+        return []
+    return [p for p in (data.get("playlists") or [])
+            if isinstance(p, dict) and not p.get("isDeleted") and p.get("title")]
+
+
+def _episode_matches_filter(state: dict, published: str, flt: dict, now_iso: str) -> bool:
+    """Wendet die Regeln EINES Pocket-Casts-Filters auf eine Episode an.
+
+    state ist der gespeicherte Nutzerstatus (oder None = nie angefasst, gilt als
+    ungespielt). Bewusst nur die Regeln, die fürs Briefing zählen — Download-
+    Status (downloaded/notDownloaded) ist hier bedeutungslos, weil wir nicht
+    herunterladen, sondern Transkripte holen.
+    """
+    if state and state.get("isDeleted"):
+        return False                                   # archiviert -> nie
+
+    status = (state or {}).get("playingStatus") or 1   # 1 ungespielt, 2 angefangen, 3 fertig
+    if status == 1 and not flt.get("unplayed", True):
+        return False
+    if status == 2 and not flt.get("partiallyPlayed", True):
+        return False
+    if status == 3 and not flt.get("finished", False):
+        return False
+
+    if flt.get("starred") and not (state or {}).get("starred"):
+        return False
+
+    hours = flt.get("filterHours") or 0                # 0 = kein Zeitlimit
+    if hours and published:
+        import datetime as _dt
+        try:
+            pub = _dt.datetime.fromisoformat(str(published).replace("Z", "+00:00"))
+            if pub.tzinfo is None:
+                pub = pub.replace(tzinfo=_dt.timezone.utc)
+            age_h = (_dt.datetime.now(_dt.timezone.utc) - pub).total_seconds() / 3600.0
+            if age_h > hours:
+                return False
+        except Exception:
+            pass
+
+    if flt.get("filterDuration"):
+        secs = (state or {}).get("duration") or 0
+        longer, shorter = flt.get("longerThan") or 0, flt.get("shorterThan") or 0
+        if longer and secs and secs < longer * 60:
+            return False
+        if shorter and secs and secs > shorter * 60:
+            return False
+    return True
+
+
 def list_curated_episodes(podcasts=None, token: str = None, max_workers: int = 12,
-                          progress=None) -> dict:
+                          progress=None, filter_title: str = "New Releases") -> dict:
     """Die Folgen, die Florian auf dem Handy stehen gelassen hat — altersunabhängig.
 
     Rechnung je Podcast: alles im Katalog, minus archiviert, minus angefangen.
@@ -635,6 +703,20 @@ def list_curated_episodes(podcasts=None, token: str = None, max_workers: int = 1
     if not token:
         return {"episodes": [], "scanned": 0, "errors": ["kein API-Schlüssel aus der Sitzung"]}
 
+    # Die Regeln kommen aus dem echten Filter im Pocket-Casts-Konto, nicht aus
+    # einer nachgebauten Annahme. Fehlt der Filter, gilt eine konservative
+    # Ersatzregel (ungespielt + angefangen, nicht beendet, kein Zeitlimit).
+    flt = next((f for f in list_filters(token) if f.get("title") == filter_title), None)
+    if flt is None:
+        flt = {"unplayed": True, "partiallyPlayed": True, "finished": False,
+               "filterHours": 0, "allPodcasts": True}
+        used_filter = f"{filter_title} (nicht gefunden — Ersatzregel)"
+    else:
+        used_filter = flt.get("title")
+        if not flt.get("allPodcasts") and flt.get("podcastUuids"):
+            allowed = set(flt["podcastUuids"])
+            subs = [s for s in subs if s["uuid"] in allowed]
+
     done = {"n": 0}
 
     def _one(sub):
@@ -643,12 +725,8 @@ def list_curated_episodes(podcasts=None, token: str = None, max_workers: int = 1
         open_eps = []
         for ep in catalogue:
             st = state.get(ep.get("uuid"))
-            if st is None:
-                pass                                   # nie angefasst -> offen
-            elif st.get("isDeleted"):
-                continue                               # archiviert -> raus
-            elif st.get("playingStatus") in (2, 3) or (st.get("playedUpTo") or 0) > 0:
-                continue                               # angefangen/gehört -> raus
+            if not _episode_matches_filter(st, ep.get("published"), flt, ""):
+                continue
             # Feldnamen bewusst wie bei list_new_releases — dann kann die
             # bestehende Transkript-/Zusammenfassungs-Pipeline unverändert damit
             # arbeiten (podcast = Podcast-UUID, episode = Episoden-UUID).
@@ -670,10 +748,10 @@ def list_curated_episodes(podcasts=None, token: str = None, max_workers: int = 1
 
     episodes = [e for group in results for e in group]
     episodes.sort(key=lambda e: e.get("published") or "", reverse=True)
-    return {"episodes": episodes, "scanned": len(subs), "errors": []}
+    return {"episodes": episodes, "scanned": len(subs), "filter": used_filter, "errors": []}
 
 
-def preview_curated(limit: int = 250, progress=None):
+def preview_curated(limit: int = 250, progress=None, filter_title: str = "New Releases"):
     """Wie preview_new_releases, aber Quelle ist die eigene Auswahl (siehe
     list_curated_episodes) statt der zeitlich begrenzten New-Releases-Liste.
 
@@ -685,7 +763,7 @@ def preview_curated(limit: int = 250, progress=None):
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    data = list_curated_episodes()
+    data = list_curated_episodes(filter_title=filter_title)
     episodes = data.get("episodes") or []
     if not episodes:
         return [], (data.get("errors") or ["no_login_or_empty"])[0]
