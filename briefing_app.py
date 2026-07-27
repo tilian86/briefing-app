@@ -2640,8 +2640,16 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
     st.caption("Zeigt NUR neue Folgen im gewählten Zeitfenster — nie den Back-Katalog. Archiviertes bleibt dauerhaft weg. 📄 = Transkript im Feed (null Klicks nötig) · 🍎 = einmal in Apple Podcasts antippen, dann unten abholen. Der Pocket-Casts-Weg übers Einwurf-Feld bleibt wie gehabt.")
     _ib_c1, _ib_c2 = st.columns([2, 3])
     with _ib_c1:
-        _ib_days = st.selectbox("Zeitfenster", [1, 2, 3, 7, 14], index=2, key="podcast_inbox_days",
-                                format_func=lambda d: "letzte 24 Stunden" if d == 1 else f"letzte {d} Tage")
+        # Grössere Fenster sind gefahrlos: archivierte Folgen bleiben dauerhaft
+        # ausgefiltert, ein weites Fenster kostet also nur EINMAL mehr Sortierarbeit.
+        # Danach erscheinen wieder nur echte Neuzugänge — dafür rutschen selten
+        # sendende Podcasts (Dwarkesh & Co.) nicht mehr durch.
+        _ib_days = st.selectbox("Zeitfenster", [1, 2, 3, 7, 14, 30, 60], index=2,
+                                key="podcast_inbox_days",
+                                format_func=lambda d: "letzte 24 Stunden" if d == 1 else f"letzte {d} Tage",
+                                help="Ab 30 Tagen einmalig deutlich mehr Folgen (~480 statt ~66) — "
+                                     "einmal durchsortieren, danach ist wieder Normalbetrieb. "
+                                     "Pro Podcast werden höchstens 6 Folgen gezeigt.")
     with _ib_c2:
         st.write("")
         if st.button("🔄 Neue Episoden laden", key="podcast_inbox_fetch", use_container_width=True):
