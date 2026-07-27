@@ -3248,9 +3248,30 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
 
     _pc_preview = st.session_state.get("_pc_preview")
     if not _pc_preview:
+        # "Meine Auswahl" liest aus, was auf dem Handy stehen geblieben ist —
+        # unabhaengig vom Alter. "New Releases" bleibt der schnelle Weg fuer
+        # frisch Erschienenes; die Auswahl findet auch aeltere Folgen, die
+        # Pocket Casts serverseitig nicht mehr als "neu" ausliefert.
+        if st.button("⭐ Meine Pocket-Casts-Auswahl laden", key="pocketcasts_curated_btn",
+                     use_container_width=True, type="primary",
+                     help="Alles, was du auf dem Handy NICHT archiviert hast — auch ältere Folgen. "
+                          "Scannt alle Abos (~40s, kostet kein Limit)."):
+            try:
+                import pocketcasts_fetch as _pcf
+                with st.spinner("⭐ Deine Auswahl aus allen Abos zusammentragen + Transkripte prüfen (~40s)…"):
+                    _items, _pst = _pcf.preview_curated()
+            except Exception as _cue:
+                st.session_state["_podcast_inbox_last_msg"] = f"⭐ Auswahl laden fehlgeschlagen: {str(_cue)[:120]}"
+                _items, _pst = [], "error"
+            if _pst == "ok":
+                st.session_state["_pc_preview"] = _items
+            elif _pst != "error":
+                st.session_state["_podcast_inbox_last_msg"] = "⭐ Kein Pocket-Casts-Login (oder keine offenen Folgen)."
+            st.rerun()
+
         _pcb1, _pcb2 = st.columns([3, 2])
         with _pcb1:
-            if st.button("🎧 Pocket Casts prüfen", key="pocketcasts_preview_btn", use_container_width=True, type="primary"):
+            if st.button("🎧 Pocket Casts prüfen", key="pocketcasts_preview_btn", use_container_width=True):
                 try:
                     import pocketcasts_fetch as _pcf
                     with st.spinner("🎧 New Releases laden + Transkripte prüfen (kostet kein Limit)…"):
