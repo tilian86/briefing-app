@@ -14348,6 +14348,34 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         topics.append({"title": first or f"Quelle {i}", "members": [i], "weight": 2})
     if missing:
         print(f"[synthese] {len(missing)} Quelle(n) vom Clustering vergessen — als Einzelthemen ergänzt.", file=sys.stderr)
+    # 🎙️ Soft-Modus: Podcasts NIE zu einem Sammelthema bündeln. Das Wortbudget
+    # (220-340) gilt pro THEMA — landen mehrere Podcasts im selben Thema, teilen
+    # sie sich dieses Budget. Am 27.07. warf das Clustering 17 Folgen in ein
+    # Thema („Ein Ohr voll Welt"): ein Satz pro Podcast statt je einer richtigen
+    # Zusammenfassung. Mit den frueher ~10 Folgen verteilten sie sich auf mehrere
+    # Themen, deshalb fiel es nie auf. Jeder Podcast bekommt jetzt sein eigenes
+    # Thema und damit sein eigenes Budget.
+    if podcast_mode == "soft":
+        entbuendelt = []
+        for t in topics:
+            pods = [m_ for m_ in t["members"] if items[m_ - 1].get("kind") == "podcast"]
+            if len(pods) <= 1:
+                entbuendelt.append(t)
+                continue
+            rest = [m_ for m_ in t["members"] if m_ not in pods]
+            if rest:
+                entbuendelt.append({**t, "members": rest})
+            for m_ in pods:
+                titel = (items[m_ - 1].get("label")
+                         or " ".join(_body_core(items[m_ - 1]).split())[:70] or "Podcast")
+                entbuendelt.append({"title": titel[:120], "members": [m_],
+                                    "weight": t.get("weight", 3)})
+        if len(entbuendelt) != len(topics):
+            print(f"[synthese] Podcast-Modus „Länger erhalten“: Sammelthemen aufgelöst — "
+                  f"{len(topics)} → {len(entbuendelt)} Themen, jeder Podcast eigenständig.",
+                  file=sys.stderr)
+        topics = entbuendelt
+
     topics.sort(key=lambda t: -t.get("weight", 3))
     multi = [t for t in topics if len(t["members"]) > 1]
     print(f"[synthese] {len(topics)} Themen aus {len(items)} Quellen ({len(multi)} davon gebündelt: "
