@@ -2396,6 +2396,53 @@ def _sum_cli_usage(t0_iso: str, t1_iso: str) -> dict:
             "pct_window_est": round(100 * usd / _QUOTA_CAL_USD_PER_WINDOW, 1)}
 
 
+def _render_quality_score(self_check):
+    """Qualitätsscore als farbiges Balkendiagramm.
+
+    Der Score kommt aus regelbasierten Prüfungen (briefing_core.run_self_check),
+    nicht aus einem Modell — er kostet nichts und ist zwischen Läufen
+    vergleichbar. Genau dafür ist er da: sehen, ob eine Änderung an den
+    Denkstufen das Briefing wirklich besser macht.
+    """
+    if not isinstance(self_check, dict) or not self_check.get("criteria"):
+        return
+
+    def _farbe(pct):
+        if pct >= 90:
+            return "#2e9e57"      # grün
+        if pct >= 70:
+            return "#c9a227"      # gelb
+        if pct >= 50:
+            return "#d9822b"      # orange
+        return "#c0392b"          # rot
+
+    total = int(self_check.get("score") or 0)
+    with st.expander(f"📊 Qualitätsscore: {total} / 100", expanded=(total < 85)):
+        st.caption("Regelbasierte Prüfung ohne KI — kostet kein Kontingent. "
+                   "Findet genau das, was der Plausibilitäts-Check strukturell nicht sieht: "
+                   "leere Beiträge, verrutschte Wochentage, Struktur- und Textreste.")
+        rows = []
+        for c in self_check["criteria"]:
+            pct = int(c.get("score") or 0)
+            rows.append(
+                f'<div style="display:flex;align-items:center;gap:10px;margin:6px 0;">'
+                f'<div style="width:130px;font-size:0.86rem;">{c["label"]}</div>'
+                f'<div style="flex:1;background:#e9e9e9;border-radius:4px;height:16px;overflow:hidden;">'
+                f'<div style="width:{pct}%;background:{_farbe(pct)};height:100%;"></div></div>'
+                f'<div style="width:44px;text-align:right;font-size:0.86rem;">{pct}%</div>'
+                f'<div style="width:74px;color:#888;font-size:0.75rem;">Gewicht {c["weight"]}</div>'
+                f'</div>')
+        st.markdown("".join(rows), unsafe_allow_html=True)
+
+        maengel = [(c["label"], i) for c in self_check["criteria"] for i in (c.get("issues") or [])]
+        if maengel:
+            st.markdown("**Gefunden:**")
+            for label, issue in maengel[:10]:
+                st.caption(f"• {label}: {issue}")
+        else:
+            st.caption("✅ Keine Auffälligkeiten.")
+
+
 def _briefing_worker(cfg: dict, status: dict):
     """Der komplette Briefing-Lauf im Hintergrund-Thread — klick-, reload- und
     browserfest. KEIN st.* hier drin! Fortschritt/Ergebnisse nur über das status-Dict
@@ -2499,6 +2546,8 @@ def _briefing_worker(cfg: dict, status: dict):
             cc = r.get("content_check") or {}
             if cc:
                 entry["plausi"] = f"{cc.get('warnings', '?')}W/{cc.get('notices', '?')}N, repariert {r.get('content_repaired', 0)}"
+            if r.get("self_check"):
+                entry["self_check"] = r["self_check"]
             if i == 0 and r.get("uncovered_sources"):
                 status["uncovered_sources"] = r["uncovered_sources"]
             if r.get("special_done") is not None:
@@ -5549,6 +5598,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             else:
                 _bits.append(f"❌ {str(_re9.get('error'))[:100]}")
             st.caption(" · ".join(_bits))
+            _render_quality_score(_re9.get("self_check"))
         if _job_done.get("cleanup"):
             st.caption(f"🗑️ {_job_done['cleanup']} alte Bibliothekseinträge aufgeräumt.")
         _tok = _job_done.get("tokens")

@@ -11417,7 +11417,8 @@ def build_claude_handoff_package(
     now = get_berlin_now()
     if include_prompt:
         parts = [base_prompt]
-        parts.append(f"\nERSTELLT AM: {now.strftime('%A, %d. %B %Y, %H:%M Uhr')}\n")
+        parts.append(f"\nERSTELLT AM: {de_datetime_label(now)}\n")
+        parts.append(de_today_anchor(now) + "\n")
         parts.append(f"TAGESZEIT: {_tageszeit_label(now.hour)}\n")
         parts.append(f"STIL: {'ERZÄHL-MODUS (Podcast-Format, fließend)' if narrative_mode else 'KLASSISCH (strukturiert, Beitragszähler)'}\n")
         parts.append(f"KOMPAKT-MODUS: {'ja (kürzere Zusammenfassungen, 150-250 Wörter)' if compact_mode else 'nein (ausführlich, 200-400 Wörter)'}\n")
@@ -11445,7 +11446,7 @@ def build_claude_handoff_package(
         # widersprüchliche Aufträge — und folgt bei sehr vielen Beiträgen der hier
         # eingebetteten JSON-Briefing-Anweisung statt dem [N]-Kompakt-Format (Bug 13.06.).
         parts = [
-            f"ROHDATEN ({now.strftime('%A, %d. %B %Y, %H:%M Uhr')}) — "
+            f"ROHDATEN ({de_datetime_label(now)}) — {de_today_anchor(now)} — "
             "Wetter, Artikel-Quelltexte, Paywall-Texte und Podcast-Zusammenfassungen für die Kompaktfassung:\n\n"
         ]
 
@@ -15783,6 +15784,19 @@ def run_briefing_via_claude_cli_chunked(
             elif not _rep.get("ok"):
                 print(f"[plausi] Auto-Repair fehlgeschlagen: {_rep.get('error')}", file=sys.stderr)
 
+    # Regelbasierter Selbsttest — nach allen Korrekturen, vor dem PDF. Kostet
+    # nichts und findet die Fehlerklassen, die der KI-Check nicht sieht.
+    try:
+        self_check = run_self_check(all_sections, now=now, content_check=content_check_data)
+        print(f"[selbsttest] Qualitätsscore {self_check['score']}/100 — "
+              + ", ".join(f"{c['label']} {c['score']}%" for c in self_check["criteria"]),
+              file=sys.stderr)
+        for _iss in self_check["issues"][:8]:
+            print(f"[selbsttest] {_iss}", file=sys.stderr)
+    except Exception as _sc_exc:
+        print(f"[selbsttest] übersprungen: {_sc_exc}", file=sys.stderr)
+        self_check = None
+
     # PDF bauen (gleiche Pipeline wie der einteilige Pfad)
     _report("PDF wird gebaut…", 0.98 if content_check_data else 0.90)
     merged_json = json.dumps({"compact_mode": compact_mode, "sections": all_sections}, ensure_ascii=False)
@@ -15813,6 +15827,7 @@ def run_briefing_via_claude_cli_chunked(
         "output_pdf_path": output_pdf_path,
         "clean_sections": pdf_result.get("clean_sections"),
         "content_check": content_check_data,
+        "self_check": self_check,
         "content_repaired": content_repaired,
         "special_done": (len(special_ok_topics) if special_topics is not None else None),
         "special_failed_topics": special_failed_topics,
@@ -16350,6 +16365,169 @@ def find_stub_sections(sections: List[dict], min_chars: int = 250) -> List[dict]
                         "title": (title or content[:60]).strip()[:80],
                         "source": section.get("source_label") or "?"})
     return out
+
+
+# --- Deterministischer Selbsttest + Qualitätsscore -------------------------
+#
+# Der KI-Plausi-Check prüft Faktentreue gegen die Quellen. Er sieht strukturell
+# NICHT, ob ein Beitrag gar keinen Text hat oder ob der Wochentag verrutscht ist
+# — am 27.07. meldete er „0 Warnungen" und beides war drin. Diese Prüfungen sind
+# stumpfe Regeln: kosten kein Kontingent, laufen in Millisekunden, finden dafür
+# genau die Fehlerklassen, die dem Modell entgehen.
+
+_WEEKDAYS_DE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag",
+                "Freitag", "Samstag", "Sonntag"]
+_MONTHS_DE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+              "August", "September", "Oktober", "November", "Dezember"]
+
+
+def de_datetime_label(now: datetime.datetime, with_time: bool = True) -> str:
+    """Deutscher Datumsstempel: „Montag, 27. Juli 2026, 14:23 Uhr".
+
+    strftime('%A %B') liefert die Systemsprache — im deutschen Prompt stand
+    dadurch „Monday, 27. July 2026". Ein englischer Wochentag in deutschem
+    Kontext ist genau die Unschärfe, die am 27.07. zum verrutschten Wettertag
+    geführt hat.
+    """
+    label = f"{_WEEKDAYS_DE[now.weekday()]}, {now.day}. {_MONTHS_DE[now.month - 1]} {now.year}"
+    return f"{label}, {now.strftime('%H:%M')} Uhr" if with_time else label
+
+
+def de_today_anchor(now: datetime.datetime) -> str:
+    """Unmissverständlicher Zeitanker für Prompts, die „heute/gestern/morgen" nutzen."""
+    gestern = _WEEKDAYS_DE[(now.weekday() - 1) % 7]
+    morgen = _WEEKDAYS_DE[(now.weekday() + 1) % 7]
+    return (f"ZEITANKER: HEUTE ist {de_datetime_label(now, with_time=False)}. "
+            f"„gestern\" = {gestern}, „morgen\" = {morgen}. "
+            f"Verschiebe Tagesangaben nicht und rate keinen Wochentag.")
+
+
+def _sc_body_text(section: dict) -> str:
+    """Fließtext eines Beitrags ohne Überschrift, „Was bleibt" und Überleitungen."""
+    out = []
+    for line in (section.get("content") or "").split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(("Was bleibt", "Weiter geht", "Ende der")):
+            continue
+        out.append(line)
+    return " ".join(out)
+
+
+def _sc_is_regular(section: dict) -> bool:
+    """Echter Inhaltsbeitrag (keine Meta-/Struktur-Blöcke)."""
+    if section.get("type") == "transition":
+        return False
+    return not any(section.get(f) for f in
+                   ("_weather", "_recap", "_essenz", "_verabschiedung",
+                    "_preview", "_ressort_header", "_verbatim"))
+
+
+def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None,
+                   content_check: Optional[dict] = None) -> dict:
+    """Regelbasierte Prüfung des fertigen Briefings — ohne Modell, ohne Kosten.
+
+    Returns {"score": 0..100, "criteria": [...], "issues": [...]}.
+    Jedes Kriterium: {"key", "label", "score" 0..100, "weight", "issues" [...]}.
+    """
+    now = now or datetime.datetime.now()
+    regular = [s for s in sections if _sc_is_regular(s)]
+    n = max(1, len(regular))
+    issues_all = []
+
+    def crit(key, label, score, weight, issues):
+        issues_all.extend(f"{label}: {i}" for i in issues)
+        return {"key": key, "label": label, "score": max(0, min(100, round(score))),
+                "weight": weight, "issues": issues[:6]}
+
+    criteria = []
+
+    # 1) Vollständigkeit — Beiträge ohne echten Fließtext
+    stubs = find_stub_sections(sections)
+    criteria.append(crit(
+        "vollstaendigkeit", "Vollständigkeit", 100 - 100.0 * len(stubs) / n, 25,
+        [f"Beitrag {s['index']} nur {s['chars']} Zeichen ({s['title'][:40]})" for s in stubs]))
+
+    # 2) Zeitbezug — genannter Wochentag muss zum Datum passen
+    heute, gestern = _WEEKDAYS_DE[now.weekday()], _WEEKDAYS_DE[(now.weekday() - 1) % 7]
+    morgen = _WEEKDAYS_DE[(now.weekday() + 1) % 7]
+    zeit_issues = []
+    for idx, s in enumerate(sections, start=1):
+        body = _sc_body_text(s)
+        for wd in _WEEKDAYS_DE:
+            # „heute ist <Wochentag>" / „<Wochentag> …, dann heute"
+            if re.search(rf"heute[^.]{{0,20}}\b{wd}\b|\b{wd}\b[^.]{{0,20}}heute", body, re.I) \
+                    and wd != heute:
+                zeit_issues.append(f"Beitrag {idx}: „heute\" mit {wd} verknüpft, ist aber {heute}")
+                break
+        if s.get("_weather"):
+            # Der 27.07.-Fehler: „Warmer Sonntag … ab Montag dreht sich alles"
+            # in einem Montags-Briefing. Zwei Signaturen fangen das:
+            #   a) der Wetterbericht spricht von gestern
+            #   b) HEUTE wird als Zukunft behandelt („ab Montag", „am Montag wird")
+            if re.search(rf"\b{gestern}\b", body):
+                zeit_issues.append(
+                    f"Wetter nennt {gestern} (gestern) — Bericht um einen Tag verrutscht?")
+            if re.search(rf"\b(ab|am)\s+{heute}\b", body, re.I):
+                zeit_issues.append(
+                    f"Wetter behandelt {heute} als Zukunft (»ab/am {heute}«) — heute ist {heute}")
+            if morgen and re.search(rf"\bheute\b[^.]{{0,30}}\b{morgen}\b", body, re.I):
+                zeit_issues.append(f"Wetter setzt „heute\" mit {morgen} (morgen) gleich")
+    criteria.append(crit("zeitbezug", "Zeitbezug", 100 - 34.0 * len(zeit_issues), 20, zeit_issues))
+
+    # 3) Faktentreue — Ergebnis des KI-Plausi-Checks
+    cc = content_check or {}
+    warn = int(cc.get("warnings") or 0)
+    notice = int(cc.get("notices") or 0)
+    checked = int(cc.get("checked") or 0)
+    if checked:
+        fakt = 100 - (100.0 * warn / checked) - (25.0 * notice / checked)
+        fakt_issues = [f"{warn} Warnung(en), {notice} Hinweis(e) bei {checked} geprüften Beiträgen"] if (warn or notice) else []
+    else:
+        fakt, fakt_issues = 60.0, ["Plausibilitäts-Check lief nicht"]
+    criteria.append(crit("faktentreue", "Faktentreue", fakt, 25, fakt_issues))
+
+    # 4) Struktur — Titel und „Was bleibt" vorhanden, keine Dubletten
+    ohne_titel, ohne_fazit, titel = [], [], {}
+    for idx, s in enumerate(regular, start=1):
+        content = s.get("content") or ""
+        t = next((l.lstrip("# ").strip() for l in content.split("\n")
+                  if l.strip().startswith("#")), "")
+        if not t:
+            ohne_titel.append(idx)
+        else:
+            titel.setdefault(t.lower(), []).append(idx)
+        if "Was bleibt" not in content:
+            ohne_fazit.append(idx)
+    dubletten = [f"Beiträge {v} tragen denselben Titel" for v in titel.values() if len(v) > 1]
+    struktur_issues = dubletten[:]
+    if ohne_titel:
+        struktur_issues.append(f"{len(ohne_titel)} Beitrag/Beiträge ohne Überschrift")
+    if ohne_fazit:
+        struktur_issues.append(f"{len(ohne_fazit)} ohne „Was bleibt\"")
+    fehl = len(ohne_titel) + len(ohne_fazit) + sum(len(v) for v in titel.values() if len(v) > 1)
+    criteria.append(crit("struktur", "Struktur", 100 - 100.0 * fehl / n, 15, struktur_issues))
+
+    # 5) Sprache — Reste, die im Vorlesetext nichts verloren haben
+    sprach_issues = []
+    muster = [(r"\bLorem ipsum\b", "Platzhaltertext"), (r"\[\s*\]", "leere Klammern"),
+              (r"\bTODO\b|\bTBD\b", "TODO-Marker"), (r"https?://", "roher Link"),
+              (r"\bundefined\b|\bNaN\b|\bNone\b", "Programmier-Artefakt"),
+              (r"\{\{|\}\}", "Template-Klammern")]
+    for idx, s in enumerate(sections, start=1):
+        body = _sc_body_text(s)
+        for pat, name in muster:
+            if re.search(pat, body):
+                sprach_issues.append(f"Beitrag {idx}: {name}")
+                break
+    typos_fixed = int((content_check or {}).get("typos_fixed") or 0)
+    criteria.append(crit("sprache", "Sprache", 100 - 20.0 * len(sprach_issues), 15,
+                         sprach_issues + ([f"{typos_fixed} Tippfehler korrigiert"] if typos_fixed else [])))
+
+    gesamt = sum(c["score"] * c["weight"] for c in criteria) / sum(c["weight"] for c in criteria)
+    return {"score": round(gesamt), "criteria": criteria, "issues": issues_all,
+            "sections_checked": len(regular)}
 
 
 def run_content_check_via_claude_cli(
