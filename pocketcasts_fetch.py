@@ -546,8 +546,185 @@ def list_subscriptions(timeout_s: int = 45) -> list:
     return out
 
 
+_API_EPISODES_URL = "https://api.pocketcasts.com/user/podcast/episodes/bookmarks"
+_API_PODCAST_FULL = "https://podcast-api.pocketcasts.com/podcast/full/{uuid}"
+
+
+def get_api_token(timeout_s: int = 45):
+    """Greift den API-Schlüssel aus der angemeldeten Sitzung ab.
+
+    Die Web-App holt sich den Schlüssel selbst über /user/token; wir lesen ihn
+    aus dem Authorization-Header eines Aufrufs mit, den sie ohnehin macht. Damit
+    lassen sich die Statusabfragen danach direkt und parallel stellen, statt für
+    jeden der ~160 Podcasts eine Seite zu laden (Sekunden statt 20 Minuten).
+    """
+    box = {}
+
+    def _cap(req):
+        auth = req.headers.get("authorization", "")
+        if auth.startswith("Bearer ") and "token" not in box:
+            box["token"] = auth[7:]
+
+    p, ctx = _launch(headless=True)
+    try:
+        page = _page(ctx)
+        page.on("request", _cap)
+        page.goto(PODCASTS_ALL_URL, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+        deadline = time.time() + 20
+        while "token" not in box and time.time() < deadline:
+            page.wait_for_timeout(400)
+    except Exception:
+        return None
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        p.stop()
+    return box.get("token")
+
+
+def _episode_user_state(podcast_uuid: str, token: str, timeout: int = 25) -> dict:
+    """Nutzerstatus je Episode: {episode_uuid: {...}}. Nur Folgen, die angefasst
+    wurden, haben einen Eintrag — unberührte fehlen hier (und sind damit offen)."""
+    import json as _json
+    body = _json.dumps({"uuid": podcast_uuid}).encode()
+    req = urllib.request.Request(_API_EPISODES_URL, data=body, method="POST", headers={
+        "Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": _UA})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read())
+    except Exception:
+        return {}
+    return {e["uuid"]: e for e in (data.get("episodes") or []) if isinstance(e, dict) and e.get("uuid")}
+
+
+def _podcast_catalogue(podcast_uuid: str, timeout: int = 25) -> list:
+    """Alle Folgen eines Podcasts (öffentlich, ohne Anmeldung)."""
+    import gzip as _gzip
+    import json as _json
+    req = urllib.request.Request(_API_PODCAST_FULL.format(uuid=podcast_uuid),
+                                 headers={"User-Agent": _UA, "Accept-Encoding": "gzip"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+        if raw[:2] == b"\x1f\x8b":
+            raw = _gzip.decompress(raw)
+        return _json.loads(raw).get("podcast", {}).get("episodes") or []
+    except Exception:
+        return []
+
+
+def list_curated_episodes(podcasts=None, token: str = None, max_workers: int = 12,
+                          progress=None) -> dict:
+    """Die Folgen, die Florian auf dem Handy stehen gelassen hat — altersunabhängig.
+
+    Rechnung je Podcast: alles im Katalog, minus archiviert, minus angefangen.
+    Unberührte Folgen haben gar keinen Statuseintrag und gelten damit als offen —
+    genau das ist die Auswahl, die in der intelligenten Playlist auftaucht.
+
+    Returns {"episodes": [...], "scanned": int, "errors": [...]}.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    subs = podcasts if podcasts is not None else list_subscriptions()
+    if not subs:
+        return {"episodes": [], "scanned": 0, "errors": ["keine Abo-Liste (nicht angemeldet?)"]}
+
+    token = token or get_api_token()
+    if not token:
+        return {"episodes": [], "scanned": 0, "errors": ["kein API-Schlüssel aus der Sitzung"]}
+
+    done = {"n": 0}
+
+    def _one(sub):
+        state = _episode_user_state(sub["uuid"], token)
+        catalogue = _podcast_catalogue(sub["uuid"])
+        open_eps = []
+        for ep in catalogue:
+            st = state.get(ep.get("uuid"))
+            if st is None:
+                pass                                   # nie angefasst -> offen
+            elif st.get("isDeleted"):
+                continue                               # archiviert -> raus
+            elif st.get("playingStatus") in (2, 3) or (st.get("playedUpTo") or 0) > 0:
+                continue                               # angefangen/gehört -> raus
+            # Feldnamen bewusst wie bei list_new_releases — dann kann die
+            # bestehende Transkript-/Zusammenfassungs-Pipeline unverändert damit
+            # arbeiten (podcast = Podcast-UUID, episode = Episoden-UUID).
+            open_eps.append({
+                "podcast": sub["uuid"], "episode": ep.get("uuid"),
+                "podcastTitle": sub["title"], "title": ep.get("title") or "",
+                "published": ep.get("published") or "", "duration": ep.get("duration"),
+            })
+        done["n"] += 1
+        if progress:
+            try:
+                progress(done["n"], len(subs), sub["title"])
+            except Exception:
+                pass
+        return open_eps
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        results = list(ex.map(_one, subs))
+
+    episodes = [e for group in results for e in group]
+    episodes.sort(key=lambda e: e.get("published") or "", reverse=True)
+    return {"episodes": episodes, "scanned": len(subs), "errors": []}
+
+
+def preview_curated(limit: int = 250, progress=None):
+    """Wie preview_new_releases, aber Quelle ist die eigene Auswahl (siehe
+    list_curated_episodes) statt der zeitlich begrenzten New-Releases-Liste.
+
+    Transkripte werden parallel geprüft — bei ~200 Folgen wäre seriell zu langsam.
+    `limit` deckelt die Prüfung auf die neuesten N Folgen; der Rest bleibt in der
+    Liste, nur ohne vorab geladenen Volltext. Standard ist bewusst hoch: die
+    Auswahl enthält gezielt auch ältere Folgen, die sonst aus der Prüfung fielen.
+    Rückgabe wie preview_new_releases: (items, status).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    data = list_curated_episodes()
+    episodes = data.get("episodes") or []
+    if not episodes:
+        return [], (data.get("errors") or ["no_login_or_empty"])[0]
+
+    head, tail = episodes[:limit], episodes[limit:]
+    done = {"n": 0}
+
+    def _one(ep):
+        text, _err = fetch_transcript(ep["podcast"], ep["episode"], title=ep.get("title"))
+        done["n"] += 1
+        if progress:
+            try:
+                progress(done["n"], len(head), ep.get("title") or "?")
+            except Exception:
+                pass
+        return {"title": ep.get("title") or "?", "podcast_title": ep.get("podcastTitle") or "",
+                "podcast": ep["podcast"], "episode": ep["episode"],
+                "published": ep.get("published") or "",
+                "text": text, "has_transcript": bool(text)}
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        items = list(ex.map(_one, head))
+
+    for ep in tail:
+        items.append({"title": ep.get("title") or "?", "podcast_title": ep.get("podcastTitle") or "",
+                      "podcast": ep["podcast"], "episode": ep["episode"],
+                      "published": ep.get("published") or "",
+                      "text": None, "has_transcript": False})
+    return items, "ok"
+
+
 if __name__ == "__main__":
     import sys
+    if len(sys.argv) >= 2 and sys.argv[1] == "--curated":
+        r = list_curated_episodes(progress=lambda i, n, t: print(f"  {i}/{n} {t[:40]}", file=sys.stderr))
+        print(f"{len(r['episodes'])} offene Folgen aus {r['scanned']} Podcasts")
+        for e in r["episodes"][:40]:
+            print(" ", str(e["published"])[:10], "|", e["podcast"][:26], "|", e["title"][:48])
+        sys.exit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "--subs":
         for s in list_subscriptions():
             print(s["uuid"], "|", s["title"][:45], "|", s["author"][:30])
