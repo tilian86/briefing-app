@@ -13254,6 +13254,15 @@ PODCAST_OPML_LOCAL_MIRROR = os.path.expanduser("~/.briefing_podcast_feeds.opml")
 
 
 PODCAST_FEEDMAP_PATH = os.path.expanduser("~/.briefing_podcast_feedmap.json")
+# Orte, an denen ein von Hand exportiertes Pocket-Casts-OPML liegen darf. Solche
+# Exporte sind die verlässlichste Quelle für Feed-Adressen — sie kommen direkt
+# von Pocket Casts, während iTunes nur raten kann. Wird beim Abgleich eingelesen
+# und dauerhaft gemerkt; die Datei darf danach weg.
+PODCAST_OPML_IMPORT_PATHS = [
+    os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs/Downloads/podcasts.opml"),
+    os.path.expanduser("~/Downloads/podcasts.opml"),
+    os.path.expanduser("~/Desktop/podcasts.opml"),
+]
 _PODCAST_SYNC_MIN_HOURS = 20     # höchstens ~1x pro Tag ins Netz
 _PODCAST_ITUNES_MAX_NEW = 12     # neue Abos pro Lauf auflösen (Rest beim nächsten Mal)
 
@@ -13381,12 +13390,22 @@ def sync_podcast_feeds_from_pocketcasts(force: bool = False,
         _say("Keine Abo-Liste erhalten (nicht angemeldet oder offline) — bestehende Liste bleibt.")
         return {"ok": False, "error": "keine Abo-Liste"}
 
-    # Bekannte Feeds aus der bisherigen OPML als Startbestand: für die ~160
-    # vorhandenen Podcasts ist die Adresse schon bekannt und muss nicht neu
-    # gesucht werden.
+    # Bekannte Feeds als Startbestand, damit vorhandene Podcasts nicht neu
+    # gesucht werden müssen. Reihenfolge = Verlässlichkeit: erst die aktuelle
+    # Liste, dann Hand-Exporte (die überschreiben, denn sie kommen direkt von
+    # Pocket Casts — der jüngste Export gewinnt).
     known_by_title = {}
     for existing in load_podcast_feeds_from_opml():
         known_by_title[_norm_podcast_title(existing["name"])] = existing["url"]
+
+    imports = [(os.path.getmtime(p), p) for p in
+               ([PODCAST_OPML_PATH] + PODCAST_OPML_IMPORT_PATHS) if os.path.exists(p)]
+    for _mtime, path in sorted(imports):
+        found = load_podcast_feeds_from_opml(path)
+        for entry in found:
+            known_by_title[_norm_podcast_title(entry["name"])] = entry["url"]
+        if found:
+            _say(f"Hand-Export eingelesen: {os.path.basename(path)} ({len(found)} Feeds)")
 
     feeds, unresolved, newly = [], [], 0
     for sub in subs:
