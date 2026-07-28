@@ -3303,10 +3303,64 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             _jobs.append({"guid": None, "title": _lbl, "path": None, "raw": _blk,
                           "fut": st.session_state["_sum_pool"].submit(summarize_podcast_transcript_via_cli, _blk)})
         st.session_state["_round_jobs"] = _jobs
+        # Episoden merken — sonst tauchen sie beim naechsten Pruefen wieder als
+        # "neu" auf, obwohl sie laengst im Briefing stehen (27.07.: tagesschau).
+        # Bisher markierte NUR der Direkt-Weg; der normale Knopf vergass es.
+        try:
+            import pocketcasts_fetch as _pcf_mark
+            _uuids = [t.get("episode") for t in _items if t.get("episode")]
+            if _uuids:
+                _pcf_mark.summarize_selection_mark(_uuids)
+        except Exception:
+            pass
 
-    def _pc_in_field(_title):
-        _f = (st.session_state.get("podcast_text", "") or "").lower()
-        return bool(_title) and (_title[:25].lower() in _f)
+    def _pc_norm(_s):
+        """Titel vergleichbar machen — Satzzeichen und Abstaende sind unzuverlässig."""
+        return re.sub(r"[^a-z0-9äöüß]+", " ", (_s or "").lower()).strip()
+
+    def _pc_in_field(_title, _episode=None):
+        """Steckt die Folge schon im Briefing?
+
+        Drei Wege, weil keiner allein reicht:
+          1. Episoden-Kennung im Gedaechtnis (exakt, ueberlebt den Feld-Reset)
+          2. normalisierter Titel im Podcast-Feld (Satzzeichen ignorieren —
+             "tagesschau 20:00 Uhr, 27.0" fand "tagesschau - 20:00 Uhr, …" nicht)
+          3. normalisierter Titel im zuletzt erzeugten Briefingtext
+        """
+        if _episode:
+            try:
+                import pocketcasts_fetch as _pcf_chk
+                if _episode in _pcf_chk._load_fetched():
+                    return True
+            except Exception:
+                pass
+        _n = _pc_norm(_title)[:40]
+        if not _n:
+            return False
+        if _n in _pc_norm(st.session_state.get("podcast_text", "")):
+            return True
+        return _n in _pc_norm(_pc_recent_briefings_text())
+
+    def _pc_recent_briefings_text(_n_files: int = 3) -> str:
+        """Text der zuletzt erzeugten Briefings (Vorlese-Fassung).
+
+        Das Podcast-Eingabefeld wird nach dem Lauf geleert — was dort stand, ist
+        weg. Die fertigen Briefings sind die verlässliche Quelle dafür, was
+        wirklich schon vertont wurde. Gecacht, damit das nicht bei jedem
+        Neuzeichnen von der Platte liest.
+        """
+        _cache = st.session_state.get("_pc_recent_txt_cache")
+        if _cache and (time.time() - _cache[0]) < 300:
+            return _cache[1]
+        try:
+            _dir = _resolve_archive_dir() / "Texte"
+            _files = sorted(_dir.glob("*_eleven-reader.txt"),
+                            key=lambda p: p.stat().st_mtime, reverse=True)[:_n_files]
+            _txt = "\n".join(f.read_text(encoding="utf-8", errors="ignore") for f in _files)
+        except Exception:
+            _txt = ""
+        st.session_state["_pc_recent_txt_cache"] = (time.time(), _txt)
+        return _txt
 
     _pc_preview = st.session_state.get("_pc_preview")
     if not _pc_preview:
@@ -3371,7 +3425,7 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                 except Exception:
                     _items, _pst = [], "error"
                 if _pst == "ok":
-                    _avail = [it for it in _items if it.get("has_transcript") and not _pc_in_field(it.get("title"))]
+                    _avail = [it for it in _items if it.get("has_transcript") and not _pc_in_field(it.get("title"), it.get("episode"))]
                     _pc_submit_and_summarize(_avail)
                     _pcf.summarize_selection_mark([it["episode"] for it in _avail])
                     st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_avail)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
@@ -3379,8 +3433,8 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                     st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Login / keine Folgen."
                 st.rerun()
     else:
-        _new = [it for it in _pc_preview if it["has_transcript"] and not _pc_in_field(it["title"])]
-        _inf = [it for it in _pc_preview if it["has_transcript"] and _pc_in_field(it["title"])]
+        _new = [it for it in _pc_preview if it["has_transcript"] and not _pc_in_field(it["title"], it.get("episode"))]
+        _inf = [it for it in _pc_preview if it["has_transcript"] and _pc_in_field(it["title"], it.get("episode"))]
         _non = [it for it in _pc_preview if not it["has_transcript"]]
         st.markdown(f"**🎧 {len(_pc_preview)} Folgen geprüft** — 🟢 {len(_new)} neu · ⚪ {len(_inf)} schon im Feld · ⏭️ {len(_non)} ohne Transkript")
         st.caption("🟢 ist vorausgewählt. Hake ab/an, was zusammengefasst werden soll — nur das kostet Limit. ⏭️ hat kein Transkript.")
@@ -3390,7 +3444,7 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             if not _it["has_transcript"]:
                 st.caption(f"⏭️ {_lbl} · _kein Transkript_")
             else:
-                _already = _pc_in_field(_it["title"])
+                _already = _pc_in_field(_it["title"], _it.get("episode"))
                 _icon = "⚪" if _already else "🟢"
                 if st.checkbox(f"{_icon} {_lbl}" + (" · _schon im Feld_" if _already else ""),
                                value=(not _already), key=f"pcsel_{_i}"):
