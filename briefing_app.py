@@ -3350,7 +3350,8 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
         Neuzeichnen von der Platte liest.
         """
         _cache = st.session_state.get("_pc_recent_txt_cache")
-        if _cache and (time.time() - _cache[0]) < 300:
+        _jetzt = datetime.datetime.now().timestamp()
+        if _cache and (_jetzt - _cache[0]) < 300:
             return _cache[1]
         try:
             _dir = _resolve_archive_dir() / "Texte"
@@ -3359,7 +3360,7 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             _txt = "\n".join(f.read_text(encoding="utf-8", errors="ignore") for f in _files)
         except Exception:
             _txt = ""
-        st.session_state["_pc_recent_txt_cache"] = (time.time(), _txt)
+        st.session_state["_pc_recent_txt_cache"] = (_jetzt, _txt)
         return _txt
 
     _pc_preview = st.session_state.get("_pc_preview")
