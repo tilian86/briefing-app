@@ -3300,19 +3300,14 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             _hdr = (f"Podcast: {_pt} — Episode: {_t['title']}" if _pt else f"Podcast: {_t['title']}")
             _blk = f"{_hdr}\n\n{_t['text']}"
             _lbl = (f"{_pt}: {_t['title']}" if _pt else _t["title"])[:60]
+            # episode-uuid mitgeben: erst NACH erfolgreicher Zusammenfassung wird
+            # sie als geholt vermerkt (siehe Ernte-Schleife). Beim Abschicken zu
+            # markieren wäre falsch — eine gescheiterte Folge gälte als erledigt
+            # und würde nie wieder angeboten.
             _jobs.append({"guid": None, "title": _lbl, "path": None, "raw": _blk,
+                          "episode": _t.get("episode"),
                           "fut": st.session_state["_sum_pool"].submit(summarize_podcast_transcript_via_cli, _blk)})
         st.session_state["_round_jobs"] = _jobs
-        # Episoden merken — sonst tauchen sie beim naechsten Pruefen wieder als
-        # "neu" auf, obwohl sie laengst im Briefing stehen (27.07.: tagesschau).
-        # Bisher markierte NUR der Direkt-Weg; der normale Knopf vergass es.
-        try:
-            import pocketcasts_fetch as _pcf_mark
-            _uuids = [t.get("episode") for t in _items if t.get("episode")]
-            if _uuids:
-                _pcf_mark.summarize_selection_mark(_uuids)
-        except Exception:
-            pass
 
     def _pc_norm(_s):
         """Titel vergleichbar machen — Satzzeichen und Abstaende sind unzuverlässig."""
@@ -3428,7 +3423,9 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                 if _pst == "ok":
                     _avail = [it for it in _items if it.get("has_transcript") and not _pc_in_field(it.get("title"), it.get("episode"))]
                     _pc_submit_and_summarize(_avail)
-                    _pcf.summarize_selection_mark([it["episode"] for it in _avail])
+                    # Markiert wird erst nach erfolgreicher Zusammenfassung
+                    # (Ernte-Schleife) — sonst gilt eine gescheiterte Folge als
+                    # erledigt und wird nie wieder angeboten.
                     st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_avail)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
                 else:
                     st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Login / keine Folgen."
@@ -3456,7 +3453,7 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                 import pocketcasts_fetch as _pcf
                 _chosen = [_pc_preview[i] for i in _sel_idx]
                 _pc_submit_and_summarize(_chosen)
-                _pcf.summarize_selection_mark([c["episode"] for c in _chosen])
+                # Markierung erfolgt nach Erfolg, nicht beim Abschicken.
                 for _k in range(len(_pc_preview)):
                     st.session_state.pop(f"pcsel_{_k}", None)
                 st.session_state.pop("_pc_preview", None)
@@ -3599,6 +3596,13 @@ def _round_jobs_collector():
                 st.session_state["_podcast_concerns"] = _pc
             if _j.get("path"):
                 mark_ttml_imported([_j["path"]])
+            # Jetzt erst als geholt vermerken — die Zusammenfassung liegt vor.
+            if _j.get("episode"):
+                try:
+                    import pocketcasts_fetch as _pcf_ok
+                    _pcf_ok.summarize_selection_mark([_j["episode"]])
+                except Exception:
+                    pass
             if _j.get("guid"):
                 _d7 = st.session_state.get("podcast_inbox_data") or {}
                 _meta7 = [x for x in (_d7.get("episodes") or []) if x.get("guid") == _j["guid"]]
