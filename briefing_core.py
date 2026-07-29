@@ -14652,6 +14652,24 @@ KEIN Fehler (NICHT melden): Kürzungen, Auslassungen, Paraphrasen, andere Wortwa
 Zusammenfassen mehrerer Aussagen. Im Zweifel NICHT melden — lieber eine echte Warnung
 zu wenig als Fehlalarme. Wenn alles stimmig ist: leere Liste.
 
+NIEMALS MELDEN (das ist Grübeln, keine Warnung):
+- Etwas, das du selbst als „plausibel", „wahrscheinlich korrekt", „nicht explizit
+  belegt", „wirkt wie" oder „ändert die Kernaussage nicht" einstufst. Wenn du es
+  relativierst, ist es keine Warnung — dann lass es weg.
+- Fehlende Zwischenschritte, Herleitungen oder Quellenangaben. Eine Zusammenfassung
+  darf verdichten und einordnen.
+- Zahlen, die aus dem Zusammenhang klar hervorgehen (Jahreszahl aus dem
+  Gesprächsdatum, gerundete Werte, „Anfang Juli" für den ersten Juli).
+- Abweichungen, die der Hörer nie bemerken würde oder die nichts an dem ändern,
+  was er aus dem Beitrag mitnimmt.
+- Stellen, an denen der Transkript-Auszug abbricht: fehlender Beleg ist KEIN
+  Widerspruch. Nur melden, was dem vorliegenden Text wirklich widerspricht.
+
+MASSSTAB: Würde ein Hörer, der diesen Punkt liest, seine Meinung über den Inhalt
+ändern? Wenn nein, gehört er nicht in die Liste. Drei präzise Warnungen sind
+wertvoll, zehn relativierte Beobachtungen sind wertlos — dann liest sie niemand.
+HÖCHSTENS 3 Einträge; gibt es mehr Kandidaten, nimm die drei gravierendsten.
+
 KORREKTURVORSCHLÄGE (`fixes`)
 Die Zusammenfassung wird unbeaufsichtigt weiterverarbeitet und vorgelesen. Für jeden
 Widerspruch, bei dem das Transkript EINEN eindeutigen Wert nennt, gib zusätzlich eine
@@ -14776,7 +14794,27 @@ def _check_podcast_summary_faithfulness(summary: str, transcript: str, cli_path=
         if not m:
             return empty
         data = _loads_llm_json(m.group(0)) or {}
-        concerns = [str(c).strip() for c in (data.get("concerns") or []) if str(c).strip()]
+        # Relativierte Meldungen aussortieren. Das Modell haelt sich nicht immer an
+        # „nicht melden, wenn du es selbst relativierst" — dann steht die Einschraenkung
+        # aber im Text („plausible Interpretation, kein klarer Widerspruch"). Genau
+        # daran erkennt der Code sie und wirft sie raus. Florian am 29.07.: „mit denen
+        # kann ich gar nicht viel anfangen".
+        _weich = ("plausibel", "plausible", "wahrscheinlich korrekt", "vermutlich korrekt",
+                  "nicht explizit", "kein klarer widerspruch", "kein echter widerspruch",
+                  "ändert.{0,20}kernaussage nicht", "wirkt wie", "nicht verifizierbar",
+                  "auszug bricht", "abbricht", "mutmaßlich", "dürfte korrekt",
+                  "keine sichere korrektur", "lässt sich nicht entscheiden",
+                  "bleibt offen, ob")
+        concerns = []
+        for c in (data.get("concerns") or []):
+            text = _clean_ui_text(c, 400)
+            if not text:
+                continue
+            if any(re.search(w, text.lower()) for w in _weich):
+                print(f"[podcast-faktencheck] relativierte Meldung verworfen: {text[:70]}…",
+                      file=sys.stderr)
+                continue
+            concerns.append(text)
         fixes = _verify_podcast_fixes(data.get("fixes"), summary, transcript)
         return {"concerns": concerns[:5], "fixes": fixes}
     except Exception as exc:

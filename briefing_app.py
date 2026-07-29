@@ -81,6 +81,7 @@ from briefing_core import (
     run_briefing_via_claude_cli_chunked,
     run_content_check_via_claude_cli,
     apply_typo_fixes,
+    _clean_ui_text,
     load_podcast_feeds_from_opml,
     run_direct_genius_via_claude_cli,
     run_genius_summary_via_claude_cli,
@@ -3728,9 +3729,11 @@ if _pconc:
         st.caption("Der Faktencheck vergleicht jede Zusammenfassung mit ihrem Transkript und meldet mögliche Widersprüche. "
                    "Es wurde NICHTS geändert — schau die Stelle im Zweifel selbst an (Fehlalarme möglich).")
         for _e in _pconc:
-            st.markdown(f"**{_e['title'][:70]}**")
+            # Titel bereinigen: die Modell-Antwort brachte ** und $-Zeichen mit,
+            # die Streamlit sonst als Fettschrift bzw. Formelsatz rendert.
+            st.markdown(f"**{_clean_ui_text(_e['title'], 70)}**")
             for _c in _e["concerns"]:
-                st.markdown(f"  ⚠️ {_c}")
+                st.markdown(f"  ⚠️ {_clean_ui_text(_c, 400)}")
         if st.button("✓ Hinweise gesehen — ausblenden", key="dismiss_podcast_concerns"):
             st.session_state["_podcast_concerns"] = []
             st.rerun()
