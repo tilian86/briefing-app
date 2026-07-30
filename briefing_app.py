@@ -3240,6 +3240,194 @@ with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expande
             if _arch_old:
                 st.caption(f"Dazu {_arch_old} ältere Einträge aus der Zeit vor dem Archiv-Umbau — von denen sind nur Fingerabdrücke gespeichert, keine Titel. Sie bleiben einfach dauerhaft ausgeblendet.")
 
+st.markdown("### 🎧 Pocket Casts — meine kuratierten Folgen")
+st.caption("Der Weg, den du am häufigsten nutzt. Prüfen kostet kein Limit — "
+           "nur das Zusammenfassen der Folgen, die du anhakst.")
+# 🎧 Pocket Casts — ZWEI-SCHRITT: erst PRÜFEN (welche Folgen ein Transkript haben,
+# kostet KEIN Limit — nur HTTP), dann farbcodiert AUSWÄHLEN und nur die Ausgewählten
+# zusammenfassen (Limit nur dafür). Verhindert, dass Ungewolltes automatisch reinrutscht.
+st.markdown("---")
+st.caption("🎧 **Pocket Casts:** prüft deine New-Releases-Folgen (am Handy kuratiert) und zeigt farbcodiert, "
+           "welche ein Transkript haben — du wählst, was zusammengefasst wird. **Prüfen kostet kein Limit**, nur das Zusammenfassen.")
+
+def _pc_submit_and_summarize(_items):
+    """Ausgewählte Transkripte in den Hintergrund-Pool geben (gleiche Maschinerie
+    wie Roh-Box/Apple-Runde — Ergebnisse erscheinen automatisch im Podcast-Feld)."""
+    if st.session_state.get("_sum_pool") is None:
+        from concurrent.futures import ThreadPoolExecutor as _PcPool
+        st.session_state["_sum_pool"] = _PcPool(max_workers=2)
+    _jobs = st.session_state.get("_round_jobs") or []
+    for _t in _items:
+        _pt = _t.get("podcast_title") or ""
+        _hdr = (f"Podcast: {_pt} — Episode: {_t['title']}" if _pt else f"Podcast: {_t['title']}")
+        _blk = f"{_hdr}\n\n{_t['text']}"
+        _lbl = (f"{_pt}: {_t['title']}" if _pt else _t["title"])[:60]
+        # episode-uuid mitgeben: erst NACH erfolgreicher Zusammenfassung wird
+        # sie als geholt vermerkt (siehe Ernte-Schleife). Beim Abschicken zu
+        # markieren wäre falsch — eine gescheiterte Folge gälte als erledigt
+        # und würde nie wieder angeboten.
+        _jobs.append({"guid": None, "title": _lbl, "path": None, "raw": _blk,
+                      "episode": _t.get("episode"),
+                      "fut": st.session_state["_sum_pool"].submit(summarize_podcast_transcript_via_cli, _blk)})
+    st.session_state["_round_jobs"] = _jobs
+
+def _pc_norm(_s):
+    """Titel vergleichbar machen — Satzzeichen und Abstaende sind unzuverlässig."""
+    return re.sub(r"[^a-z0-9äöüß]+", " ", (_s or "").lower()).strip()
+
+def _pc_in_field(_title, _episode=None):
+    """Steckt die Folge schon im Briefing?
+
+    Drei Wege, weil keiner allein reicht:
+      1. Episoden-Kennung im Gedaechtnis (exakt, ueberlebt den Feld-Reset)
+      2. normalisierter Titel im Podcast-Feld (Satzzeichen ignorieren —
+         "tagesschau 20:00 Uhr, 27.0" fand "tagesschau - 20:00 Uhr, …" nicht)
+      3. normalisierter Titel im zuletzt erzeugten Briefingtext
+    """
+    if _episode:
+        try:
+            import pocketcasts_fetch as _pcf_chk
+            if _episode in _pcf_chk._load_fetched():
+                return True
+        except Exception:
+            pass
+    _n = _pc_norm(_title)[:40]
+    if not _n:
+        return False
+    if _n in _pc_norm(st.session_state.get("podcast_text", "")):
+        return True
+    return _n in _pc_norm(_pc_recent_briefings_text())
+
+def _pc_recent_briefings_text(_n_files: int = 3) -> str:
+    """Text der zuletzt erzeugten Briefings (Vorlese-Fassung).
+
+    Das Podcast-Eingabefeld wird nach dem Lauf geleert — was dort stand, ist
+    weg. Die fertigen Briefings sind die verlässliche Quelle dafür, was
+    wirklich schon vertont wurde. Gecacht, damit das nicht bei jedem
+    Neuzeichnen von der Platte liest.
+    """
+    _cache = st.session_state.get("_pc_recent_txt_cache")
+    _jetzt = datetime.datetime.now().timestamp()
+    if _cache and (_jetzt - _cache[0]) < 300:
+        return _cache[1]
+    try:
+        _dir = _resolve_archive_dir() / "Texte"
+        _files = sorted(_dir.glob("*_eleven-reader.txt"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)[:_n_files]
+        _txt = "\n".join(f.read_text(encoding="utf-8", errors="ignore") for f in _files)
+    except Exception:
+        _txt = ""
+    st.session_state["_pc_recent_txt_cache"] = (_jetzt, _txt)
+    return _txt
+
+_pc_preview = st.session_state.get("_pc_preview")
+if not _pc_preview:
+    # "Meine Auswahl" liest aus, was auf dem Handy stehen geblieben ist —
+    # unabhaengig vom Alter. "New Releases" bleibt der schnelle Weg fuer
+    # frisch Erschienenes; die Auswahl findet auch aeltere Folgen, die
+    # Pocket Casts serverseitig nicht mehr als "neu" ausliefert.
+    import pocketcasts_fetch as _pcf0
+    _deep_saved = _pcf0.load_deep_podcasts()
+    with st.expander(f"⭐ Rückkatalog durchsuchen für… ({len(_deep_saved)} Podcast(s))", expanded=False):
+        st.caption("Pocket Casts rechnet seine Filter auf dem Handy aus — von außen ist nur die "
+                   "aktuelle Liste exakt abrufbar. Für selten sendende Podcasts, die dadurch "
+                   "durchrutschen, wird zusätzlich der Rückkatalog nach offenen Folgen durchsucht.")
+        _feed_names = sorted({f["name"] for f in load_podcast_feeds_from_opml()})
+        _deep_pick = st.multiselect("Podcasts", options=_feed_names, default=
+                                    [d for d in _deep_saved if d in _feed_names],
+                                    key="pc_deep_podcasts",
+                                    label_visibility="collapsed")
+        if st.button("Merken", key="pc_deep_save"):
+            _pcf0.save_deep_podcasts(_deep_pick)
+            st.success(f"{len(_deep_pick)} Podcast(s) gemerkt.")
+
+    if st.button("⭐ Meine Pocket-Casts-Auswahl laden", key="pocketcasts_curated_btn",
+                 use_container_width=True, type="primary",
+                 help="Aktuelles aus Pocket Casts' eigener Liste (exakt) plus den "
+                      "Rückkatalog der oben gemerkten Podcasts. Kostet kein Limit."):
+        try:
+            import pocketcasts_fetch as _pcf
+            with st.spinner("⭐ Auswahl zusammentragen + Transkripte prüfen…"):
+                _items, _pst = _pcf.preview_selection()
+        except Exception as _cue:
+            st.session_state["_podcast_inbox_last_msg"] = f"⭐ Auswahl laden fehlgeschlagen: {str(_cue)[:120]}"
+            _items, _pst = [], "error"
+        if _pst == "ok":
+            st.session_state["_pc_preview"] = _items
+        elif _pst != "error":
+            st.session_state["_podcast_inbox_last_msg"] = "⭐ Kein Pocket-Casts-Login (oder keine offenen Folgen)."
+        st.rerun()
+
+    _pcb1, _pcb2 = st.columns([3, 2])
+    with _pcb1:
+        if st.button("🎧 Pocket Casts prüfen", key="pocketcasts_preview_btn", use_container_width=True):
+            try:
+                import pocketcasts_fetch as _pcf
+                with st.spinner("🎧 New Releases laden + Transkripte prüfen (kostet kein Limit)…"):
+                    _items, _pst = _pcf.preview_new_releases()
+            except Exception as _pce:
+                st.session_state["_podcast_inbox_last_msg"] = f"🎧 Pocket-Casts-Prüfung fehlgeschlagen: {str(_pce)[:120]}"
+                _items, _pst = [], "error"
+            if _pst == "ok":
+                st.session_state["_pc_preview"] = _items
+            elif _pst == "no_login_or_empty":
+                st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login (oder keine Folgen). Einmal-Login nötig — sag mir Bescheid."
+            st.rerun()
+    with _pcb2:
+        if st.button("⚡ alle direkt holen", key="pocketcasts_direct_btn", use_container_width=True,
+                     help="Ohne Vorschau: holt + fasst alle noch nicht im Feld befindlichen sofort zusammen (hands-off)."):
+            try:
+                import pocketcasts_fetch as _pcf
+                with st.spinner("🎧 Holen + zusammenfassen…"):
+                    _items, _pst = _pcf.preview_new_releases()
+            except Exception:
+                _items, _pst = [], "error"
+            if _pst == "ok":
+                _avail = [it for it in _items if it.get("has_transcript") and not _pc_in_field(it.get("title"), it.get("episode"))]
+                _pc_submit_and_summarize(_avail)
+                # Markiert wird erst nach erfolgreicher Zusammenfassung
+                # (Ernte-Schleife) — sonst gilt eine gescheiterte Folge als
+                # erledigt und wird nie wieder angeboten.
+                st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_avail)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
+            else:
+                st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Login / keine Folgen."
+            st.rerun()
+else:
+    _new = [it for it in _pc_preview if it["has_transcript"] and not _pc_in_field(it["title"], it.get("episode"))]
+    _inf = [it for it in _pc_preview if it["has_transcript"] and _pc_in_field(it["title"], it.get("episode"))]
+    _non = [it for it in _pc_preview if not it["has_transcript"]]
+    st.markdown(f"**🎧 {len(_pc_preview)} Folgen geprüft** — 🟢 {len(_new)} neu · ⚪ {len(_inf)} schon im Feld · ⏭️ {len(_non)} ohne Transkript")
+    st.caption("🟢 ist vorausgewählt. Hake ab/an, was zusammengefasst werden soll — nur das kostet Limit. ⏭️ hat kein Transkript.")
+    _sel_idx = []
+    for _i, _it in enumerate(_pc_preview):
+        _lbl = ((f"**{_it['podcast_title']}** — {_it['title']}") if _it.get("podcast_title") else _it["title"])[:90]
+        if not _it["has_transcript"]:
+            st.caption(f"⏭️ {_lbl} · _kein Transkript_")
+        else:
+            _already = _pc_in_field(_it["title"], _it.get("episode"))
+            _icon = "⚪" if _already else "🟢"
+            if st.checkbox(f"{_icon} {_lbl}" + (" · _schon im Feld_" if _already else ""),
+                           value=(not _already), key=f"pcsel_{_i}"):
+                _sel_idx.append(_i)
+    _pcg1, _pcg2 = st.columns([3, 1])
+    with _pcg1:
+        if _sel_idx and st.button(f"✂️ {len(_sel_idx)} holen & zusammenfassen", key="pc_go_btn", type="primary", use_container_width=True):
+            import pocketcasts_fetch as _pcf
+            _chosen = [_pc_preview[i] for i in _sel_idx]
+            _pc_submit_and_summarize(_chosen)
+            # Markierung erfolgt nach Erfolg, nicht beim Abschicken.
+            for _k in range(len(_pc_preview)):
+                st.session_state.pop(f"pcsel_{_k}", None)
+            st.session_state.pop("_pc_preview", None)
+            st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_chosen)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
+            st.rerun()
+    with _pcg2:
+        if st.button("Verwerfen", key="pc_discard_btn", use_container_width=True):
+            for _k in range(len(_pc_preview)):
+                st.session_state.pop(f"pcsel_{_k}", None)
+            st.session_state.pop("_pc_preview", None)
+            st.rerun()
+
 with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)", expanded=False):
     st.caption("Transkript aus Pocket Casts hier reinkopieren (auch mehrere, mit mmm getrennt) → Knopf drücken → die fertige Zusammenfassung landet automatisch unten im Podcast-Feld. Der Riesen-Text verschwindet danach — das Feld unten bleibt schlank. Läuft über Opus/Max-Abo, 0 €. Dauer: ~2-4 Min pro Stunde Podcast, zwei laufen parallel.")
     _raw_inbox = st.text_area(
@@ -3282,190 +3470,6 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
         )
         st.rerun()
 
-    # 🎧 Pocket Casts — ZWEI-SCHRITT: erst PRÜFEN (welche Folgen ein Transkript haben,
-    # kostet KEIN Limit — nur HTTP), dann farbcodiert AUSWÄHLEN und nur die Ausgewählten
-    # zusammenfassen (Limit nur dafür). Verhindert, dass Ungewolltes automatisch reinrutscht.
-    st.markdown("---")
-    st.caption("🎧 **Pocket Casts:** prüft deine New-Releases-Folgen (am Handy kuratiert) und zeigt farbcodiert, "
-               "welche ein Transkript haben — du wählst, was zusammengefasst wird. **Prüfen kostet kein Limit**, nur das Zusammenfassen.")
-
-    def _pc_submit_and_summarize(_items):
-        """Ausgewählte Transkripte in den Hintergrund-Pool geben (gleiche Maschinerie
-        wie Roh-Box/Apple-Runde — Ergebnisse erscheinen automatisch im Podcast-Feld)."""
-        if st.session_state.get("_sum_pool") is None:
-            from concurrent.futures import ThreadPoolExecutor as _PcPool
-            st.session_state["_sum_pool"] = _PcPool(max_workers=2)
-        _jobs = st.session_state.get("_round_jobs") or []
-        for _t in _items:
-            _pt = _t.get("podcast_title") or ""
-            _hdr = (f"Podcast: {_pt} — Episode: {_t['title']}" if _pt else f"Podcast: {_t['title']}")
-            _blk = f"{_hdr}\n\n{_t['text']}"
-            _lbl = (f"{_pt}: {_t['title']}" if _pt else _t["title"])[:60]
-            # episode-uuid mitgeben: erst NACH erfolgreicher Zusammenfassung wird
-            # sie als geholt vermerkt (siehe Ernte-Schleife). Beim Abschicken zu
-            # markieren wäre falsch — eine gescheiterte Folge gälte als erledigt
-            # und würde nie wieder angeboten.
-            _jobs.append({"guid": None, "title": _lbl, "path": None, "raw": _blk,
-                          "episode": _t.get("episode"),
-                          "fut": st.session_state["_sum_pool"].submit(summarize_podcast_transcript_via_cli, _blk)})
-        st.session_state["_round_jobs"] = _jobs
-
-    def _pc_norm(_s):
-        """Titel vergleichbar machen — Satzzeichen und Abstaende sind unzuverlässig."""
-        return re.sub(r"[^a-z0-9äöüß]+", " ", (_s or "").lower()).strip()
-
-    def _pc_in_field(_title, _episode=None):
-        """Steckt die Folge schon im Briefing?
-
-        Drei Wege, weil keiner allein reicht:
-          1. Episoden-Kennung im Gedaechtnis (exakt, ueberlebt den Feld-Reset)
-          2. normalisierter Titel im Podcast-Feld (Satzzeichen ignorieren —
-             "tagesschau 20:00 Uhr, 27.0" fand "tagesschau - 20:00 Uhr, …" nicht)
-          3. normalisierter Titel im zuletzt erzeugten Briefingtext
-        """
-        if _episode:
-            try:
-                import pocketcasts_fetch as _pcf_chk
-                if _episode in _pcf_chk._load_fetched():
-                    return True
-            except Exception:
-                pass
-        _n = _pc_norm(_title)[:40]
-        if not _n:
-            return False
-        if _n in _pc_norm(st.session_state.get("podcast_text", "")):
-            return True
-        return _n in _pc_norm(_pc_recent_briefings_text())
-
-    def _pc_recent_briefings_text(_n_files: int = 3) -> str:
-        """Text der zuletzt erzeugten Briefings (Vorlese-Fassung).
-
-        Das Podcast-Eingabefeld wird nach dem Lauf geleert — was dort stand, ist
-        weg. Die fertigen Briefings sind die verlässliche Quelle dafür, was
-        wirklich schon vertont wurde. Gecacht, damit das nicht bei jedem
-        Neuzeichnen von der Platte liest.
-        """
-        _cache = st.session_state.get("_pc_recent_txt_cache")
-        _jetzt = datetime.datetime.now().timestamp()
-        if _cache and (_jetzt - _cache[0]) < 300:
-            return _cache[1]
-        try:
-            _dir = _resolve_archive_dir() / "Texte"
-            _files = sorted(_dir.glob("*_eleven-reader.txt"),
-                            key=lambda p: p.stat().st_mtime, reverse=True)[:_n_files]
-            _txt = "\n".join(f.read_text(encoding="utf-8", errors="ignore") for f in _files)
-        except Exception:
-            _txt = ""
-        st.session_state["_pc_recent_txt_cache"] = (_jetzt, _txt)
-        return _txt
-
-    _pc_preview = st.session_state.get("_pc_preview")
-    if not _pc_preview:
-        # "Meine Auswahl" liest aus, was auf dem Handy stehen geblieben ist —
-        # unabhaengig vom Alter. "New Releases" bleibt der schnelle Weg fuer
-        # frisch Erschienenes; die Auswahl findet auch aeltere Folgen, die
-        # Pocket Casts serverseitig nicht mehr als "neu" ausliefert.
-        import pocketcasts_fetch as _pcf0
-        _deep_saved = _pcf0.load_deep_podcasts()
-        with st.expander(f"⭐ Rückkatalog durchsuchen für… ({len(_deep_saved)} Podcast(s))", expanded=False):
-            st.caption("Pocket Casts rechnet seine Filter auf dem Handy aus — von außen ist nur die "
-                       "aktuelle Liste exakt abrufbar. Für selten sendende Podcasts, die dadurch "
-                       "durchrutschen, wird zusätzlich der Rückkatalog nach offenen Folgen durchsucht.")
-            _feed_names = sorted({f["name"] for f in load_podcast_feeds_from_opml()})
-            _deep_pick = st.multiselect("Podcasts", options=_feed_names, default=
-                                        [d for d in _deep_saved if d in _feed_names],
-                                        key="pc_deep_podcasts",
-                                        label_visibility="collapsed")
-            if st.button("Merken", key="pc_deep_save"):
-                _pcf0.save_deep_podcasts(_deep_pick)
-                st.success(f"{len(_deep_pick)} Podcast(s) gemerkt.")
-
-        if st.button("⭐ Meine Pocket-Casts-Auswahl laden", key="pocketcasts_curated_btn",
-                     use_container_width=True, type="primary",
-                     help="Aktuelles aus Pocket Casts' eigener Liste (exakt) plus den "
-                          "Rückkatalog der oben gemerkten Podcasts. Kostet kein Limit."):
-            try:
-                import pocketcasts_fetch as _pcf
-                with st.spinner("⭐ Auswahl zusammentragen + Transkripte prüfen…"):
-                    _items, _pst = _pcf.preview_selection()
-            except Exception as _cue:
-                st.session_state["_podcast_inbox_last_msg"] = f"⭐ Auswahl laden fehlgeschlagen: {str(_cue)[:120]}"
-                _items, _pst = [], "error"
-            if _pst == "ok":
-                st.session_state["_pc_preview"] = _items
-            elif _pst != "error":
-                st.session_state["_podcast_inbox_last_msg"] = "⭐ Kein Pocket-Casts-Login (oder keine offenen Folgen)."
-            st.rerun()
-
-        _pcb1, _pcb2 = st.columns([3, 2])
-        with _pcb1:
-            if st.button("🎧 Pocket Casts prüfen", key="pocketcasts_preview_btn", use_container_width=True):
-                try:
-                    import pocketcasts_fetch as _pcf
-                    with st.spinner("🎧 New Releases laden + Transkripte prüfen (kostet kein Limit)…"):
-                        _items, _pst = _pcf.preview_new_releases()
-                except Exception as _pce:
-                    st.session_state["_podcast_inbox_last_msg"] = f"🎧 Pocket-Casts-Prüfung fehlgeschlagen: {str(_pce)[:120]}"
-                    _items, _pst = [], "error"
-                if _pst == "ok":
-                    st.session_state["_pc_preview"] = _items
-                elif _pst == "no_login_or_empty":
-                    st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login (oder keine Folgen). Einmal-Login nötig — sag mir Bescheid."
-                st.rerun()
-        with _pcb2:
-            if st.button("⚡ alle direkt holen", key="pocketcasts_direct_btn", use_container_width=True,
-                         help="Ohne Vorschau: holt + fasst alle noch nicht im Feld befindlichen sofort zusammen (hands-off)."):
-                try:
-                    import pocketcasts_fetch as _pcf
-                    with st.spinner("🎧 Holen + zusammenfassen…"):
-                        _items, _pst = _pcf.preview_new_releases()
-                except Exception:
-                    _items, _pst = [], "error"
-                if _pst == "ok":
-                    _avail = [it for it in _items if it.get("has_transcript") and not _pc_in_field(it.get("title"), it.get("episode"))]
-                    _pc_submit_and_summarize(_avail)
-                    # Markiert wird erst nach erfolgreicher Zusammenfassung
-                    # (Ernte-Schleife) — sonst gilt eine gescheiterte Folge als
-                    # erledigt und wird nie wieder angeboten.
-                    st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_avail)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
-                else:
-                    st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Login / keine Folgen."
-                st.rerun()
-    else:
-        _new = [it for it in _pc_preview if it["has_transcript"] and not _pc_in_field(it["title"], it.get("episode"))]
-        _inf = [it for it in _pc_preview if it["has_transcript"] and _pc_in_field(it["title"], it.get("episode"))]
-        _non = [it for it in _pc_preview if not it["has_transcript"]]
-        st.markdown(f"**🎧 {len(_pc_preview)} Folgen geprüft** — 🟢 {len(_new)} neu · ⚪ {len(_inf)} schon im Feld · ⏭️ {len(_non)} ohne Transkript")
-        st.caption("🟢 ist vorausgewählt. Hake ab/an, was zusammengefasst werden soll — nur das kostet Limit. ⏭️ hat kein Transkript.")
-        _sel_idx = []
-        for _i, _it in enumerate(_pc_preview):
-            _lbl = ((f"**{_it['podcast_title']}** — {_it['title']}") if _it.get("podcast_title") else _it["title"])[:90]
-            if not _it["has_transcript"]:
-                st.caption(f"⏭️ {_lbl} · _kein Transkript_")
-            else:
-                _already = _pc_in_field(_it["title"], _it.get("episode"))
-                _icon = "⚪" if _already else "🟢"
-                if st.checkbox(f"{_icon} {_lbl}" + (" · _schon im Feld_" if _already else ""),
-                               value=(not _already), key=f"pcsel_{_i}"):
-                    _sel_idx.append(_i)
-        _pcg1, _pcg2 = st.columns([3, 1])
-        with _pcg1:
-            if _sel_idx and st.button(f"✂️ {len(_sel_idx)} holen & zusammenfassen", key="pc_go_btn", type="primary", use_container_width=True):
-                import pocketcasts_fetch as _pcf
-                _chosen = [_pc_preview[i] for i in _sel_idx]
-                _pc_submit_and_summarize(_chosen)
-                # Markierung erfolgt nach Erfolg, nicht beim Abschicken.
-                for _k in range(len(_pc_preview)):
-                    st.session_state.pop(f"pcsel_{_k}", None)
-                st.session_state.pop("_pc_preview", None)
-                st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_chosen)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
-                st.rerun()
-        with _pcg2:
-            if st.button("Verwerfen", key="pc_discard_btn", use_container_width=True):
-                for _k in range(len(_pc_preview)):
-                    st.session_state.pop(f"pcsel_{_k}", None)
-                st.session_state.pop("_pc_preview", None)
-                st.rerun()
     # 🍎 Apple-Podcasts-Import: Die Podcasts-App cached jedes einmal GEÖFFNETE
     # Transkript lokal als TTML — von dort holen wir den VOLLEN Text (das manuelle
     # Kopieren in der App schneidet ab). Workflow: Episode in Apple Podcasts öffnen →
