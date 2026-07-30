@@ -14691,8 +14691,21 @@ HARTE REGELN für `fixes`:
 - Stil, Wortwahl und Kürzungen sind niemals ein `fix`.
 - Lieber `concerns` ohne `fix` als ein unsicherer `fix`. Leere Liste ist normal.
 
+EINORDNUNG JEDES BEFUNDS (`art`) — Pflichtfeld, entscheidet über die Anzeige:
+- "widerspruch": Die Zusammenfassung sagt etwas ANDERES als das Transkript. Falsche
+  Zahl, falscher Name, falsches Land, verdrehtes Ergebnis, erfundenes Zitat.
+  Nur diese Kategorie wird Florian gezeigt.
+- "auslassung": Etwas fehlt oder ist unvollständig, widerspricht aber nicht.
+- "unsicher": Du kannst es am vorliegenden Text nicht entscheiden (Auszug bricht ab,
+  keine Jahresangabe, Interpretationsfrage).
+
+Ordne ehrlich ein. Schreibe NICHT "widerspruch", wenn du im Text selbst
+relativierst — dann ist es "auslassung" oder "unsicher". Es ist völlig in Ordnung,
+wenn nur Einordnungen ohne "widerspruch" herauskommen; dann sieht Florian nichts,
+und das ist das gewünschte Ergebnis.
+
 Antworte AUSSCHLIESSLICH als JSON:
-{"concerns": ["<Ort/Aussage>: <was widerspricht>", ...],
+{"concerns": [{"art": "widerspruch"|"auslassung"|"unsicher", "text": "<Ort/Aussage>: <was genau abweicht>"}, ...],
  "fixes": [{"falsch": "...", "richtig": "...", "beleg": "..."}]}"""
 
 
@@ -14799,22 +14812,38 @@ def _check_podcast_summary_faithfulness(summary: str, transcript: str, cli_path=
         # aber im Text („plausible Interpretation, kein klarer Widerspruch"). Genau
         # daran erkennt der Code sie und wirft sie raus. Florian am 29.07.: „mit denen
         # kann ich gar nicht viel anfangen".
-        _weich = ("plausibel", "plausible", "wahrscheinlich korrekt", "vermutlich korrekt",
-                  "nicht explizit", "kein klarer widerspruch", "kein echter widerspruch",
-                  "ändert.{0,20}kernaussage nicht", "wirkt wie", "nicht verifizierbar",
-                  "auszug bricht", "abbricht", "mutmaßlich", "dürfte korrekt",
-                  "keine sichere korrektur", "lässt sich nicht entscheiden",
-                  "bleibt offen, ob")
-        concerns = []
+        # Primär entscheidet die Einordnung des Modells (`art`). Eine Stichwortliste
+        # ueber die Prosa war der falsche Weg: Sie kannte nur die Formulierungen von
+        # gestern — am 30.07. griff sie bei keinem von fuenf Befunden, weil das
+        # Modell „keine Widerspruch, nur Auslassung" statt „kein klarer Widerspruch"
+        # schrieb. Der Prosa-Filter bleibt nur als Netz fuer Befunde, die sich
+        # selbst als Widerspruch einordnen und im Text doch relativieren.
+        _weich = (r"kein(e|en)?\s+\w{0,12}\s*widerspruch", r"nur\s+(eine\s+)?auslassung",
+                  r"\bwirkt\b", r"unklar belegt", r"nicht belegt", r"nicht explizit",
+                  r"plausib", r"wahrscheinlich korrekt", r"vermutlich korrekt",
+                  r"nicht verifizierbar", r"auszug bricht", r"abbricht", r"mutmaßlich",
+                  r"dürfte korrekt", r"keine sichere korrektur",
+                  r"lässt sich nicht entscheiden", r"bleibt offen, ob",
+                  r"ändert.{0,25}kernaussage nicht", r"kein\w*\s+fehler")
+        concerns, _verworfen = [], 0
         for c in (data.get("concerns") or []):
-            text = _clean_ui_text(c, 400)
+            if isinstance(c, dict):
+                art = str(c.get("art") or "").strip().lower()
+                text = _clean_ui_text(c.get("text"), 400)
+            else:
+                art, text = "", _clean_ui_text(c, 400)   # alte Form: nur Text
             if not text:
                 continue
+            if art and art != "widerspruch":
+                _verworfen += 1
+                continue
             if any(re.search(w, text.lower()) for w in _weich):
-                print(f"[podcast-faktencheck] relativierte Meldung verworfen: {text[:70]}…",
-                      file=sys.stderr)
+                _verworfen += 1
                 continue
             concerns.append(text)
+        if _verworfen:
+            print(f"[podcast-faktencheck] {_verworfen} Befund(e) als Auslassung/unsicher "
+                  "eingeordnet — nicht angezeigt.", file=sys.stderr)
         fixes = _verify_podcast_fixes(data.get("fixes"), summary, transcript)
         return {"concerns": concerns[:5], "fixes": fixes}
     except Exception as exc:
