@@ -14382,14 +14382,16 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         topics.append({"title": first or f"Quelle {i}", "members": [i], "weight": 2})
     if missing:
         print(f"[synthese] {len(missing)} Quelle(n) vom Clustering vergessen — als Einzelthemen ergänzt.", file=sys.stderr)
-    # 🎙️ Soft-Modus: Podcasts NIE zu einem Sammelthema bündeln. Das Wortbudget
-    # (220-340) gilt pro THEMA — landen mehrere Podcasts im selben Thema, teilen
-    # sie sich dieses Budget. Am 27.07. warf das Clustering 17 Folgen in ein
-    # Thema („Ein Ohr voll Welt"): ein Satz pro Podcast statt je einer richtigen
-    # Zusammenfassung. Mit den frueher ~10 Folgen verteilten sie sich auf mehrere
-    # Themen, deshalb fiel es nie auf. Jeder Podcast bekommt jetzt sein eigenes
-    # Thema und damit sein eigenes Budget.
-    if podcast_mode == "soft":
+    # 🎙️ Podcasts werden NIE mit anderen Podcasts gebündelt — in KEINEM Modus.
+    # Das Wortbudget gilt pro THEMA: landen mehrere Folgen im selben Thema, teilen
+    # sie sich dieses Budget. 27.07.: 17 Folgen in einem Thema („Ein Ohr voll
+    # Welt"). 30.07. dasselbe erneut, weil die Regel nur fuer "soft" galt und
+    # Florian auf "Einweben" stand — Beitrag 77 „Vierzehn Podcasts, ein
+    # Nachmittag": 226 Woerter fuer 14 Folgen, also 16 pro Stueck.
+    # Eine Podcast-Folge ist ein bis drei Stunden Gespraech; sie kann sich keinen
+    # Beitrag mit dreizehn anderen teilen. Im Modus "Einweben" darf ein Beitrag
+    # kuerzer ausfallen, aber er gehoert EINER Folge.
+    if True:
         entbuendelt = []
         for t in topics:
             pods = [m_ for m_ in t["members"] if items[m_ - 1].get("kind") == "podcast"]
@@ -16723,6 +16725,36 @@ def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None
     typos_fixed = int((content_check or {}).get("typos_fixed") or 0)
     criteria.append(crit("sprache", "Sprache", 100 - 20.0 * len(sprach_issues), 15,
                          sprach_issues + ([f"{typos_fixed} Tippfehler korrigiert"] if typos_fixed else [])))
+
+    # 6) Bündelung — ein Beitrag, der mehrere Quellen nur aufzählt
+    #
+    # Wortzahlen allein verraten das NICHT: Beitrag 77 am 30.07. hatte 226 Wörter
+    # (statistisch unauffällig) und deckte damit 14 Podcast-Folgen ab, also 16
+    # Wörter pro Stück. Genau deshalb galt das Briefing als „gut", während es
+    # beim Hören Müll war. Diese Prüfung zählt die genannten Quellen.
+    buendel_issues = []
+    for idx, s in enumerate(sections, start=1):
+        if not _sc_is_regular(s):
+            continue
+        content = s.get("content") or ""
+        titel = next((l.lstrip("# ").strip() for l in content.split("\n")
+                      if l.strip().startswith("#")), "")
+        body = _sc_body_text(s)
+        # Titel gibt die Menge oft selbst an („Vierzehn Podcasts, ein Nachmittag")
+        if re.search(r"\b(zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|"
+                     r"dreizehn|vierzehn|fünfzehn|\d{1,2})\s+podcasts?\b", titel, re.I):
+            buendel_issues.append(f"Beitrag {idx}: Titel kündigt mehrere Podcasts an ({titel[:40]})")
+            continue
+        # Sonst: Anzahl verschieden benannter Quellen im Fließtext
+        namen = set(re.findall(r"[„\"»]([^„\"»«]{4,45})[\"“«]", body))
+        namen |= {m for m in re.findall(r"\bPodcast\s+([A-ZÄÖÜ][\w-]{3,25})", body)}
+        woerter = len(body.split())
+        if len(namen) >= 4 and woerter / max(1, len(namen)) < 90:
+            buendel_issues.append(
+                f"Beitrag {idx}: {len(namen)} Quellen in {woerter} Wörtern "
+                f"({woerter // len(namen)} je Quelle) — {titel[:34]}")
+    criteria.append(crit("buendelung", "Bündelung", 100 - 34.0 * len(buendel_issues), 20,
+                         buendel_issues))
 
     gesamt = sum(c["score"] * c["weight"] for c in criteria) / sum(c["weight"] for c in criteria)
     return {"score": round(gesamt), "criteria": criteria, "issues": issues_all,
