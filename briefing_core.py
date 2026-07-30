@@ -14272,8 +14272,18 @@ def _smart_topic_budget(weight: int, n_src: int, short: bool = False) -> tuple:
     short=True (Intelligent kurz): gleiche kluge Verteilung im Sehr-kurz-Gesamtformat."""
     table = _SMART_WEIGHT_BUDGETS_SHORT if short else _SMART_WEIGHT_BUDGETS
     wmin, wmax = table.get(int(weight or 3), table[3])
-    bonus = min((20 if short else 40) * (max(1, n_src) - 1), 80 if short else 160)
-    return wmin + bonus // 2, wmax + bonus
+    n_src = max(1, n_src)
+    # Der Bonus war bei 160 gedeckelt — ab der fuenften Quelle bekam jede weitere
+    # NULL zusaetzlichen Platz. Acht Lokalmeldungen teilten sich so 390 Woerter,
+    # also 48 pro Meldung: genau das "runtergeleierte" Ergebnis vom 30.07.
+    # (Beitrag "Lokalfunk Neckar-Alb": Grillverbot bis Groenemeyer in einem Absatz).
+    bonus = min((20 if short else 40) * (n_src - 1), 140 if short else 280)
+    wmin, wmax = wmin + bonus // 2, wmax + bonus
+    # Untergrenze pro Quelle: eine Meldung braucht ein paar Saetze, sonst ist sie
+    # nur noch eine Aufzaehlung. Greift genau bei den grossen Buendeln.
+    wmin = max(wmin, n_src * (28 if short else 45))
+    wmax = max(wmax, n_src * (45 if short else 70))
+    return wmin, wmax
 
 
 _WEATHER_CONDENSE_PROMPT = """Verdichte diesen rohen Wetterbericht zu einem VORLESE-Wetterteil für ein Audio-Briefing (Tübingen-Hirschau).
@@ -14399,6 +14409,29 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
                   f"{len(topics)} → {len(entbuendelt)} Themen, jeder Podcast eigenständig.",
                   file=sys.stderr)
         topics = entbuendelt
+
+    # Sammelthemen aufteilen. Ein Beitrag, der acht Meldungen bündelt, wird
+    # zwangsläufig zur Aufzählung — egal wie das Budget aussieht. Ab sechs
+    # Quellen entstehen daraus mehrere Beiträge mit je eigenem Budget.
+    _MAX_PRO_THEMA = 5
+    _geteilt = []
+    for t in topics:
+        m = t["members"]
+        if len(m) <= _MAX_PRO_THEMA:
+            _geteilt.append(t)
+            continue
+        _teile = [m[i:i + _MAX_PRO_THEMA] for i in range(0, len(m), _MAX_PRO_THEMA)]
+        # Reste von 1-2 Quellen an den Vorgänger hängen, statt einen Stummel-Beitrag
+        # zu erzeugen (dann lieber 6-7 Quellen im letzten Teil).
+        if len(_teile) > 1 and len(_teile[-1]) <= 2:
+            _teile[-2].extend(_teile.pop())
+        for _i, _teil in enumerate(_teile):
+            _titel = t["title"] if _i == 0 else f"{t['title']} ({_i + 1})"
+            _geteilt.append({**t, "title": _titel[:120], "members": _teil})
+    if len(_geteilt) != len(topics):
+        print(f"[synthese] Sammelthemen aufgeteilt (max {_MAX_PRO_THEMA} Quellen je Beitrag): "
+              f"{len(topics)} → {len(_geteilt)} Themen.", file=sys.stderr)
+        topics = _geteilt
 
     topics.sort(key=lambda t: -t.get("weight", 3))
     multi = [t for t in topics if len(t["members"]) > 1]
