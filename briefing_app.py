@@ -1263,9 +1263,19 @@ if st.session_state.get("_cleanup_count", 0) and not st.session_state.get("_clea
         st.toast(f"🧹 {st.session_state['_cleanup_count']} alte Briefing-Dateien (>21 Tage) aufgeräumt.")
     except Exception:
         pass
+# Pflicht-Einstellungen: hier gewinnt IMMER der Code-Default, nie der gespeicherte
+# Entwurf. Grund: diese drei standen mehrfach unbemerkt auf "aus" bzw. auf einem
+# schlechteren Modus, weil ein alter Entwurf sie ueberschrieben hat (01.08.).
+# Umschalten in der Oberflaeche geht weiter, es wird nur nicht mehr dauerhaft
+# gespeichert. Zum Loesen: Schluessel hier entfernen.
+_ERZWUNGENE_DEFAULTS = ("quality_check_enabled", "auto_reader_upload", "podcast_synth_mode")
+
 for _key, _default in _DRAFT_DEFAULTS.items():
     if _key not in st.session_state:
-        st.session_state[_key] = _saved_draft.get(_key, _default)
+        if _key in _ERZWUNGENE_DEFAULTS:
+            st.session_state[_key] = _default
+        else:
+            st.session_state[_key] = _saved_draft.get(_key, _default)
 
 if "briefing_exports" not in st.session_state:
     st.session_state.briefing_exports = _saved_exports
