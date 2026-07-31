@@ -172,7 +172,7 @@ _DRAFT_DEFAULTS = {
     "topic_synthesis_mode": True,
     "synthesis_narrative_style": True,
     "synthesis_web_enrich": True,
-    "podcast_synth_mode": "Einweben (kürzen)",
+    "podcast_synth_mode": "Länger erhalten",
     "auto_reader_upload": True,
     "reader_cleanup_days": 14,
     "whatsapp_pdf_additional": True,
@@ -5209,8 +5209,8 @@ with _mode_col2:
             options=["Einweben (kürzen)", "Länger erhalten", "Original übernehmen"],
             key="podcast_synth_mode",
             help="Wie deine kuratierten Podcast-Zusammenfassungen ins Briefing kommen — gilt in Synthese UND klassisch: "
-                 "Einweben = wie alle Quellen behandelt und aufs Budget gekürzt (~100-200 W, Standard; klassisch: Kompakt-/Tragweite-Budget gilt auch für Podcasts). "
-                 "Länger erhalten = mit Mindestlänge ~250-350 W, damit die Substanz bleibt. "
+                 "Einweben = wie alle Quellen behandelt und aufs Budget gekürzt (~100-200 W; klassisch: Kompakt-/Tragweite-Budget gilt auch für Podcasts). "
+                 "Länger erhalten = mit Mindestlänge ~250-350 W, damit die Substanz bleibt (STANDARD — eine Folge ist oft ein bis drei Stunden Gespräch). "
                  "Original übernehmen = deine Zusammenfassung 1:1 unverändert (Synthese: eigener Podcast-Block am Ende; klassisch: als eigener Beitrag ohne Kürzung).",
         )
 with _mode_col3:
@@ -5480,7 +5480,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "depths": list(_depths_to_run), "synth": bool(st.session_state.get("topic_synthesis_mode", True)),
                 "magazin": bool(st.session_state.get("synthesis_narrative_style", True)),
                 "web": bool(st.session_state.get("synthesis_web_enrich", True)),
-                "podcast_mode": {"Einweben (kürzen)": "woven", "Länger erhalten": "soft", "Original übernehmen": "verbatim"}.get(st.session_state.get("podcast_synth_mode", "Einweben (kürzen)"), "woven"),
+                "podcast_mode": {"Einweben (kürzen)": "woven", "Länger erhalten": "soft", "Original übernehmen": "verbatim"}.get(st.session_state.get("podcast_synth_mode", "Länger erhalten"), "soft"),
                 "wa": bool(st.session_state.get("whatsapp_pdf_additional", True)),
                 "qc": bool(st.session_state.get("quality_check_enabled", True)),
                 "specials": split_special_topics(st.session_state.get("special_topics_text") or ""),
