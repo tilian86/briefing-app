@@ -156,11 +156,34 @@ async ([path, method]) => {
 """
 
 
-def _api(page, path: str, method: str = "GET"):
-    """Feedly-API-Aufruf im Seitenkontext. Gibt geparstes JSON zurueck."""
-    out = page.evaluate(_API_JS, [path, method])
+def _api(page, path: str, method: str = "GET", versuche: int = 3):
+    """Feedly-API-Aufruf im Seitenkontext. Gibt geparstes JSON zurueck.
+
+    Mit Wiederholung: nach vielen Aufrufen kurz hintereinander (z. B. 16 mal
+    Loeschen) antwortet Feedly zeitweise gar nicht — beobachtet am 01.08. Ein
+    einzelner Aussetzer soll den ganzen Abruf nicht kippen.
+    """
+    letzter = None
+    out = None
+    for versuch in range(1, max(1, versuche) + 1):
+        try:
+            out = page.evaluate(_API_JS, [path, method])
+            break
+        except Exception as exc:
+            letzter = exc
+            if "Failed to fetch" not in str(exc) or versuch == versuche:
+                raise RuntimeError(
+                    f"Feedly antwortet gerade nicht ({path}). "
+                    f"Kurz warten und nochmal versuchen.") from exc
+            page.wait_for_timeout(1500 * versuch)
+    if out is None:
+        raise RuntimeError(f"Feedly antwortet gerade nicht ({path}).") from letzter
+
     status = out.get("status")
     body = out.get("body") or ""
+    if status in (429, 503):
+        raise RuntimeError("Feedly bremst gerade ab (zu viele Anfragen). "
+                           "In ein paar Minuten nochmal versuchen.")
     if status != 200:
         raise RuntimeError(f"Feedly-API {path} antwortete mit HTTP {status}.")
     if not body.strip():
@@ -176,12 +199,26 @@ def _open_feedly(page) -> None:
     page.wait_for_timeout(2500)
 
 
-def _logged_in_now(page) -> bool:
+def _login_state(page) -> tuple:
+    """('ok'|'anonym'|'netz', detail) — trennt „nicht angemeldet" von „Netz kaputt".
+
+    Ohne diese Unterscheidung meldete ein Netzaussetzer „Nicht bei Feedly
+    angemeldet" und schickte einen zum Login, obwohl die Anmeldung stand (01.08.).
+    """
     try:
         profile = _api(page, "/v3/profile")
-        return bool(profile.get("id"))
-    except Exception:
-        return False
+        return ("ok", profile.get("id") or "") if profile.get("id") else ("anonym", "")
+    except RuntimeError as exc:
+        text = str(exc)
+        if "antwortet gerade nicht" in text or "bremst" in text:
+            return ("netz", text)
+        return ("anonym", text)
+    except Exception as exc:
+        return ("netz", str(exc))
+
+
+def _logged_in_now(page) -> bool:
+    return _login_state(page)[0] == "ok"
 
 
 # ── Merkliste ──────────────────────────────────────────────────────────────
@@ -269,10 +306,25 @@ def _fetch_article_text(page, url: str) -> str:
     return (page.evaluate(_EXTRACT_JS) or "").strip()
 
 
-def fetch_all(limit: int = 100, progress=None, headless: bool = True) -> dict:
+def _norm_url(url: str) -> str:
+    """URL-Form fuer den Dublettenvergleich: ohne Schema, www, Tracking und Slash."""
+    u = (url or "").strip()
+    u = re.sub(r"^https?://", "", u)
+    u = re.sub(r"^www\.", "", u)
+    u = u.split("#")[0]
+    u = re.sub(r"[?&](utm_[^&]*|fbclid|gclid|ref)=[^&]*", "", u)
+    return u.rstrip("/?&").lower()
+
+
+def fetch_all(limit: int = 100, progress=None, headless: bool = True,
+              skip_urls=None, skip_ids=None) -> dict:
     """Holt Merkliste + Volltexte.
 
-    Rueckgabe: {"ok": [...], "problems": [...], "user_id": str}
+    skip_urls / skip_ids: was schon im Briefing-Feld steht bzw. schon auf der
+    Aufraeum-Liste vorgemerkt ist, wird uebersprungen — sonst landet derselbe
+    Artikel beim zweiten Knopfdruck ein zweites Mal im Feld.
+
+    Rueckgabe: {"ok": [...], "problems": [...], "skipped": [...], "user_id": str}
     "ok" enthaelt nur Eintraege mit brauchbarem Volltext.
     """
     def say(msg):
@@ -286,7 +338,10 @@ def fetch_all(limit: int = 100, progress=None, headless: bool = True) -> dict:
     try:
         page = _page(ctx)
         _open_feedly(page)
-        if not _logged_in_now(page):
+        _zustand, _detail = _login_state(page)
+        if _zustand == "netz":
+            raise RuntimeError(f"Feedly ist gerade nicht erreichbar. {_detail}")
+        if _zustand != "ok":
             raise RuntimeError(
                 "Nicht bei Feedly angemeldet. Einmalig einrichten:\n"
                 "    python3 feedly_fetch.py --login"
@@ -295,6 +350,17 @@ def fetch_all(limit: int = 100, progress=None, headless: bool = True) -> dict:
         listing = list_saved(page, limit=limit)
         items = listing["items"]
         say(f"{len(items)} Artikel in der Merkliste.")
+
+        # Dubletten aussortieren, BEVOR die Volltexte geladen werden — spart
+        # Zeit und verhindert, dass derselbe Artikel zweimal im Feld landet.
+        _skip_urls = {_norm_url(u) for u in (skip_urls or []) if u}
+        _skip_ids = set(skip_ids or [])
+        skipped = [i for i in items
+                   if _norm_url(i["url"]) in _skip_urls or i["entry_id"] in _skip_ids]
+        if skipped:
+            _skip_set = {id(i) for i in skipped}
+            items = [i for i in items if id(i) not in _skip_set]
+            say(f"{len(skipped)} bereits im Briefing — übersprungen.")
 
         ok, problems = [], []
         for idx, item in enumerate(items, 1):
@@ -328,7 +394,8 @@ def fetch_all(limit: int = 100, progress=None, headless: bool = True) -> dict:
                 ok.append(item)
 
         say(f"Fertig: {len(ok)} vollständig, {len(problems)} problematisch.")
-        return {"ok": ok, "problems": problems, "user_id": listing["user_id"]}
+        return {"ok": ok, "problems": problems, "skipped": skipped,
+                "user_id": listing["user_id"]}
     finally:
         try:
             ctx.close()

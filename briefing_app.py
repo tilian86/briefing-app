@@ -2280,9 +2280,16 @@ if _fl_clicked:
     try:
         import feedly_fetch as _feedly
 
-        _fl_result = _feedly.fetch_all(progress=lambda m: _fl_status.write(m))
+        # Doppel-Schutz: was schon im Paywall-Feld steht oder bereits fürs
+        # Aufräumen vorgemerkt ist, wird gar nicht erst geholt.
+        _fl_da_urls = re.findall(r"https?://\S+", st.session_state.get("paywall_text") or "")
+        _fl_da_ids = _feedly.load_pending()["entry_ids"]
+        _fl_result = _feedly.fetch_all(
+            progress=lambda m: _fl_status.write(m),
+            skip_urls=_fl_da_urls, skip_ids=_fl_da_ids)
         _fl_ok = _fl_result["ok"]
         _fl_problems = _fl_result["problems"]
+        _fl_skipped = _fl_result.get("skipped") or []
 
         if _fl_ok:
             _fl_new = _feedly.to_blocks(_fl_ok)
@@ -2298,8 +2305,13 @@ if _fl_clicked:
             )
 
         _fl_free, _fl_walled = _feedly.split_free_and_paywall(_fl_ok)
-        _fl_msg = (f"✅ {len(_fl_ok)} Artikel geholt "
-                   f"({len(_fl_free)} frei, {len(_fl_walled)} hinter Paywall).")
+        if _fl_ok:
+            _fl_msg = (f"✅ {len(_fl_ok)} Artikel ins Paywall-Feld geholt "
+                       f"(davon {len(_fl_walled)} hinter Bezahlschranke).")
+        else:
+            _fl_msg = "Nichts Neues in der Merkliste."
+        if _fl_skipped:
+            _fl_msg += f" ⏭️ {len(_fl_skipped)} schon im Briefing — übersprungen."
         if _fl_problems:
             _fl_msg += f" ⚠️ {len(_fl_problems)} unvollständig — bleiben in der Merkliste."
         st.session_state["_feedly_note"] = _fl_msg
