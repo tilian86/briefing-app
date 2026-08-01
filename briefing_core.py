@@ -16732,7 +16732,13 @@ def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None
     # (statistisch unauffällig) und deckte damit 14 Podcast-Folgen ab, also 16
     # Wörter pro Stück. Genau deshalb galt das Briefing als „gut", während es
     # beim Hören Müll war. Diese Prüfung zählt die genannten Quellen.
+    _ZAHLWORT_ZU_ZAHL = {
+        "zwei": 2, "drei": 3, "vier": 4, "fünf": 5, "sechs": 6, "sieben": 7,
+        "acht": 8, "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12,
+        "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15,
+    }
     buendel_issues = []
+    buendel_verdacht = []
     for idx, s in enumerate(sections, start=1):
         if not _sc_is_regular(s):
             continue
@@ -16740,21 +16746,53 @@ def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None
         titel = next((l.lstrip("# ").strip() for l in content.split("\n")
                       if l.strip().startswith("#")), "")
         body = _sc_body_text(s)
-        # Titel gibt die Menge oft selbst an („Vierzehn Podcasts, ein Nachmittag")
-        if re.search(r"\b(zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|"
-                     r"dreizehn|vierzehn|fünfzehn|\d{1,2})\s+podcasts?\b", titel, re.I):
-            buendel_issues.append(f"Beitrag {idx}: Titel kündigt mehrere Podcasts an ({titel[:40]})")
+        # Titel gibt die Menge oft selbst an („Vierzehn Podcasts, ein Nachmittag",
+        # „Sechs Fälle, ein Nachmittag", „Kurz aus aller Welt"). 01.08.: nicht nur
+        # Podcasts — im Morgen-Briefing wurden sechs Kriminalfälle in 230 Wörter
+        # gequetscht (~38 je Fall) und die Pruefung gab trotzdem 100/100.
+        _ZAHLWORT = (r"zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|"
+                     r"dreizehn|vierzehn|fünfzehn|\d{1,2}")
+        _STUECK = (r"podcasts?|folgen|fälle|faelle|meldungen|geschichten|themen|"
+                   r"artikel|beiträge|beitraege|nachrichten|schlagzeilen")
+        _menge = re.search(rf"\b({_ZAHLWORT})\s+({_STUECK})\b", titel, re.I)
+        if _menge:
+            _stueck_woerter = len(body.split())
+            _anzahl = _ZAHLWORT_ZU_ZAHL.get(_menge.group(1).lower())
+            if _anzahl is None:
+                try:
+                    _anzahl = int(_menge.group(1))
+                except ValueError:
+                    _anzahl = 0
+            _je = _stueck_woerter // _anzahl if _anzahl else _stueck_woerter
+            # Ein Sammelbeitrag ist nur dann in Ordnung, wenn jedes Stueck noch
+            # genug Platz bekommt (>= 90 Woerter, wie bei den Quellen unten).
+            if _anzahl >= 2 and _je < 90:
+                buendel_issues.append(
+                    f"Beitrag {idx}: Titel kündigt {_menge.group(1)} "
+                    f"{_menge.group(2)} an, nur {_je} Wörter je Stück ({titel[:34]})")
+                continue
+        # Sammel-Floskeln ohne Zahl: „Kurz aus aller Welt", „Kleines aus der Region"
+        if re.search(r"\b(kurz|kleines|vermischtes|allerlei|potpourri|streifzug)\s+"
+                     r"(aus|durch|vom|von)\b", titel, re.I) and len(body.split()) < 260:
+            buendel_issues.append(
+                f"Beitrag {idx}: Sammelbeitrag „{titel[:40]}“ — "
+                f"{len(body.split())} Wörter für mehrere Themen")
             continue
-        # Sonst: Anzahl verschieden benannter Quellen im Fließtext
+        # Sonst: Anzahl verschieden benannter Quellen im Fließtext.
+        # Nur bei KURZEN Beitraegen — ein 700-Woerter-Podcast zitiert naturgemaess
+        # viele Namen, ist aber kein Sammelbeitrag (Fehlalarm-Bremse 01.08.).
         namen = set(re.findall(r"[„\"»]([^„\"»«]{4,45})[\"“«]", body))
         namen |= {m for m in re.findall(r"\bPodcast\s+([A-ZÄÖÜ][\w-]{3,25})", body)}
         woerter = len(body.split())
-        if len(namen) >= 4 and woerter / max(1, len(namen)) < 90:
-            buendel_issues.append(
+        if woerter < 320 and len(namen) >= 4 and woerter / max(1, len(namen)) < 90:
+            buendel_verdacht.append(
                 f"Beitrag {idx}: {len(namen)} Quellen in {woerter} Wörtern "
                 f"({woerter // len(namen)} je Quelle) — {titel[:34]}")
-    criteria.append(crit("buendelung", "Bündelung", 100 - 34.0 * len(buendel_issues), 20,
-                         buendel_issues))
+    # Titel-Befunde sind eindeutig (der Beitrag sagt selbst, dass er buendelt),
+    # Quellen-Befunde nur ein Verdacht — deshalb unterschiedlich gewichtet.
+    _bu_score = 100.0 - 25.0 * len(buendel_issues) - 10.0 * len(buendel_verdacht)
+    criteria.append(crit("buendelung", "Bündelung", _bu_score, 20,
+                         buendel_issues + buendel_verdacht))
 
     gesamt = sum(c["score"] * c["weight"] for c in criteria) / sum(c["weight"] for c in criteria)
     return {"score": round(gesamt), "criteria": criteria, "issues": issues_all,
