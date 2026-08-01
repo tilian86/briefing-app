@@ -14281,8 +14281,12 @@ def _smart_topic_budget(weight: int, n_src: int, short: bool = False) -> tuple:
     wmin, wmax = wmin + bonus // 2, wmax + bonus
     # Untergrenze pro Quelle: eine Meldung braucht ein paar Saetze, sonst ist sie
     # nur noch eine Aufzaehlung. Greift genau bei den grossen Buendeln.
-    wmin = max(wmin, n_src * (28 if short else 45))
-    wmax = max(wmax, n_src * (45 if short else 70))
+    # 01.08.: 45 je Quelle reichte nicht — im Morgen-Briefing landeten sechs
+    # Kriminalfaelle in 230 Woertern (26 je Fall). Die Buendelungs-Pruefung zieht
+    # die Grenze bei 90 Woertern je Stueck, also muss die Erzeugung darueber
+    # liegen, sonst meldet die Pruefung zwangslaeufig einen Fehler.
+    wmin = max(wmin, n_src * (55 if short else 95))
+    wmax = max(wmax, n_src * (80 if short else 130))
     return wmin, wmax
 
 
@@ -14415,7 +14419,11 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
     # Sammelthemen aufteilen. Ein Beitrag, der acht Meldungen bündelt, wird
     # zwangsläufig zur Aufzählung — egal wie das Budget aussieht. Ab sechs
     # Quellen entstehen daraus mehrere Beiträge mit je eigenem Budget.
-    _MAX_PRO_THEMA = 5
+    # 01.08. von 5 auf 3 gesenkt: mit 5 erlaubten Quellen plus Rest-Regel landeten
+    # im Morgen-Briefing sechs Kriminalfaelle in EINEM Beitrag ("Sechs Faelle, ein
+    # Nachmittag", 26 Woerter je Fall). Drei Quellen sind die Grenze, ab der ein
+    # Beitrag noch wie ein Beitrag klingt und nicht wie eine Aufzaehlung.
+    _MAX_PRO_THEMA = 3
     _geteilt = []
     for t in topics:
         m = t["members"]
@@ -14423,9 +14431,10 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
             _geteilt.append(t)
             continue
         _teile = [m[i:i + _MAX_PRO_THEMA] for i in range(0, len(m), _MAX_PRO_THEMA)]
-        # Reste von 1-2 Quellen an den Vorgänger hängen, statt einen Stummel-Beitrag
-        # zu erzeugen (dann lieber 6-7 Quellen im letzten Teil).
-        if len(_teile) > 1 and len(_teile[-1]) <= 2:
+        # Rest von genau 1 Quelle an den Vorgänger hängen, statt einen Stummel-
+        # Beitrag zu erzeugen (dann lieber 4 Quellen im letzten Teil). Frueher
+        # galt das bis 2 Reste — damit wurden aus 3 schnell wieder 5.
+        if len(_teile) > 1 and len(_teile[-1]) == 1:
             _teile[-2].extend(_teile.pop())
         for _i, _teil in enumerate(_teile):
             _titel = t["title"] if _i == 0 else f"{t['title']} ({_i + 1})"
