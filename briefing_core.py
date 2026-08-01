@@ -14207,17 +14207,34 @@ def wait_for_new_apple_ttml(since_ts: float, timeout_s: int = 180, poll_s: float
     return None
 
 
-_TOPIC_CLUSTER_PROMPT = """Du bekommst nummerierte Nachrichten-Quellen (Artikel, Paywall-Texte, Podcast-Zusammenfassungen) EINES Tages. Bündle sie zu THEMEN: Alles, was inhaltlich zum selben Themenkomplex gehört (z.B. mehrere Artikel + ein Podcast zum Koalitionsausschuss), kommt in EIN Thema. Eigenständige Storys bleiben eigene Themen — im Zweifel lieber getrennt lassen.
+_TOPIC_CLUSTER_PROMPT = """Du bekommst nummerierte Nachrichten-Quellen (Artikel, Paywall-Texte, Podcast-Zusammenfassungen) EINES Tages. Gruppiere sie.
 
-REGELN:
+DIE EINE ENTSCHEIDENDE REGEL
+Zusammen kommt nur, was DASSELBE EREIGNIS beschreibt — also mehrere Berichte über ein und denselben Vorgang. Gleiches Sachgebiet ist KEIN Grund zum Zusammenlegen.
+
+SO ENTSCHEIDEST DU
+Frage dich: Berichten diese Quellen über denselben konkreten Vorgang, am selben Ort, mit denselben Beteiligten?
+- JA → ein Thema (z.B. drei Artikel über denselben Koalitionsausschuss; ein Artikel und ein Podcast über dieselbe EZB-Entscheidung).
+- NEIN → getrennte Themen, auch wenn das Sachgebiet identisch ist.
+
+DAS IST FALSCH (so darfst du NICHT gruppieren):
+- Sechs verschiedene Kriminalfälle als ein Thema „Kriminalfälle des Tages"
+- Mehrere unabhängige Lokalmeldungen als „Kurz aus der Region" oder „Vermischtes"
+- Verschiedene Auslandsmeldungen als „Kurz aus aller Welt"
+- Alle KI-Nachrichten des Tages als ein Thema „Die KI-Woche"
+Jeder dieser Fälle ist ein EIGENES Thema. Ein Mord in Trier und ein Betrug in Ulm haben nichts miteinander zu tun, nur weil beides Straftaten sind.
+
+Der Normalfall ist: ein Thema = eine Quelle. Gruppen entstehen nur bei echten Dubletten desselben Ereignisses. Im Zweifel IMMER trennen.
+
+WEITERE REGELN:
 - JEDE Quellen-Nummer muss in GENAU EINEM Thema vorkommen. Keine weglassen, keine doppelt.
-- Ein Thema kann auch nur eine Quelle haben (der Normalfall).
-- Podcasts, die viele verschiedene Themen streifen, bleiben ein EIGENES Thema.
-- Gib jedem Thema einen prägnanten deutschen Titel und ein Gewicht von 1 (Randnotiz) bis 5 (Topthema des Tages).
-- Vergib die Gewichte STRENG: höchstens 1-2 Themen bekommen eine 5, die Masse liegt bei 2-3. Das Gewicht steuert später die Beitragslänge.
+- Höchstens 3 Quellen je Thema. Berichten mehr als 3 Quellen über dasselbe Ereignis, nimm die 3 ergiebigsten zusammen und mache aus dem Rest ein zweites Thema.
+- Podcasts bleiben IMMER ein eigenes Thema — nie mit Artikeln und nie mit anderen Podcasts zusammen.
+- Gib jedem Thema einen prägnanten deutschen Titel, der das konkrete Ereignis benennt. Keine Sammeltitel wie „Drei Meldungen", „Kurz aus aller Welt", „Vermischtes".
+- Gewicht 1 (Randnotiz) bis 5 (Topthema des Tages). STRENG vergeben: höchstens 1-2 Themen bekommen eine 5, die Masse liegt bei 2-3. Das Gewicht steuert später die Beitragslänge.
 
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Vorrede:
-{"topics": [{"title": "Koalitionsausschuss einigt sich auf Haushalt", "members": [3, 7, 12], "weight": 5}, {"title": "...", "members": [1], "weight": 2}]}"""
+{"topics": [{"title": "Koalitionsausschuss einigt sich auf Haushalt", "members": [3, 7, 12], "weight": 5}, {"title": "Mord an Studentin in Trier aufgeklärt", "members": [1], "weight": 2}]}"""
 
 
 _TOPIC_SYNTH_PROMPT = """Du schreibst EINEN Beitrag für ein persönliches Audio-Briefing (wird vorgelesen). Unten stehen alle Quellen zu EINEM Thema: {topic_title}. Verwebe sie zu EINEM durchgehenden, perfekten Vorlesetext — der Hörer soll danach vollständig informiert sein, ohne irgendetwas doppelt zu hören.
@@ -14265,6 +14282,12 @@ _SMART_WEIGHT_NOTES = {
     2: "kleinere Meldung — nur das Wesentliche in wenigen Sätzen",
     1: "Randnotiz — 2-3 Sätze genügen",
 }
+
+
+# Mindestplatz je gebuendelter Meldung. Darunter klingt ein Beitrag im Audio
+# wie eine Aufzaehlung ("Sechs Faelle, ein Nachmittag" = 26 Woerter je Fall).
+# Die Erzeugung (_smart_topic_budget) liegt bewusst darueber (95).
+BUENDEL_MIN_WOERTER = 90
 
 
 def _smart_topic_budget(weight: int, n_src: int, short: bool = False) -> tuple:
@@ -14465,10 +14488,24 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         _cap_total = len(topics) * _cpt
         if _est > _cap_total:
             _f = max(_floor, _cap_total / _est)
+            _gerettet = 0
             for t in topics:
                 if int(t.get("weight") or 3) <= 3:
                     t["_wmin"], t["_wmax"] = int(t["_wmin"] * _f), int(t["_wmax"] * _f)
-            print(f"[synthese] Intelligente Länge: ~{_est} > Deckel {_cap_total} ({len(topics)} Themen, cap {_cpt}/Thema) → Gewicht ≤3 × {_f:.2f}.", file=sys.stderr)
+                    # 01.08.: Die Bremse multiplizierte auch die Untergrenze je Quelle
+                    # weg — aus 95 Woertern je Quelle wurden 52. Bei Themen mit
+                    # mehreren Quellen entstand daraus die Aufzaehlung ("Sechs Faelle,
+                    # ein Nachmittag", 26 Woerter je Fall). Gebuendelte Themen behalten
+                    # deshalb ihren Mindestplatz, egal wie stark gebremst wird.
+                    _n = len(t["members"])
+                    if _n > 1:
+                        _min_noetig = _n * (BUENDEL_MIN_WOERTER + 5)
+                        if t["_wmin"] < _min_noetig:
+                            t["_wmin"] = _min_noetig
+                            t["_wmax"] = max(t["_wmax"], int(_min_noetig * 1.35))
+                            _gerettet += 1
+            print(f"[synthese] Intelligente Länge: ~{_est} > Deckel {_cap_total} ({len(topics)} Themen, cap {_cpt}/Thema) → Gewicht ≤3 × {_f:.2f}"
+                  + (f"; {_gerettet} gebündelte Themen behalten Mindestplatz." if _gerettet else "."), file=sys.stderr)
         _w_hist = {}
         for t in topics:
             _w_hist[t.get("weight", 3)] = _w_hist.get(t.get("weight", 3), 0) + 1
@@ -16639,10 +16676,6 @@ _ZAHLWORT_ZU_ZAHL = {
     "acht": 8, "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12,
     "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15,
 }
-# Mindestplatz je gebuendelter Meldung. Darunter klingt ein Beitrag im Audio
-# wie eine Aufzaehlung ("Sechs Faelle, ein Nachmittag" = 26 Woerter je Fall).
-# Die Erzeugung (_smart_topic_budget) liegt bewusst darueber (95).
-BUENDEL_MIN_WOERTER = 90
 
 
 def find_bundled_sections(sections: List[dict]) -> List[dict]:
