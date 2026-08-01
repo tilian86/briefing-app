@@ -172,7 +172,10 @@ _DRAFT_DEFAULTS = {
     "topic_synthesis_mode": True,
     "synthesis_narrative_style": True,
     "synthesis_web_enrich": True,
-    "podcast_synth_mode": "Länger erhalten",
+    # 01.08.: "Original übernehmen" ist neuer Standard — im Lauf vom 01.08. hat er
+    # 10 Podcasts als je eigenen Beitrag mit 327-1568 Woertern geliefert, also
+    # genau das, was "Länger erhalten" nur annaehernd erreicht hat.
+    "podcast_synth_mode": "Original übernehmen",
     "auto_reader_upload": True,
     "reader_cleanup_days": 14,
     "whatsapp_pdf_additional": True,
@@ -1268,7 +1271,12 @@ if st.session_state.get("_cleanup_count", 0) and not st.session_state.get("_clea
 # schlechteren Modus, weil ein alter Entwurf sie ueberschrieben hat (01.08.).
 # Umschalten in der Oberflaeche geht weiter, es wird nur nicht mehr dauerhaft
 # gespeichert. Zum Loesen: Schluessel hier entfernen.
-_ERZWUNGENE_DEFAULTS = ("quality_check_enabled", "auto_reader_upload", "podcast_synth_mode")
+_ERZWUNGENE_DEFAULTS = (
+    "quality_check_enabled",     # immer an
+    "auto_reader_upload",        # immer an
+    "podcast_synth_mode",        # immer "Länger erhalten"
+    "genius_depth_radio_main",   # immer "Keine" — Kompaktfassung standardmaessig aus (01.08.)
+)
 
 for _key, _default in _DRAFT_DEFAULTS.items():
     if _key not in st.session_state:
@@ -5291,8 +5299,9 @@ with _mode_col2:
             key="podcast_synth_mode",
             help="Wie deine kuratierten Podcast-Zusammenfassungen ins Briefing kommen — gilt in Synthese UND klassisch: "
                  "Einweben = wie alle Quellen behandelt und aufs Budget gekürzt (~100-200 W; klassisch: Kompakt-/Tragweite-Budget gilt auch für Podcasts). "
-                 "Länger erhalten = mit Mindestlänge ~250-350 W, damit die Substanz bleibt (STANDARD — eine Folge ist oft ein bis drei Stunden Gespräch). "
-                 "Original übernehmen = deine Zusammenfassung 1:1 unverändert (Synthese: eigener Podcast-Block am Ende; klassisch: als eigener Beitrag ohne Kürzung).",
+                 "Länger erhalten = mit Mindestlänge ~250-350 W, damit die Substanz bleibt. "
+                 "Original übernehmen = deine Zusammenfassung 1:1 unverändert (STANDARD — eine Folge ist oft ein bis drei Stunden Gespräch, "
+                 "und 1:1 liefert je Folge einen eigenen ausführlichen Beitrag; Synthese: eigener Podcast-Block am Ende).",
         )
 with _mode_col3:
     # Altlasten normalisieren: früher gab es "Standard" — auf gültige Option mappen,
