@@ -380,6 +380,50 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
             pass
 
 
+# ── Offene Aufraeum-Liste ──────────────────────────────────────────────────
+# Welche Artikel wurden geholt, aber noch nicht aus der Merkliste entfernt?
+# Bewusst als DATEI, nicht im Streamlit-Sitzungsspeicher: ein App-Neustart oder
+# ein geschlossener Browser-Tab wuerde die Liste sonst verlieren, und die
+# Artikel blieben fuer immer in der Merkliste stehen.
+PENDING_PATH = os.path.expanduser("~/.briefing_feedly_pending.json")
+
+
+def load_pending() -> dict:
+    try:
+        with open(PENDING_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {"user_id": data.get("user_id") or "",
+                "entry_ids": [e for e in (data.get("entry_ids") or []) if e]}
+    except Exception:
+        return {"user_id": "", "entry_ids": []}
+
+
+def add_pending(entry_ids, user_id: str = "") -> int:
+    """Merkt geholte Artikel fuer das spaetere Aufraeumen vor. Gibt die Gesamtzahl zurueck."""
+    current = load_pending()
+    seen = set(current["entry_ids"])
+    for entry_id in entry_ids or []:
+        if entry_id and entry_id not in seen:
+            seen.add(entry_id)
+            current["entry_ids"].append(entry_id)
+    if user_id:
+        current["user_id"] = user_id
+    try:
+        with open(PENDING_PATH, "w", encoding="utf-8") as fh:
+            json.dump(current, fh, ensure_ascii=False)
+    except Exception as exc:
+        print(f"TabClip/Feedly: Aufräum-Liste nicht speicherbar: {exc}", file=sys.stderr)
+    return len(current["entry_ids"])
+
+
+def clear_pending() -> None:
+    try:
+        if os.path.exists(PENDING_PATH):
+            os.remove(PENDING_PATH)
+    except Exception:
+        pass
+
+
 def to_blocks(items) -> str:
     """Formatiert Artikel als 'mmm'-getrennte Bloecke — wie TabClip sie liefert."""
     blocks = []

@@ -2290,12 +2290,12 @@ if _fl_clicked:
             st.session_state["paywall_text_pending_value"] = (
                 (_fl_old + "\n\nmmm\n\n" + _fl_new) if _fl_old else _fl_new
             )
-            # IDs merken — Entfernen erst nach erfolgreichem Briefing.
-            _fl_prev_ids = list(st.session_state.get("_feedly_pending_ids") or [])
-            st.session_state["_feedly_pending_ids"] = _fl_prev_ids + [
-                i["entry_id"] for i in _fl_ok if i.get("entry_id")
-            ]
-            st.session_state["_feedly_user_id"] = _fl_result.get("user_id") or ""
+            # IDs merken — Entfernen erst nach erfolgreichem Briefing. Liegt in
+            # einer Datei, damit ein App-Neustart die Liste nicht verliert.
+            _feedly.add_pending(
+                [i["entry_id"] for i in _fl_ok if i.get("entry_id")],
+                _fl_result.get("user_id") or "",
+            )
 
         _fl_free, _fl_walled = _feedly.split_free_and_paywall(_fl_ok)
         _fl_msg = (f"✅ {len(_fl_ok)} Artikel geholt "
@@ -6185,16 +6185,16 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                     # 📥 Erst JETZT — nach erfolgreichem Briefing — die verarbeiteten
                     # Artikel aus der Feedly-Merkliste entfernen. Bricht ein Lauf ab,
                     # bleibt die Merkliste vollstaendig erhalten.
-                    _fl_ids = list(st.session_state.get("_feedly_pending_ids") or [])
-                    if _fl_ids and _multi_results:
+                    if _multi_results:
                         try:
                             import feedly_fetch as _feedly_done
-                            with st.spinner(f"📥 Entferne {len(_fl_ids)} erledigte Artikel aus der Feedly-Merkliste…"):
-                                _fl_removed = _feedly_done.mark_done(
-                                    _fl_ids, st.session_state.get("_feedly_user_id") or ""
-                                )
-                            st.session_state["_feedly_pending_ids"] = []
-                            st.caption(f"📥 {_fl_removed} Artikel aus der Feedly-Merkliste entfernt — Liste ist wieder frei.")
+                            _fl_pending = _feedly_done.load_pending()
+                            _fl_ids = _fl_pending["entry_ids"]
+                            if _fl_ids:
+                                with st.spinner(f"📥 Entferne {len(_fl_ids)} erledigte Artikel aus der Feedly-Merkliste…"):
+                                    _fl_removed = _feedly_done.mark_done(_fl_ids, _fl_pending["user_id"])
+                                _feedly_done.clear_pending()
+                                st.caption(f"📥 {_fl_removed} Artikel aus der Feedly-Merkliste entfernt — Liste ist wieder frei.")
                         except Exception as _flex:
                             st.caption(f"📥 Feedly-Merkliste nicht geleert ({_flex}) — Artikel bleiben stehen, kein Verlust.")
                     # Zusammengeführte Doppel-Themen transparent zeigen
