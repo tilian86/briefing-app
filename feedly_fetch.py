@@ -195,8 +195,48 @@ def _api(page, path: str, method: str = "GET", versuche: int = 3):
 
 
 def _open_feedly(page) -> None:
-    page.goto(FEEDLY_URL, wait_until="domcontentloaded", timeout=45000)
-    page.wait_for_timeout(2500)
+    """Feedly oeffnen und warten, bis die Seite WIRKLICH bereit ist.
+
+    Wichtig: Die API-Aufrufe laufen im Seitenkontext. Steht die Seite noch auf
+    about:blank oder einer Fehlerseite, scheitert jedes fetch() mit „Failed to
+    fetch" — und das sah dann faelschlich nach „nicht angemeldet" aus (01.08.).
+    """
+    letzter = None
+    for versuch in range(3):
+        try:
+            page.goto(FEEDLY_URL, wait_until="domcontentloaded", timeout=45000)
+        except Exception as exc:
+            letzter = exc
+            page.wait_for_timeout(2000 * (versuch + 1))
+            continue
+        try:
+            page.wait_for_function(
+                "() => location.hostname.endsWith('feedly.com') "
+                "&& document.readyState !== 'loading'",
+                timeout=20000)
+            page.wait_for_timeout(2500)
+            # Feedly liefert bei Drosselung eine nackte Seite „Too Many
+            # Requests (HAP429)" aus. Ohne diese Erkennung sah das aus wie
+            # „nicht angemeldet" — mit falscher Login-Aufforderung (01.08.).
+            try:
+                if "HAP429" in (page.inner_text("body") or "")[:400]:
+                    raise RuntimeError(
+                        "Feedly bremst gerade ab (zu viele Anfragen in kurzer Zeit). "
+                        "Deine Anmeldung ist in Ordnung — bitte 10-15 Minuten warten.")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+            return
+        except RuntimeError:
+            # Eigene, aussagekräftige Meldung (z. B. Drosselung) — nicht
+            # wiederholen und nicht hinter einer Sammelmeldung verstecken.
+            raise
+        except Exception as exc:
+            letzter = exc
+            page.wait_for_timeout(2000 * (versuch + 1))
+    if letzter:
+        raise RuntimeError(f"Feedly-Seite lädt nicht ({letzter.__class__.__name__}).")
 
 
 def _login_state(page) -> tuple:
@@ -427,14 +467,20 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
             raise RuntimeError("Feedly-Profil nicht lesbar — nichts entfernt.")
 
         tag_id = urllib.parse.quote(f"user/{user_id}/tag/global.saved", safe="")
+        # Feedly nimmt mehrere Eintraege pro Aufruf (kommagetrennt). 16 einzelne
+        # Loeschungen haben am 01.08. eine Sperre ausgeloest (HAP429) — in
+        # Zehnergruppen sind daraus zwei Aufrufe statt sechzehn.
         removed = 0
-        for entry_id in entry_ids:
+        gruppen = [entry_ids[i:i + 10] for i in range(0, len(entry_ids), 10)]
+        for nr, gruppe in enumerate(gruppen):
+            ids = ",".join(urllib.parse.quote(e, safe="") for e in gruppe)
             try:
-                _api(page, f"/v3/tags/{tag_id}/{urllib.parse.quote(entry_id, safe='')}",
-                     method="DELETE")
-                removed += 1
+                _api(page, f"/v3/tags/{tag_id}/{ids}", method="DELETE")
+                removed += len(gruppe)
             except Exception as exc:
-                print(f"  ! konnte nicht entfernt werden: {exc}", file=sys.stderr)
+                print(f"  ! Gruppe {nr + 1} nicht entfernt: {exc}", file=sys.stderr)
+            if nr + 1 < len(gruppen):
+                page.wait_for_timeout(2000)   # freundlich zum Server bleiben
         return removed
     finally:
         try:
@@ -542,9 +588,14 @@ def _cli_status() -> int:
     try:
         page = _page(ctx)
         _open_feedly(page)
-        if _logged_in_now(page):
+        zustand, detail = _login_state(page)
+        if zustand == "ok":
             print("✅ Bei Feedly angemeldet.")
             return 0
+        if zustand == "netz":
+            print(f"⚠️  Feedly gerade nicht erreichbar — {detail}")
+            print("   (Das heißt NICHT, dass die Anmeldung weg ist.)")
+            return 2
         print("❌ Nicht angemeldet — 'python3 feedly_fetch.py --login' ausführen.")
         return 1
     finally:
@@ -598,14 +649,16 @@ def _cli_fetch() -> int:
 
 
 def main(argv) -> int:
-    if "--login" in argv:
-        return _cli_login()
-    if "--status" in argv:
-        return _cli_status()
-    if "--list" in argv:
-        return _cli_list()
-    if "--fetch" in argv:
-        return _cli_fetch()
+    aktionen = {"--login": _cli_login, "--status": _cli_status,
+                "--list": _cli_list, "--fetch": _cli_fetch}
+    for flag, aktion in aktionen.items():
+        if flag in argv:
+            try:
+                return aktion()
+            except RuntimeError as exc:
+                # Verständliche Meldung statt Python-Rückverfolgung.
+                print(f"⚠️  {exc}", file=sys.stderr)
+                return 2
     print(__doc__)
     return 0
 

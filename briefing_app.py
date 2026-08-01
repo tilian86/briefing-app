@@ -2332,7 +2332,9 @@ if _fl_clicked:
     except Exception as _fl_exc:
         _fl_text = str(_fl_exc)
         _fl_status.update(label="Feedly-Abruf fehlgeschlagen", state="error", expanded=True)
-        if "angemeldet" in _fl_text.lower():
+        if "bremst" in _fl_text.lower():
+            st.warning(f"⏳ {_fl_text}")
+        elif "nicht angemeldet" in _fl_text.lower():
             st.error("Noch nicht bei Feedly angemeldet. Einmalig im Terminal einrichten:")
             st.code("cd ~/Projects/apps/briefing-app && python3 feedly_fetch.py --login", language="bash")
             st.caption("Dort bei Feedly, GEA und SWP/Tagblatt anmelden, Fenster schließen — fertig.")
