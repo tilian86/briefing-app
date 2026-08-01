@@ -2248,6 +2248,77 @@ if urls_text.strip():
 # Paywall-Artikel
 st.markdown('<div id="nav-paywall" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 st.markdown("#### Paywall-Artikel")
+
+# ── Feedly-Merkliste ───────────────────────────────────────────────────────
+# Florian kuratiert im Feedly (Lesezeichen = "will ich im Briefing"). Der Knopf
+# holt Merkliste + Volltexte (inkl. Zeitungs-Login) und haengt sie hier an.
+# Entfernt werden die Artikel aus der Merkliste erst NACH einem erfolgreichen
+# Briefing (siehe _feedly_pending_ids weiter unten).
+_fl_col1, _fl_col2 = st.columns([1, 2.4])
+with _fl_col1:
+    _fl_clicked = st.button(
+        "📥 Aus Feedly holen",
+        use_container_width=True,
+        help="Holt alle im Feedly mit Lesezeichen markierten Artikel samt Volltext "
+             "(auch hinter Paywall über dein Zeitungs-Login) und hängt sie unten an.",
+    )
+with _fl_col2:
+    _fl_note = st.session_state.get("_feedly_note") or ""
+    if _fl_note:
+        st.caption(_fl_note)
+
+if _fl_clicked:
+    _fl_status = st.status("Feedly-Merkliste wird geholt …", expanded=True)
+    try:
+        import feedly_fetch as _feedly
+
+        _fl_result = _feedly.fetch_all(progress=lambda m: _fl_status.write(m))
+        _fl_ok = _fl_result["ok"]
+        _fl_problems = _fl_result["problems"]
+
+        if _fl_ok:
+            _fl_new = _feedly.to_blocks(_fl_ok)
+            _fl_old = (st.session_state.get("paywall_text") or "").rstrip()
+            st.session_state["paywall_text_pending_value"] = (
+                (_fl_old + "\n\nmmm\n\n" + _fl_new) if _fl_old else _fl_new
+            )
+            # IDs merken — Entfernen erst nach erfolgreichem Briefing.
+            _fl_prev_ids = list(st.session_state.get("_feedly_pending_ids") or [])
+            st.session_state["_feedly_pending_ids"] = _fl_prev_ids + [
+                i["entry_id"] for i in _fl_ok if i.get("entry_id")
+            ]
+            st.session_state["_feedly_user_id"] = _fl_result.get("user_id") or ""
+
+        _fl_free, _fl_walled = _feedly.split_free_and_paywall(_fl_ok)
+        _fl_msg = (f"✅ {len(_fl_ok)} Artikel geholt "
+                   f"({len(_fl_free)} frei, {len(_fl_walled)} hinter Paywall).")
+        if _fl_problems:
+            _fl_msg += f" ⚠️ {len(_fl_problems)} unvollständig — bleiben in der Merkliste."
+        st.session_state["_feedly_note"] = _fl_msg
+        _fl_status.update(label=_fl_msg, state="complete", expanded=bool(_fl_problems))
+
+        if _fl_problems:
+            st.warning(
+                f"⚠️ {len(_fl_problems)} Artikel kamen nur als Anriss an — "
+                "meist ein abgelaufenes Zeitungs-Login. Sie wurden NICHT übernommen "
+                "und bleiben in deiner Merkliste stehen."
+            )
+            for _p in _fl_problems:
+                st.caption(f"· {_p['title'][:75]} — {_p['problem']}")
+            st.caption("Neu anmelden:  `python3 feedly_fetch.py --login`")
+
+        if _fl_ok:
+            st.rerun()
+    except Exception as _fl_exc:
+        _fl_text = str(_fl_exc)
+        _fl_status.update(label="Feedly-Abruf fehlgeschlagen", state="error", expanded=True)
+        if "angemeldet" in _fl_text.lower():
+            st.error("Noch nicht bei Feedly angemeldet. Einmalig im Terminal einrichten:")
+            st.code("cd ~/Projects/apps/briefing-app && python3 feedly_fetch.py --login", language="bash")
+            st.caption("Dort bei Feedly, GEA und SWP/Tagblatt anmelden, Fenster schließen — fertig.")
+        else:
+            st.error(f"Feedly-Abruf fehlgeschlagen: {_fl_text}")
+
 paywall_text = st.text_area(
     "Paywall-Artikel",
     placeholder='Roh kopierten Artikeltext oder fertige Briefings hier einfügen.\nMehrere Blöcke mit mmm, Mmmmmm, ---, ===== oder "Artikel Ende" trennen.\nFertige Briefings gehen auch weiter mit "Weiter geht\u2019s."',
@@ -6101,6 +6172,22 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             st.caption("🎧 ElevenReader-Upload übersprungen — Playwright fehlt (pip3 install --user playwright).")
                         except Exception as _rex:
                             st.warning(f"🎧 ElevenReader-Upload übersprungen: {_rex}")
+
+                    # 📥 Erst JETZT — nach erfolgreichem Briefing — die verarbeiteten
+                    # Artikel aus der Feedly-Merkliste entfernen. Bricht ein Lauf ab,
+                    # bleibt die Merkliste vollstaendig erhalten.
+                    _fl_ids = list(st.session_state.get("_feedly_pending_ids") or [])
+                    if _fl_ids and _multi_results:
+                        try:
+                            import feedly_fetch as _feedly_done
+                            with st.spinner(f"📥 Entferne {len(_fl_ids)} erledigte Artikel aus der Feedly-Merkliste…"):
+                                _fl_removed = _feedly_done.mark_done(
+                                    _fl_ids, st.session_state.get("_feedly_user_id") or ""
+                                )
+                            st.session_state["_feedly_pending_ids"] = []
+                            st.caption(f"📥 {_fl_removed} Artikel aus der Feedly-Merkliste entfernt — Liste ist wieder frei.")
+                        except Exception as _flex:
+                            st.caption(f"📥 Feedly-Merkliste nicht geleert ({_flex}) — Artikel bleiben stehen, kein Verlust.")
                     # Zusammengeführte Doppel-Themen transparent zeigen
                     _merged_n = cli_result.get("merged_topics", 0) or 0
                     if _merged_n:
