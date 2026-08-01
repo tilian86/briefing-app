@@ -15984,7 +15984,7 @@ def run_briefing_via_claude_cli_chunked(
             print(f"[selbsttest] {_iss}", file=sys.stderr)
 
         # --- Selbstheilung: beheben statt nur melden ---
-        _heilung = {"artefakte": 0, "stubs": []}
+        _heilung = {"artefakte": 0, "stubs": [], "buendel": []}
         if auto_repair:
             _report("Selbsttest: gefundene Mängel werden behoben…", 0.97)
             # 1) Textreste — deterministisch, kostenlos
@@ -15995,7 +15995,16 @@ def run_briefing_via_claude_cli_chunked(
                 _heilung["stubs"] = repair_stub_sections(
                     all_sections, "\n\n".join(_src_lines), _stubs_now,
                     cli_path=cli, model=_CLI_JUDGE_MODEL)
-            if _heilung["artefakte"] or _heilung["stubs"]:
+            # 3) Sammelbeiträge aufteilen. Das Wortbudget soll das verhindern,
+            #    aber das Modell hält sich nicht immer daran (01.08.: derselbe
+            #    Prompt lieferte nachts sauber, morgens „Sechs Fälle").
+            _buendel_now = find_bundled_sections(all_sections)
+            if _buendel_now:
+                _report("Selbsttest: Sammelbeiträge werden aufgeteilt…", 0.975)
+                _heilung["buendel"] = repair_bundled_sections(
+                    all_sections, _buendel_now,
+                    cli_path=cli, model=_CLI_JUDGE_MODEL)
+            if _heilung["artefakte"] or _heilung["stubs"] or _heilung["buendel"]:
                 self_check = run_self_check(all_sections, now=now,
                                             content_check=content_check_data)
                 self_check["repaired"] = _heilung
@@ -16625,6 +16634,82 @@ def _sc_body_text(section: dict) -> str:
     return " ".join(out)
 
 
+_ZAHLWORT_ZU_ZAHL = {
+    "zwei": 2, "drei": 3, "vier": 4, "fünf": 5, "sechs": 6, "sieben": 7,
+    "acht": 8, "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12,
+    "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15,
+}
+# Mindestplatz je gebuendelter Meldung. Darunter klingt ein Beitrag im Audio
+# wie eine Aufzaehlung ("Sechs Faelle, ein Nachmittag" = 26 Woerter je Fall).
+# Die Erzeugung (_smart_topic_budget) liegt bewusst darueber (95).
+BUENDEL_MIN_WOERTER = 90
+
+
+def find_bundled_sections(sections: List[dict]) -> List[dict]:
+    """Beiträge, die mehrere eigenständige Meldungen zusammenquetschen.
+
+    EINE Quelle der Wahrheit für Prüfung UND Reparatur — am 01.08. gab die
+    Prüfung einem Briefing 100/100, in dem sechs Kriminalfälle in 230 Wörtern
+    steckten, weil sie nur nach „N Podcasts" im Titel suchte. Wer die Logik
+    ändert, ändert sie damit an genau einer Stelle.
+
+    Rückgabe je Fund: index (1-basiert), title, words, count, reason, sicher.
+    „sicher" = der Titel sagt selbst, dass gebündelt wird (dann lohnt Aufteilen);
+    sonst nur ein Verdacht aus der Quellenzählung.
+    """
+    _ZW = (r"zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|"
+           r"dreizehn|vierzehn|fünfzehn|\d{1,2}")
+    _ST = (r"podcasts?|folgen|fälle|faelle|meldungen|geschichten|themen|"
+           r"artikel|beiträge|beitraege|nachrichten|schlagzeilen")
+    funde = []
+    for idx, s in enumerate(sections, start=1):
+        if not _sc_is_regular(s):
+            continue
+        content = s.get("content") or ""
+        titel = next((l.lstrip("# ").strip() for l in content.split("\n")
+                      if l.strip().startswith("#")), "")
+        body = _sc_body_text(s)
+        woerter = len(body.split())
+
+        menge = re.search(rf"\b({_ZW})\s+({_ST})\b", titel, re.I)
+        if menge:
+            anzahl = _ZAHLWORT_ZU_ZAHL.get(menge.group(1).lower())
+            if anzahl is None:
+                try:
+                    anzahl = int(menge.group(1))
+                except ValueError:
+                    anzahl = 0
+            je = woerter // anzahl if anzahl else woerter
+            if anzahl >= 2 and je < BUENDEL_MIN_WOERTER:
+                funde.append({
+                    "index": idx, "title": titel, "words": woerter,
+                    "count": anzahl, "sicher": True,
+                    "reason": (f"Titel kündigt {menge.group(1)} {menge.group(2)} an, "
+                               f"nur {je} Wörter je Stück ({titel[:34]})")})
+                continue
+
+        if re.search(r"\b(kurz|kleines|vermischtes|allerlei|potpourri|streifzug)\s+"
+                     r"(aus|durch|vom|von)\b", titel, re.I) and woerter < 260:
+            funde.append({
+                "index": idx, "title": titel, "words": woerter, "count": 0,
+                "sicher": True,
+                "reason": (f"Sammelbeitrag „{titel[:40]}“ — {woerter} Wörter "
+                           f"für mehrere Themen")})
+            continue
+
+        # Verdacht: viele benannte Quellen auf wenig Raum. Nur bei KURZEN
+        # Beiträgen — ein 700-Wörter-Podcast zitiert naturgemäß viele Namen.
+        namen = set(re.findall(r"[„\"»]([^„\"»«]{4,45})[\"“«]", body))
+        namen |= {m for m in re.findall(r"\bPodcast\s+([A-ZÄÖÜ][\w-]{3,25})", body)}
+        if woerter < 320 and len(namen) >= 4 and woerter / max(1, len(namen)) < BUENDEL_MIN_WOERTER:
+            funde.append({
+                "index": idx, "title": titel, "words": woerter,
+                "count": len(namen), "sicher": False,
+                "reason": (f"{len(namen)} Quellen in {woerter} Wörtern "
+                           f"({woerter // len(namen)} je Quelle) — {titel[:34]}")})
+    return funde
+
+
 def _sc_is_regular(section: dict) -> bool:
     """Echter Inhaltsbeitrag (keine Meta-/Struktur-Blöcke)."""
     if section.get("type") == "transition":
@@ -16741,63 +16826,12 @@ def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None
     # (statistisch unauffällig) und deckte damit 14 Podcast-Folgen ab, also 16
     # Wörter pro Stück. Genau deshalb galt das Briefing als „gut", während es
     # beim Hören Müll war. Diese Prüfung zählt die genannten Quellen.
-    _ZAHLWORT_ZU_ZAHL = {
-        "zwei": 2, "drei": 3, "vier": 4, "fünf": 5, "sechs": 6, "sieben": 7,
-        "acht": 8, "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12,
-        "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15,
-    }
-    buendel_issues = []
-    buendel_verdacht = []
-    for idx, s in enumerate(sections, start=1):
-        if not _sc_is_regular(s):
-            continue
-        content = s.get("content") or ""
-        titel = next((l.lstrip("# ").strip() for l in content.split("\n")
-                      if l.strip().startswith("#")), "")
-        body = _sc_body_text(s)
-        # Titel gibt die Menge oft selbst an („Vierzehn Podcasts, ein Nachmittag",
-        # „Sechs Fälle, ein Nachmittag", „Kurz aus aller Welt"). 01.08.: nicht nur
-        # Podcasts — im Morgen-Briefing wurden sechs Kriminalfälle in 230 Wörter
-        # gequetscht (~38 je Fall) und die Pruefung gab trotzdem 100/100.
-        _ZAHLWORT = (r"zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|"
-                     r"dreizehn|vierzehn|fünfzehn|\d{1,2}")
-        _STUECK = (r"podcasts?|folgen|fälle|faelle|meldungen|geschichten|themen|"
-                   r"artikel|beiträge|beitraege|nachrichten|schlagzeilen")
-        _menge = re.search(rf"\b({_ZAHLWORT})\s+({_STUECK})\b", titel, re.I)
-        if _menge:
-            _stueck_woerter = len(body.split())
-            _anzahl = _ZAHLWORT_ZU_ZAHL.get(_menge.group(1).lower())
-            if _anzahl is None:
-                try:
-                    _anzahl = int(_menge.group(1))
-                except ValueError:
-                    _anzahl = 0
-            _je = _stueck_woerter // _anzahl if _anzahl else _stueck_woerter
-            # Ein Sammelbeitrag ist nur dann in Ordnung, wenn jedes Stueck noch
-            # genug Platz bekommt (>= 90 Woerter, wie bei den Quellen unten).
-            if _anzahl >= 2 and _je < 90:
-                buendel_issues.append(
-                    f"Beitrag {idx}: Titel kündigt {_menge.group(1)} "
-                    f"{_menge.group(2)} an, nur {_je} Wörter je Stück ({titel[:34]})")
-                continue
-        # Sammel-Floskeln ohne Zahl: „Kurz aus aller Welt", „Kleines aus der Region"
-        if re.search(r"\b(kurz|kleines|vermischtes|allerlei|potpourri|streifzug)\s+"
-                     r"(aus|durch|vom|von)\b", titel, re.I) and len(body.split()) < 260:
-            buendel_issues.append(
-                f"Beitrag {idx}: Sammelbeitrag „{titel[:40]}“ — "
-                f"{len(body.split())} Wörter für mehrere Themen")
-            continue
-        # Sonst: Anzahl verschieden benannter Quellen im Fließtext.
-        # Nur bei KURZEN Beitraegen — ein 700-Woerter-Podcast zitiert naturgemaess
-        # viele Namen, ist aber kein Sammelbeitrag (Fehlalarm-Bremse 01.08.).
-        namen = set(re.findall(r"[„\"»]([^„\"»«]{4,45})[\"“«]", body))
-        namen |= {m for m in re.findall(r"\bPodcast\s+([A-ZÄÖÜ][\w-]{3,25})", body)}
-        woerter = len(body.split())
-        if woerter < 320 and len(namen) >= 4 and woerter / max(1, len(namen)) < 90:
-            buendel_verdacht.append(
-                f"Beitrag {idx}: {len(namen)} Quellen in {woerter} Wörtern "
-                f"({woerter // len(namen)} je Quelle) — {titel[:34]}")
-    # Titel-Befunde sind eindeutig (der Beitrag sagt selbst, dass er buendelt),
+    # Erkennung liegt in find_bundled_sections() — dieselbe Funktion, die auch
+    # die Selbstheilung benutzt. Eine Logik, eine Stelle (Lehre vom 01.08.).
+    _bu_funde = find_bundled_sections(sections)
+    buendel_issues = [f"Beitrag {f['index']}: {f['reason']}" for f in _bu_funde if f["sicher"]]
+    buendel_verdacht = [f"Beitrag {f['index']}: {f['reason']}" for f in _bu_funde if not f["sicher"]]
+    # Titel-Befunde sind eindeutig (der Beitrag sagt selbst, dass er bündelt),
     # Quellen-Befunde nur ein Verdacht — deshalb unterschiedlich gewichtet.
     _bu_score = 100.0 - 25.0 * len(buendel_issues) - 10.0 * len(buendel_verdacht)
     criteria.append(crit("buendelung", "Bündelung", _bu_score, 20,
@@ -16902,6 +16936,107 @@ def repair_stub_sections(sections: List[dict], handoff_text: str, stubs: List[di
         repariert.append({"index": idx, "title": stub.get("title"), "chars": len(text)})
         print(f"[selbstheilung] Beitrag {idx} ergänzt ({len(text)} Zeichen).", file=sys.stderr)
     return repariert
+
+
+_BUNDLE_SPLIT_PROMPT = """Du teilst EINEN Beitrag eines deutschen Audio-Briefings auf.
+
+Der Beitrag quetscht mehrere eigenständige Meldungen in einen einzigen Text. Beim Hören
+klingt das wie eine heruntergeleierte Aufzählung. Jede Meldung soll ein eigener Beitrag werden.
+
+AUFGABE
+Trenne den Text in die einzelnen Meldungen und schreibe jede als eigenständigen Beitrag aus.
+
+FORM je Beitrag — exakt dieses Muster, Beiträge getrennt durch eine Zeile mit ---BEITRAG---:
+# <eigene, konkrete Überschrift dieser einen Meldung>
+<Fließtext, 90 bis 160 Wörter, gesprochene Sprache, keine Aufzählungszeichen>
+Was bleibt: <ein Merksatz>
+
+HARTE REGELN
+- NUR Fakten aus dem Originaltext. Nichts hinzuerfinden, nichts ausschmücken, nichts weglassen.
+- Jede Meldung des Originals muss in genau einem Beitrag vorkommen.
+- Reicht der Originaltext für 90 Wörter nicht, schreibe kürzer statt zu erfinden.
+- Enthält der Text in Wahrheit nur EINE Meldung, antworte exakt mit: NICHT_TEILBAR
+- Keine Nummerierung, keine Meta-Kommentare, keine Quellenliste.
+
+Antworte ausschließlich mit den Beiträgen im obigen Muster (oder NICHT_TEILBAR)."""
+
+
+def repair_bundled_sections(sections: List[dict], bundles: List[dict],
+                            cli_path: Optional[str] = None, model: str = "sonnet",
+                            max_repairs: int = 4) -> List[dict]:
+    """Teilt Sammelbeiträge in eigenständige Beiträge auf — beheben statt melden.
+
+    Das Wortbudget (_smart_topic_budget) soll Bündelung verhindern, aber das
+    Modell haelt sich nicht immer daran: am 01.08. lieferte derselbe Prompt
+    nachts saubere Einzelbeitraege und morgens „Sechs Faelle, ein Nachmittag".
+    Deshalb hier die deterministische Nachkorrektur.
+
+    Arbeitet AUF `sections` (in place) und gibt zurueck, was geteilt wurde.
+    Laesst einen Beitrag unveraendert, wenn das Modell nicht sauber teilt —
+    lieber gebuendelt als kaputt.
+    """
+    cli = cli_path or _locate_claude_cli()
+    # Nur sichere Funde teilen: bei blossem Quellen-Verdacht ist oft gar nichts
+    # zu teilen (ein Thema, viele Zitate) — da waere Aufteilen schlimmer.
+    kandidaten = [b for b in (bundles or []) if b.get("sicher")]
+    if not cli or not kandidaten:
+        return []
+
+    geteilt = []
+    # Von hinten nach vorn, damit die 1-basierten Indizes gueltig bleiben,
+    # waehrend wir Beitraege einfuegen.
+    for bundle in sorted(kandidaten, key=lambda b: -b["index"])[:max_repairs]:
+        idx = bundle.get("index")
+        if not idx or idx > len(sections):
+            continue
+        section = sections[idx - 1]
+        original = section.get("content") or ""
+        if len(original.split()) < 60:
+            continue
+        try:
+            sr = _run_claude_cli_subprocess_streaming(
+                [cli, "--print", "--output-format", "text", "--model", model,
+                 "--dangerously-skip-permissions", "--effort", cli_effort("pruefen"),
+                 "--system-prompt", _BUNDLE_SPLIT_PROMPT],
+                original, timeout_seconds=300, expected_duration_s=45.0,
+                label=f"Sammelbeitrag {idx} aufteilen")
+        except Exception as exc:
+            print(f"[selbstheilung] Beitrag {idx} nicht teilbar: {exc}", file=sys.stderr)
+            continue
+        if not sr.get("ok") or sr.get("returncode") != 0:
+            continue
+        antwort = (sr.get("stdout") or "").strip()
+        if not antwort or "NICHT_TEILBAR" in antwort.upper():
+            print(f"[selbstheilung] Beitrag {idx}: laut Prüfung nur eine Meldung — unverändert.",
+                  file=sys.stderr)
+            continue
+
+        teile = [t.strip() for t in re.split(r"(?m)^\s*-{3,}BEITRAG-{3,}\s*$", antwort)
+                 if t.strip() and t.strip().startswith("#")]
+        # Weniger als zwei brauchbare Teile heisst: die Aufteilung ist misslungen.
+        if len(teile) < 2:
+            print(f"[selbstheilung] Beitrag {idx}: Aufteilung misslungen "
+                  f"({len(teile)} Teile) — unverändert.", file=sys.stderr)
+            continue
+        # Sicherung gegen Textverlust: die Teile muessen zusammen ungefaehr so
+        # viel Substanz haben wie das Original (Umformulieren ja, Kuerzen nein).
+        if sum(len(t.split()) for t in teile) < 0.7 * len(original.split()):
+            print(f"[selbstheilung] Beitrag {idx}: Aufteilung verliert Text — unverändert.",
+                  file=sys.stderr)
+            continue
+
+        neue = []
+        for teil in teile:
+            kopie = dict(section)
+            kopie["content"] = teil
+            kopie.pop("sources", None)
+            neue.append(kopie)
+        sections[idx - 1:idx] = neue
+        geteilt.append({"index": idx, "title": bundle.get("title"),
+                        "parts": len(neue), "reason": bundle.get("reason")})
+        print(f"[selbstheilung] Beitrag {idx} in {len(neue)} eigenständige "
+              f"Beiträge geteilt.", file=sys.stderr)
+    return geteilt
 
 
 def run_content_check_via_claude_cli(
