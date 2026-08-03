@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 from briefing_core import (
+    correct_podcast_concern,
     _annotate_section_progress_markers,
     _discover_weekly_briefing_texts,
     _LOCAL_META_MIRROR_DIR,
@@ -199,6 +200,7 @@ _DRAFT_DEFAULTS = {
     "quality_check_enabled": True,
     "special_topics_text": "",
     "auto_briefing_when_done": False,
+    "auto_feedly_before_briefing": False,
 }
 
 
@@ -2271,11 +2273,26 @@ with _fl_col1:
              "(auch hinter Paywall über dein Zeitungs-Login) und hängt sie unten an.",
     )
 with _fl_col2:
+    st.checkbox(
+        "🔗 In die Auto-Kette: nach den Podcasts automatisch holen, dann Briefing",
+        key="auto_feedly_before_briefing",
+        on_change=_save_draft,
+        help="Für deinen üblichen Ablauf: im Feedly alles markieren, unten die Podcast-Runde "
+             "starten, weggehen. Sobald die letzte Zusammenfassung fertig ist, werden die "
+             "Feedly-Artikel geholt und danach startet das Briefing — ohne weiteren Klick. "
+             "Braucht zusätzlich das Häkchen „Briefing automatisch starten“ bei den Podcasts.",
+    )
     _fl_note = st.session_state.get("_feedly_note") or ""
     if _fl_note:
         st.caption(_fl_note)
 
-if _fl_clicked:
+# Zwischenschritt der Auto-Kette: Podcasts sind fertig, jetzt Feedly holen und
+# danach das Briefing zünden. Läuft genau einmal, dann ist die Marke wieder weg.
+_fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
+if _fl_auto:
+    st.info("📥 Auto-Kette: hole die Feedly-Artikel, danach startet das Briefing…")
+
+if _fl_clicked or _fl_auto:
     _fl_status = st.status("Feedly-Merkliste wird geholt …", expanded=True)
     try:
         import feedly_fetch as _feedly
@@ -2327,6 +2344,11 @@ if _fl_clicked:
                 st.caption(f"· {_p['title'][:75]} — {_p['problem']}")
             st.caption("Neu anmelden:  `python3 feedly_fetch.py --login`")
 
+        if _fl_auto:
+            # Kette weiterreichen — auch wenn nichts Neues dabei war, soll das
+            # Briefing laufen (die Podcasts sind ja fertig).
+            st.session_state["_auto_run_briefing"] = True
+            st.rerun()
         if _fl_ok:
             st.rerun()
     except Exception as _fl_exc:
@@ -2340,6 +2362,12 @@ if _fl_clicked:
             st.caption("Dort bei Feedly, GEA und SWP/Tagblatt anmelden, Fenster schließen — fertig.")
         else:
             st.error(f"Feedly-Abruf fehlgeschlagen: {_fl_text}")
+        if _fl_auto:
+            # Kette nicht hängen lassen: das Briefing läuft trotzdem, nur ohne
+            # die Feedly-Artikel. Besser ein Briefing ohne Nachschub als keins.
+            st.session_state["_auto_run_briefing"] = True
+            st.warning("Die Auto-Kette macht ohne die Feedly-Artikel weiter — "
+                       "das Briefing startet gleich.")
 
 paywall_text = st.text_area(
     "Paywall-Artikel",
@@ -2795,6 +2823,15 @@ def _maybe_autostart_briefing(source: str):
         return
     if (st.session_state.get("apple_round") or st.session_state.get("_round_jobs")
             or st.session_state.get("whisper_running") or st.session_state.get("whisper_queue")):
+        return
+    # 📥 Optionaler Zwischenschritt: erst die Feedly-Merkliste holen, dann zünden.
+    # Deckt den typischen Ablauf ab: im Feedly markieren, Podcast-Runde starten,
+    # weggehen — und alles Weitere passiert von selbst.
+    if st.session_state.get("auto_feedly_before_briefing"):
+        st.session_state["_auto_feedly_pending"] = True
+        st.session_state["_podcast_inbox_last_msg"] = (
+            f"🚀 Podcasts fertig ({source}) — hole jetzt die Feedly-Artikel, "
+            f"danach startet das Briefing…")
         return
     st.session_state["_auto_run_briefing"] = True
     st.session_state["_podcast_inbox_last_msg"] = f"🚀 Podcasts fertig ({source}) — das Briefing startet automatisch…"
@@ -3635,8 +3672,9 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                     _txt = f"Podcast-Episode: {_t['title']}\n\n{_txt}"
                 _r = summarize_podcast_transcript_via_cli(_txt)
                 if _r.get("ok"):
-                    return (_t, _tn, _r["summary"], None, _r.get("concerns") or [])
-                return (_t, _tn, None, str(_r.get("error", "?"))[:120], [])
+                    return (_t, _tn, _r["summary"], None,
+                            _r.get("concerns") or [], _r.get("transcript") or "")
+                return (_t, _tn, None, str(_r.get("error", "?"))[:120], [], "")
 
             from concurrent.futures import ThreadPoolExecutor as _TtmlPool, as_completed as _ttml_done
             _stat2.caption(f"0/{len(_ttml_selected)} fertig — zwei Folgen laufen parallel (~1-3 Min pro Folge)…")
@@ -3645,15 +3683,16 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                 _tfuts = {_tpx.submit(_process_ttml, _t): _t for _t in _ttml_selected}
                 for _tf in _ttml_done(_tfuts):
                     try:
-                        _t, _tn, _sumt, _errt, _tconc = _tf.result()
+                        _t, _tn, _sumt, _errt, _tconc, _ttrans = _tf.result()
                     except Exception as _tex:
-                        _t, _tn, _sumt, _errt, _tconc = _tfuts[_tf], "?", None, str(_tex)[:120], []
+                        _t, _tn, _sumt, _errt, _tconc, _ttrans = _tfuts[_tf], "?", None, str(_tex)[:120], [], ""
                     _tdn += 1
                     if _sumt:
                         _new_sums.append(_sumt)
                         if _tconc:
                             _pc = st.session_state.get("_podcast_concerns") or []
-                            _pc.append({"title": _tn, "concerns": _tconc})
+                            _pc.append({"title": _tn, "concerns": _tconc,
+                                        "summary": _sumt, "transcript": _ttrans})
                             st.session_state["_podcast_concerns"] = _pc
                         mark_ttml_imported([_t["path"]])
                     else:
@@ -3700,7 +3739,9 @@ def _round_jobs_collector():
             st.session_state["podcast_text_pending_value"] = combine_podcast_field(_base, [_r["summary"]])
             if _r.get("concerns"):
                 _pc = st.session_state.get("_podcast_concerns") or []
-                _pc.append({"title": _j.get("title", "Podcast"), "concerns": _r["concerns"]})
+                _pc.append({"title": _j.get("title", "Podcast"), "concerns": _r["concerns"],
+                            "summary": _r.get("summary") or "",
+                            "transcript": _r.get("transcript") or ""})
                 st.session_state["_podcast_concerns"] = _pc
             if _j.get("path"):
                 mark_ttml_imported([_j["path"]])
@@ -3835,15 +3876,50 @@ if _pconc:
     with st.expander(f"🔎 {_n_conc} möglicher Fakten-Hinweis in {len(_pconc)} Zusammenfassung(en) — kurz prüfen", expanded=True):
         st.caption("Der Faktencheck vergleicht jede Zusammenfassung mit ihrem Transkript und meldet mögliche Widersprüche. "
                    "Es wurde NICHTS geändert — schau die Stelle im Zweifel selbst an (Fehlalarme möglich).")
-        for _e in _pconc:
+        for _ei, _e in enumerate(_pconc):
             # Titel bereinigen: die Modell-Antwort brachte ** und $-Zeichen mit,
             # die Streamlit sonst als Fettschrift bzw. Formelsatz rendert.
             st.markdown(f"**{_clean_ui_text(_e['title'], 70)}**")
-            for _c in _e["concerns"]:
-                st.markdown(f"  ⚠️ {_clean_ui_text(_c, 400)}")
+            _hat_quelle = bool(_e.get("transcript") and _e.get("summary"))
+            for _ci, _c in enumerate(_e["concerns"]):
+                _cc1, _cc2 = st.columns([5, 1])
+                with _cc1:
+                    st.markdown(f"  ⚠️ {_clean_ui_text(_c, 400)}")
+                with _cc2:
+                    # 🔧 Nachbessern auf Zuruf: der automatische Check ändert nur,
+                    # was er belegen kann. Hier prüft er GEZIELT diese eine Stelle
+                    # nochmal gegen das Transkript — ebenfalls belegpflichtig.
+                    if _hat_quelle and st.button("✏️ Korrigieren",
+                                                 key=f"fixconc_{_ei}_{_ci}",
+                                                 use_container_width=True):
+                        with st.spinner("Prüfe die Stelle im Transkript…"):
+                            _res = correct_podcast_concern(
+                                _e["summary"], _e["transcript"], _c)
+                        if _res.get("changed"):
+                            _alt_feld = st.session_state.get("podcast_text") or ""
+                            if _e["summary"] in _alt_feld:
+                                st.session_state["podcast_text_pending_value"] = \
+                                    _alt_feld.replace(_e["summary"], _res["text"], 1)
+                                _e["summary"] = _res["text"]
+                                _e["concerns"] = [x for x in _e["concerns"] if x != _c]
+                                st.session_state["_podcast_concerns"] = [
+                                    x for x in _pconc if x.get("concerns")]
+                                st.session_state["_conc_fix_msg"] = (
+                                    f"✅ Korrigiert: „{_res.get('war','')[:60]}“ → "
+                                    f"„{_res.get('jetzt','')[:60]}“ (Beleg: „{_res['beleg'][:70]}…“)")
+                                st.rerun()
+                            else:
+                                st.warning("Die Zusammenfassung steht so nicht mehr im Feld — "
+                                           "vermutlich schon bearbeitet. Nichts geändert.")
+                        else:
+                            st.info(f"Nichts geändert — {_res.get('note', 'kein Beleg gefunden')}")
+            if not _hat_quelle:
+                st.caption("　(Transkript nicht mehr im Speicher — Korrigieren nur direkt nach dem Zusammenfassen möglich.)")
         if st.button("✓ Hinweise gesehen — ausblenden", key="dismiss_podcast_concerns"):
             st.session_state["_podcast_concerns"] = []
             st.rerun()
+if st.session_state.get("_conc_fix_msg"):
+    st.success(st.session_state.pop("_conc_fix_msg"))
 st.markdown(
     f"<div class='briefing-url-meta'><span class='briefing-url-count'>Aktuell erkannt: <strong>{len(_podcast_blocks)}</strong> {'Blöcke' if len(_podcast_blocks) != 1 else 'Block'}</span></div>",
     unsafe_allow_html=True,

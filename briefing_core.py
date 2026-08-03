@@ -15010,7 +15010,11 @@ def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str
     if _concerns:
         print(f"[podcast-faktencheck] {len(_concerns)} Hinweis(e): {_concerns}", file=sys.stderr)
     return {"ok": True, "summary": summary, "error": None, "concerns": _concerns,
-            "fixes_applied": _applied, "elapsed_seconds": time.time() - t0}
+            "fixes_applied": _applied, "elapsed_seconds": time.time() - t0,
+            # Transkript NUR mitgeben, wenn es offene Hinweise gibt — dann kann der
+            # Korrigieren-Knopf spaeter belegbasiert nachbessern, ohne die Folge neu
+            # laden zu muessen. Ohne Hinweise waere es nur Ballast im Sitzungsspeicher.
+            "transcript": (cleaned[:80000] if _concerns else "")}
 
 
 _RAW_TRANSCRIPT_MIN_CHARS = 4000  # ohne Endmarker + länger als das = rohes Transkript
@@ -17070,6 +17074,95 @@ def repair_bundled_sections(sections: List[dict], bundles: List[dict],
         print(f"[selbstheilung] Beitrag {idx} in {len(neue)} eigenständige "
               f"Beiträge geteilt.", file=sys.stderr)
     return geteilt
+
+
+_CONCERN_FIX_PROMPT = """Du prüfst EINEN gemeldeten Verdacht an einer Podcast-Zusammenfassung und korrigierst NUR ihn.
+
+Du bekommst: das Transkript der Folge, die aktuelle Zusammenfassung und einen Hinweis, an welcher Stelle etwas abweichen könnte.
+
+AUFGABE
+1. Suche im TRANSKRIPT die Stelle, um die es im Hinweis geht.
+2. Entscheide: Ist die Zusammenfassung dort falsch?
+3. Falls ja: Gib die Zusammenfassung KOMPLETT zurück, aber mit dieser einen Stelle korrigiert.
+
+HARTE REGELN
+- Ändere AUSSCHLIESSLICH die im Hinweis genannte Stelle. Jeder andere Satz bleibt Wort für Wort gleich.
+- Die Korrektur muss durch ein wörtliches Zitat aus dem Transkript belegt sein.
+- Findest du keinen Beleg, oder ist die Zusammenfassung korrekt: aenderung = false.
+- Nichts hinzuerfinden, nichts kürzen, nichts umformulieren.
+
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Vorrede:
+{"aenderung": true, "beleg": "<wörtliches Zitat aus dem Transkript>", "war": "<falsche Stelle>", "jetzt": "<korrigierte Stelle>", "text": "<komplette Zusammenfassung mit der Korrektur>"}
+oder
+{"aenderung": false, "grund": "<kurz: kein Beleg gefunden / Zusammenfassung ist korrekt>"}"""
+
+
+def correct_podcast_concern(summary: str, transcript: str, concern: str,
+                            cli_path: Optional[str] = None,
+                            model: str = "sonnet") -> dict:
+    """Bessert EINEN gemeldeten Faktenverdacht in einer Podcast-Zusammenfassung nach.
+
+    Der automatische Faktencheck korrigiert nur, was er mit einem woertlichen Zitat
+    belegen kann (`fixes`). Alles andere wird als Hinweis gemeldet und bleibt
+    unveraendert — richtig so, aber dann stand man davor und konnte nichts tun.
+    Diese Funktion ist der Knopf dahinter: auf Zuruf, einzeln, belegpflichtig.
+
+    Rueckgabe: {"ok", "changed", "text", "war", "jetzt", "beleg", "note"}
+    """
+    cli = cli_path or _locate_claude_cli()
+    if not cli:
+        return {"ok": False, "changed": False, "note": "Claude CLI nicht gefunden."}
+    if not (summary or "").strip() or not (transcript or "").strip():
+        return {"ok": False, "changed": False, "note": "Transkript nicht mehr vorhanden."}
+
+    payload = (f"=== HINWEIS ===\n{concern}\n\n"
+               f"=== AKTUELLE ZUSAMMENFASSUNG ===\n{summary}\n\n"
+               f"=== TRANSKRIPT ===\n{transcript[:80000]}")
+    try:
+        sr = _run_claude_cli_subprocess_streaming(
+            [cli, "--print", "--output-format", "text", "--model", model,
+             "--dangerously-skip-permissions", "--effort", cli_effort("pruefen"),
+             "--system-prompt", _CONCERN_FIX_PROMPT],
+            payload, timeout_seconds=300, expected_duration_s=40.0,
+            label="Faktenhinweis prüfen")
+    except Exception as exc:
+        return {"ok": False, "changed": False, "note": f"Prüfung fehlgeschlagen: {exc}"}
+    if not sr.get("ok") or sr.get("returncode") != 0:
+        return {"ok": False, "changed": False, "note": "Prüfung lieferte kein Ergebnis."}
+
+    raw = sr.get("stdout") or ""
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    data = (_loads_llm_json(m.group(0)) or {}) if m else {}
+    if not data:
+        # Der haeufigste Fall ist ohnehin „nichts zu aendern" — wenn das aus dem
+        # Rohtext hervorgeht, ist das eine Antwort und kein Fehler.
+        if re.search(r'"aenderung"\s*:\s*false', raw) or "UNVER" in raw.upper():
+            return {"ok": True, "changed": False,
+                    "note": "Kein Beleg im Transkript — Zusammenfassung bleibt."}
+        return {"ok": False, "changed": False, "note": "Antwort nicht lesbar."}
+    if not data.get("aenderung"):
+        return {"ok": True, "changed": False,
+                "note": str(data.get("grund") or "Kein Beleg — Zusammenfassung bleibt.")[:200]}
+
+    neu = (data.get("text") or "").strip()
+    beleg = (data.get("beleg") or "").strip()
+
+    # Belegpflicht: Das Zitat muss wirklich im Transkript stehen. Sonst waere es
+    # nur eine zweite Behauptung — genau das soll der Knopf ja nicht tun.
+    def _flach(s):
+        return re.sub(r"[^a-zäöüß0-9]+", " ", (s or "").lower()).strip()
+    if len(beleg) < 12 or _flach(beleg)[:120] not in _flach(transcript):
+        return {"ok": True, "changed": False,
+                "note": "Beleg steht so nicht im Transkript — nichts geändert."}
+    # Der Text darf sich nur punktuell unterscheiden, nicht neu geschrieben sein.
+    aehnlich = SequenceMatcher(None, summary, neu).ratio()
+    if not neu or aehnlich < 0.80:
+        return {"ok": True, "changed": False,
+                "note": f"Vorschlag weicht zu stark ab ({aehnlich:.0%} identisch) — verworfen."}
+
+    return {"ok": True, "changed": True, "text": neu, "beleg": beleg,
+            "war": str(data.get("war") or "")[:200], "jetzt": str(data.get("jetzt") or "")[:200],
+            "note": f"{aehnlich:.0%} des Textes unverändert."}
 
 
 def run_content_check_via_claude_cli(
