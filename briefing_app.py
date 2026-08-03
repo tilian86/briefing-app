@@ -6230,6 +6230,32 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             st.success(f"🧠 {_sp_main['special_done']} Sonderthema/-themen recherchiert und als eigener Block eingewoben.")
                         if _sp_failed:
                             st.warning(f"🧠 {len(_sp_failed)} Sonderthema/-themen fehlgeschlagen — bleiben in der Box für den nächsten Lauf.")
+                    # 📊 Qualitätswerte als Beileger neben die TXT schreiben.
+                    # Bisher standen sie nur im Protokoll — das war nach dem
+                    # nächsten App-Neustart weg. Ohne Verlauf lässt sich nicht
+                    # beurteilen, ob eine Änderung wirklich etwas gebracht hat.
+                    for _md, _mp, _mr in _multi_results:
+                        _sc = (_mr or {}).get("self_check")
+                        _txtp = ((_mr or {}).get("artifacts") or {}).get("eleven_txt")
+                        if not (_sc and _txtp):
+                            continue
+                        try:
+                            _qp = str(_txtp).replace("_eleven-reader.txt", "_qualitaet.json")
+                            with open(_qp, "w", encoding="utf-8") as _qf:
+                                json.dump({
+                                    "datei": os.path.basename(str(_txtp)),
+                                    "variante": str(_md),
+                                    "score": _sc.get("score"),
+                                    "score_vorher": _sc.get("score_before"),
+                                    "repariert": _sc.get("repaired"),
+                                    "kriterien": [{"key": c.get("key"), "label": c.get("label"),
+                                                   "score": c.get("score"),
+                                                   "issues": c.get("issues") or []}
+                                                  for c in (_sc.get("criteria") or [])],
+                                }, _qf, ensure_ascii=False, indent=1)
+                        except Exception:
+                            pass
+
                     for _md, _mp, _mr in _multi_results:
                         if str(_md).startswith("WhatsApp"):
                             st.success(f"📱 WhatsApp-Lese-PDF bereit zum Verschicken: `{_mp.name}`")

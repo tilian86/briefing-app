@@ -16736,8 +16736,16 @@ def find_bundled_sections(sections: List[dict]) -> List[dict]:
 
         # Verdacht: viele benannte Quellen auf wenig Raum. Nur bei KURZEN
         # Beiträgen — ein 700-Wörter-Podcast zitiert naturgemäß viele Namen.
-        namen = set(re.findall(r"[„\"»]([^„\"»«]{4,45})[\"“«]", body))
-        namen |= {m for m in re.findall(r"\bPodcast\s+([A-ZÄÖÜ][\w-]{3,25})", body)}
+        # 03.08.: Frueher zaehlten ALLE Anfuehrungszeichen als „Quellen" — bei
+        # Ariana Grande also Songtitel, und „Big Apple" wurde fuenfmal als fuenf
+        # Quellen gezaehlt. Jetzt zaehlen nur echte Quellenangaben („laut X",
+        # „wie X berichtet"), und jeder Name nur einmal.
+        namen = set()
+        for muster in (r"\blaut\s+(?:der\s+|dem\s+|den\s+)?([A-ZÄÖÜ][\w.\-]{2,24}(?:\s+[A-ZÄÖÜ][\w.\-]{2,24})?)",
+                       r"\bwie\s+(?:die\s+|der\s+|das\s+)?([A-ZÄÖÜ][\w.\-]{2,24})\s+(?:berichtet|schreibt|meldet)",
+                       r"\bnach\s+Angaben\s+(?:von\s+|der\s+|des\s+)?([A-ZÄÖÜ][\w.\-]{2,24})",
+                       r"\bim\s+Podcast\s+([A-ZÄÖÜ][\w.\-]{3,25})"):
+            namen |= {m.strip() for m in re.findall(muster, body) if m.strip()}
         if woerter < 320 and len(namen) >= 4 and woerter / max(1, len(namen)) < BUENDEL_MIN_WOERTER:
             funde.append({
                 "index": idx, "title": titel, "words": woerter,
@@ -16830,7 +16838,12 @@ def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None
             ohne_titel.append(idx)
         else:
             titel.setdefault(t.lower(), []).append(idx)
-        if "Was bleibt" not in content:
+        # 03.08.: 1:1 uebernommene Podcast-Zusammenfassungen haben bauartbedingt
+        # kein „Was bleibt" — sie werden absichtlich unveraendert durchgereicht.
+        # Ohne diese Ausnahme bestrafte die Pruefung genau den Podcast-Modus,
+        # der Standard ist (21 von 115 Beitraegen, alle Podcasts).
+        _verbatim = bool(s.get("_verbatim")) or "Ende der Podcastzusammenfassung" in content
+        if "Was bleibt" not in content and not _verbatim:
             ohne_fazit.append(idx)
     dubletten = [f"Beiträge {v} tragen denselben Titel" for v in titel.values() if len(v) > 1]
     struktur_issues = dubletten[:]
