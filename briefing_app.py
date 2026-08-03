@@ -2767,6 +2767,43 @@ def _briefing_worker(cfg: dict, status: dict):
             except Exception:
                 pass
 
+        # 📊 Qualitätswerte als Beileger neben die TXT sichern. Standen bisher nur
+        # im Protokoll — und das ist nach dem nächsten App-Neustart weg.
+        for _e in results:
+            _sc, _tp = _e.get("self_check"), _e.get("eleven_txt")
+            if not (_sc and _tp):
+                continue
+            try:
+                with open(str(_tp).replace("_eleven-reader.txt", "_qualitaet.json"),
+                          "w", encoding="utf-8") as _qf:
+                    json.dump({"datei": os.path.basename(str(_tp)), "variante": _e.get("label"),
+                               "score": _sc.get("score"), "score_vorher": _sc.get("score_before"),
+                               "repariert": _sc.get("repaired"),
+                               "kriterien": [{"key": c.get("key"), "label": c.get("label"),
+                                              "score": c.get("score"), "issues": c.get("issues") or []}
+                                             for c in (_sc.get("criteria") or [])]},
+                              _qf, ensure_ascii=False, indent=1)
+            except Exception:
+                pass
+
+        # 📥 Verarbeitete Artikel aus der Feedly-Merkliste entfernen — ERST HIER,
+        # nach einem erfolgreichen Lauf. 03.08.: Dieser Block stand vorher im
+        # Legacy-Zweig `if False:` und lief deshalb nie; die Merkliste wuchs auf
+        # 86 Einträge an, die beim nächsten Abruf erneut gekommen wären.
+        if any(_e.get("ok") for _e in results) and not _cancelled():
+            try:
+                import feedly_fetch as _feedly_done
+                _pend = _feedly_done.load_pending()
+                if _pend["entry_ids"]:
+                    _upd(step=f"📥 Entferne {len(_pend['entry_ids'])} erledigte Artikel aus der Feedly-Merkliste…",
+                         ratio=0.985)
+                    _n_weg = _feedly_done.mark_done(_pend["entry_ids"], _pend["user_id"])
+                    if _n_weg:
+                        _feedly_done.clear_pending()
+                    status["feedly_removed"] = _n_weg
+            except Exception as _flex:
+                status["feedly_error"] = str(_flex)[:160]
+
         try:
             _upd(step="🪙 Token-Bilanz wird erstellt…", ratio=0.99)
             status["tokens"] = _sum_cli_usage(cfg["ts_iso"], datetime.datetime.now().isoformat())
@@ -5859,6 +5896,11 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             _render_quality_score(_re9.get("self_check"))
         if _job_done.get("cleanup"):
             st.caption(f"🗑️ {_job_done['cleanup']} alte Bibliothekseinträge aufgeräumt.")
+        if _job_done.get("feedly_removed"):
+            st.caption(f"📥 {_job_done['feedly_removed']} verarbeitete Artikel aus der Feedly-Merkliste entfernt.")
+        if _job_done.get("feedly_error"):
+            st.caption(f"📥 Feedly-Merkliste nicht geleert ({_job_done['feedly_error']}) — "
+                       "Artikel bleiben stehen, nichts verloren.")
         _tok = _job_done.get("tokens")
         if _tok:
             _bm = _tok.get("by_model") or {}
@@ -6230,32 +6272,6 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             st.success(f"🧠 {_sp_main['special_done']} Sonderthema/-themen recherchiert und als eigener Block eingewoben.")
                         if _sp_failed:
                             st.warning(f"🧠 {len(_sp_failed)} Sonderthema/-themen fehlgeschlagen — bleiben in der Box für den nächsten Lauf.")
-                    # 📊 Qualitätswerte als Beileger neben die TXT schreiben.
-                    # Bisher standen sie nur im Protokoll — das war nach dem
-                    # nächsten App-Neustart weg. Ohne Verlauf lässt sich nicht
-                    # beurteilen, ob eine Änderung wirklich etwas gebracht hat.
-                    for _md, _mp, _mr in _multi_results:
-                        _sc = (_mr or {}).get("self_check")
-                        _txtp = ((_mr or {}).get("artifacts") or {}).get("eleven_txt")
-                        if not (_sc and _txtp):
-                            continue
-                        try:
-                            _qp = str(_txtp).replace("_eleven-reader.txt", "_qualitaet.json")
-                            with open(_qp, "w", encoding="utf-8") as _qf:
-                                json.dump({
-                                    "datei": os.path.basename(str(_txtp)),
-                                    "variante": str(_md),
-                                    "score": _sc.get("score"),
-                                    "score_vorher": _sc.get("score_before"),
-                                    "repariert": _sc.get("repaired"),
-                                    "kriterien": [{"key": c.get("key"), "label": c.get("label"),
-                                                   "score": c.get("score"),
-                                                   "issues": c.get("issues") or []}
-                                                  for c in (_sc.get("criteria") or [])],
-                                }, _qf, ensure_ascii=False, indent=1)
-                        except Exception:
-                            pass
-
                     for _md, _mp, _mr in _multi_results:
                         if str(_md).startswith("WhatsApp"):
                             st.success(f"📱 WhatsApp-Lese-PDF bereit zum Verschicken: `{_mp.name}`")
@@ -6298,21 +6314,6 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                         except Exception as _rex:
                             st.warning(f"🎧 ElevenReader-Upload übersprungen: {_rex}")
 
-                    # 📥 Erst JETZT — nach erfolgreichem Briefing — die verarbeiteten
-                    # Artikel aus der Feedly-Merkliste entfernen. Bricht ein Lauf ab,
-                    # bleibt die Merkliste vollstaendig erhalten.
-                    if _multi_results:
-                        try:
-                            import feedly_fetch as _feedly_done
-                            _fl_pending = _feedly_done.load_pending()
-                            _fl_ids = _fl_pending["entry_ids"]
-                            if _fl_ids:
-                                with st.spinner(f"📥 Entferne {len(_fl_ids)} erledigte Artikel aus der Feedly-Merkliste…"):
-                                    _fl_removed = _feedly_done.mark_done(_fl_ids, _fl_pending["user_id"])
-                                _feedly_done.clear_pending()
-                                st.caption(f"📥 {_fl_removed} Artikel aus der Feedly-Merkliste entfernt — Liste ist wieder frei.")
-                        except Exception as _flex:
-                            st.caption(f"📥 Feedly-Merkliste nicht geleert ({_flex}) — Artikel bleiben stehen, kein Verlust.")
                     # Zusammengeführte Doppel-Themen transparent zeigen
                     _merged_n = cli_result.get("merged_topics", 0) or 0
                     if _merged_n:
