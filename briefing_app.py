@@ -264,8 +264,8 @@ _CLEANUP_EXTENSIONS = (".pdf", ".txt", ".epub")
 # Abgleich "war das schon drin?") und bleiben deutlich laenger.
 _CLEANUP_RETENTION_BY_EXT = {".pdf": 7, ".epub": 7, ".txt": 21}
 # Der lokale Textspiegel ist klein (~100 KB je Briefing) und meine einzige
-# verlaessliche Quelle — der wird ein Jahr lang gehalten.
-_MIRROR_RETENTION_DAYS = 365
+# verlaessliche Quelle — der wird ein volles Jahr gehalten (366 = Schaltjahr-Puffer).
+_MIRROR_RETENTION_DAYS = 366
 _CLEANUP_FILENAME_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
 
