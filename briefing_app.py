@@ -2385,6 +2385,51 @@ with _fl_col2:
 _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
 
 
+PODCAST_ROUND_LOG = _APP_DIR / ".briefing_podcast_round.json"
+
+
+def _round_log_write(eintrag: dict) -> None:
+    """Haelt fest, was aus jeder angestossenen Folge wurde — dauerhaft.
+    05.08.: Bisher stand das nur fluechtig in der Oberflaeche; nach dem naechsten
+    Neuaufbau war nicht mehr nachvollziehbar, welche Folgen angekommen sind."""
+    try:
+        daten = _round_log_read()
+        daten["eintraege"] = [e for e in daten.get("eintraege", [])
+                              if e.get("titel") != eintrag.get("titel")]
+        daten["eintraege"].append(eintrag)
+        daten["stand"] = datetime.datetime.now().isoformat()
+        PODCAST_ROUND_LOG.write_text(json.dumps(daten, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _round_log_read() -> dict:
+    try:
+        return json.loads(PODCAST_ROUND_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        return {"eintraege": [], "stand": None}
+
+
+def _round_log_reset() -> None:
+    try:
+        PODCAST_ROUND_LOG.write_text(json.dumps(
+            {"eintraege": [], "stand": datetime.datetime.now().isoformat()},
+            ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _conc_fix_worker(job: dict, summary: str, transcript: str, concern):
+    """Faktencheck-Korrektur im HINTERGRUND. Kein st.* im Thread.
+    05.08.: Vorher blockierte der Klick auf 'Korrigieren' die ganze App."""
+    try:
+        job["res"] = correct_podcast_concern(summary, transcript, concern)
+    except Exception as exc:
+        job["error"] = str(exc)
+    finally:
+        job["done"] = True
+
+
 def _pc_preview_worker(job: dict, kind: str):
     """Pocket-Casts-Vorschau im HINTERGRUND. Kein st.* im Thread.
     05.08.: Vorher lief das im Vordergrund — ein Klick woanders (Florian stellte
@@ -3746,6 +3791,18 @@ def _fragment_pocket_casts():
             if _sel_idx and st.button(f"✂️ {len(_sel_idx)} holen & zusammenfassen", key="pc_go_btn", type="primary", use_container_width=True):
                 import pocketcasts_fetch as _pcf
                 _chosen = [_pc_preview[i] for i in _sel_idx]
+                # Neue Runde: Protokoll frisch anlegen, alle Beteiligten eintragen —
+                # so ist hinterher lueckenlos sichtbar, was aus jeder Folge wurde.
+                _round_log_reset()
+                for _t9 in _chosen:
+                    _n9 = (f"{_t9.get('podcast_title')}: {_t9['title']}"
+                           if _t9.get("podcast_title") else _t9["title"])[:70]
+                    _round_log_write({"titel": _n9, "status": "laeuft"})
+                for _t9 in _pc_preview:
+                    if not _t9.get("has_transcript"):
+                        _n9 = (f"{_t9.get('podcast_title')}: {_t9['title']}"
+                               if _t9.get("podcast_title") else _t9["title"])[:70]
+                        _round_log_write({"titel": _n9, "status": "kein_transkript"})
                 _pc_submit_and_summarize(_chosen)
                 # Markierung erfolgt nach Erfolg, nicht beim Abschicken.
                 for _k in range(len(_pc_preview)):
@@ -3961,10 +4018,14 @@ def _round_jobs_collector():
             _bgs = st.session_state.get("_bg_status") or []
             _bgs.append({"t": (_j.get("title") or "Podcast")[:55], "s": "✅"})
             st.session_state["_bg_status"] = _bgs
+            _round_log_write({"titel": (_j.get("title") or "Podcast")[:70],
+                              "status": "ok", "woerter": len((_r.get("summary") or "").split())})
         else:
             _bgs = st.session_state.get("_bg_status") or []
             _bgs.append({"t": (_j.get("title") or "Podcast")[:55], "s": "❌"})
             st.session_state["_bg_status"] = _bgs
+            _round_log_write({"titel": (_j.get("title") or "Podcast")[:70],
+                              "status": "fehler", "grund": str(_r.get("error", "?"))[:120]})
             st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [
                 f"{_j['title'][:40]}: {str(_r.get('error', '?'))[:100]}"]
             # 🛟 DATENVERLUST-SCHUTZ: gescheiterte Einwurf-Zusammenfassung (z.B. Limit) →
@@ -4006,6 +4067,29 @@ def _round_jobs_collector():
 
 
 _round_jobs_collector()
+
+# 📋 Dauerhafte Runden-Uebersicht: bleibt stehen, bis die naechste Runde startet.
+_rl = _round_log_read()
+if _rl.get("eintraege"):
+    _ok9 = [e for e in _rl["eintraege"] if e.get("status") == "ok"]
+    _err9 = [e for e in _rl["eintraege"] if e.get("status") == "fehler"]
+    _lauf9 = [e for e in _rl["eintraege"] if e.get("status") == "laeuft"]
+    _kt9 = [e for e in _rl["eintraege"] if e.get("status") == "kein_transkript"]
+    _kopf = (f"📋 Letzte Podcast-Runde — ✅ {len(_ok9)} eingefügt"
+             + (f" · 🔄 {len(_lauf9)} offen" if _lauf9 else "")
+             + (f" · ❌ {len(_err9)} fehlgeschlagen" if _err9 else "")
+             + (f" · ⏭️ {len(_kt9)} ohne Transkript" if _kt9 else ""))
+    with st.expander(_kopf, expanded=bool(_err9 or _lauf9)):
+        st.caption("Bleibt stehen, bis du die nächste Runde startest — damit du jederzeit "
+                   "nachsehen kannst, was aus jeder Folge geworden ist.")
+        for _e9 in _ok9:
+            st.caption(f"✅ {_e9['titel']}　({_e9.get('woerter', '?')} Wörter)")
+        for _e9 in _lauf9:
+            st.caption(f"🔄 {_e9['titel']}　— läuft noch oder abgebrochen")
+        for _e9 in _err9:
+            st.caption(f"❌ {_e9['titel']}　— {_e9.get('grund', '?')}")
+        for _e9 in _kt9:
+            st.caption(f"⏭️ {_e9['titel']}　— kein Transkript verfügbar")
 
 if st.session_state.get("_podcast_inbox_last_msg"):
     st.success(st.session_state.pop("_podcast_inbox_last_msg"))
@@ -4074,6 +4158,42 @@ if _pconc:
     with st.expander(f"🔎 {_n_conc} möglicher Fakten-Hinweis in {len(_pconc)} Zusammenfassung(en) — kurz prüfen", expanded=True):
         st.caption("Der Faktencheck vergleicht jede Zusammenfassung mit ihrem Transkript und meldet mögliche Widersprüche. "
                    "Es wurde NICHTS geändert — schau die Stelle im Zweifel selbst an (Fehlalarme möglich).")
+
+        # Läuft gerade eine Korrektur im Hintergrund? Ergebnis einspielen, sobald da.
+        _cfj = st.session_state.get("_conc_fix_job")
+        if _cfj and not _cfj.get("done"):
+            st.info("✏️ Prüfe die Stelle im Transkript — läuft im Hintergrund, die App bleibt bedienbar.")
+        elif _cfj and _cfj.get("done") and not _cfj.get("applied"):
+            _cfj["applied"] = True
+            _res = _cfj.get("res") or {}
+            _ziel = _pconc[_cfj["ei"]] if _cfj["ei"] < len(_pconc) else None
+            if _cfj.get("error"):
+                st.warning(f"Korrektur fehlgeschlagen: {str(_cfj['error'])[:120]}")
+            elif _res.get("changed") and _ziel:
+                # Erst den noch NICHT eingespielten Stand nehmen: laufen im
+                # Hintergrund noch Zusammenfassungen, stehen die ausschließlich in
+                # podcast_text_pending_value. Wer stattdessen podcast_text nimmt
+                # und zurückschreibt, wirft sie weg — genau so verschwanden am
+                # 05.08. vier von achtzehn Folgen.
+                _alt_feld = st.session_state.get("podcast_text_pending_value")
+                if _alt_feld is None:
+                    _alt_feld = st.session_state.get("podcast_text") or ""
+                if _ziel["summary"] in _alt_feld:
+                    st.session_state["podcast_text_pending_value"] = \
+                        _alt_feld.replace(_ziel["summary"], _res["text"], 1)
+                    _c_weg = _ziel["concerns"][_cfj["ci"]] if _cfj["ci"] < len(_ziel["concerns"]) else None
+                    _ziel["summary"] = _res["text"]
+                    _ziel["concerns"] = [x for x in _ziel["concerns"] if x != _c_weg]
+                    st.session_state["_podcast_concerns"] = [x for x in _pconc if x.get("concerns")]
+                    st.session_state["_conc_fix_msg"] = (
+                        f"✅ Korrigiert: „{_res.get('war','')[:60]}“ → "
+                        f"„{_res.get('jetzt','')[:60]}“ (Beleg: „{str(_res.get('beleg',''))[:70]}…“)")
+                    st.rerun(scope="app")
+                else:
+                    st.warning("Die Zusammenfassung steht so nicht mehr im Feld — "
+                               "vermutlich schon bearbeitet. Nichts geändert.")
+            else:
+                st.info(f"Nichts geändert — {_res.get('note', 'kein Beleg gefunden')}")
         for _ei, _e in enumerate(_pconc):
             # Titel bereinigen: die Modell-Antwort brachte ** und $-Zeichen mit,
             # die Streamlit sonst als Fettschrift bzw. Formelsatz rendert.
@@ -4090,27 +4210,14 @@ if _pconc:
                     if _hat_quelle and st.button("✏️ Korrigieren",
                                                  key=f"fixconc_{_ei}_{_ci}",
                                                  use_container_width=True):
-                        with st.spinner("Prüfe die Stelle im Transkript…"):
-                            _res = correct_podcast_concern(
-                                _e["summary"], _e["transcript"], _c)
-                        if _res.get("changed"):
-                            _alt_feld = st.session_state.get("podcast_text") or ""
-                            if _e["summary"] in _alt_feld:
-                                st.session_state["podcast_text_pending_value"] = \
-                                    _alt_feld.replace(_e["summary"], _res["text"], 1)
-                                _e["summary"] = _res["text"]
-                                _e["concerns"] = [x for x in _e["concerns"] if x != _c]
-                                st.session_state["_podcast_concerns"] = [
-                                    x for x in _pconc if x.get("concerns")]
-                                st.session_state["_conc_fix_msg"] = (
-                                    f"✅ Korrigiert: „{_res.get('war','')[:60]}“ → "
-                                    f"„{_res.get('jetzt','')[:60]}“ (Beleg: „{_res['beleg'][:70]}…“)")
-                                st.rerun()
-                            else:
-                                st.warning("Die Zusammenfassung steht so nicht mehr im Feld — "
-                                           "vermutlich schon bearbeitet. Nichts geändert.")
-                        else:
-                            st.info(f"Nichts geändert — {_res.get('note', 'kein Beleg gefunden')}")
+                        import threading as _cf_threading
+                        _cfjob = {"done": False, "res": None, "error": None,
+                                  "ei": _ei, "ci": _ci}
+                        st.session_state["_conc_fix_job"] = _cfjob
+                        _cf_threading.Thread(target=_conc_fix_worker,
+                                             args=(_cfjob, _e["summary"], _e["transcript"], _c),
+                                             daemon=True).start()
+                        st.rerun(scope="app")
             if not _hat_quelle:
                 st.caption("　(Transkript nicht mehr im Speicher — Korrigieren nur direkt nach dem Zusammenfassen möglich.)")
         if st.button("✓ Hinweise gesehen — ausblenden", key="dismiss_podcast_concerns"):
