@@ -379,11 +379,20 @@ def _save_draft():
         if not st.session_state.pop("_intentional_clear", False):
             try:
                 _old_draft = json.loads(_DRAFT_PATH.read_text(encoding="utf-8"))
-                _old_pt = _old_draft.get("podcast_text") or ""
-                _new_pt = draft_data.get("podcast_text") or ""
-                if len(_old_pt) >= 2000 and len(_new_pt) < len(_old_pt) * 0.5:
-                    draft_data["podcast_text"] = _old_pt
-                    print(f"[draft-firewall] podcast_text-Schrumpfung abgewehrt ({len(_new_pt)} < 50% von {len(_old_pt)} Zeichen) — alter Wert behalten.", file=sys.stderr)
+                # 05.08.: Schwelle von 50% auf 85% gezogen UND auf die Paywall-
+                # Artikel ausgedehnt. Bei 50% rutschte der Verlust von 4 der 18
+                # Podcast-Folgen (−22%) glatt durch, und die Paywall-Artikel waren
+                # ueberhaupt nicht geschuetzt — am 01.08. verschwanden so 14
+                # nachgetragene Artikel. Kleine Handkorrekturen (eine Folge
+                # loeschen ≈ −6%) bleiben moeglich.
+                for _feld in ("podcast_text", "paywall_text"):
+                    _alt_w = _old_draft.get(_feld) or ""
+                    _neu_w = draft_data.get(_feld) or ""
+                    if len(_alt_w) >= 2000 and len(_neu_w) < len(_alt_w) * 0.85:
+                        draft_data[_feld] = _alt_w
+                        print(f"[draft-firewall] {_feld}: Schrumpfung abgewehrt "
+                              f"({len(_neu_w)} statt {len(_alt_w)} Zeichen) — alter Wert behalten.",
+                              file=sys.stderr)
             except Exception:
                 pass
         _backup_draft_before_shrink(draft_data)
@@ -1278,6 +1287,7 @@ _ERZWUNGENE_DEFAULTS = (
     "auto_reader_upload",        # immer an
     "podcast_synth_mode",        # immer "Länger erhalten"
     "genius_depth_radio_main",   # immer "Keine" — Kompaktfassung standardmaessig aus (01.08.)
+    "weekly_auto_7d",            # Wochenbriefing-Erinnerung immer aktiv (05.08.)
 )
 
 for _key, _default in _DRAFT_DEFAULTS.items():
@@ -2195,6 +2205,57 @@ def _jump_to_end(field_key: str, aria_label: str):
 # Nach dem Ergänzen des Zeilenumbruchs den Sprung nachholen (siehe _jump_to_end).
 if st.session_state.get("_focus_end"):
     _scroll_textarea(st.session_state.pop("_focus_end"))
+
+# ── 🗓️ Wochenbriefing-Erinnerung ───────────────────────────────────────────
+# Florians Wunsch (05.08.): alle 7 Tage, am liebsten sonntags, GEFRAGT werden —
+# nicht automatisch loslaufen. Ein Klick baut es und laedt es in den Reader.
+def _wochen_erinnerung():
+    _lm = st.session_state.get("last_meta_created_iso") or ""
+    try:
+        _alter = (datetime.datetime.now() - datetime.datetime.fromisoformat(_lm)).days if _lm else 999
+    except Exception:
+        _alter = 999
+    _ist_sonntag = datetime.datetime.now().weekday() == 6
+    # Sonntags schon ab 6 Tagen fragen, sonst ab 7 — so landet die Frage im
+    # Regelfall auf dem Sonntag, ohne bei Verschiebungen ganz auszufallen.
+    _faellig = _alter >= (6 if _ist_sonntag else 7)
+    _heute = datetime.datetime.now().strftime("%Y-%m-%d")
+    if not _faellig or st.session_state.get("_wochen_frage_weg") == _heute:
+        return
+    if st.session_state.get("_meta_job") and not st.session_state.get("_meta_job", {}).get("done"):
+        return
+    _wtxt = f"vor {_alter} Tagen" if _alter < 900 else "noch nie"
+    st.warning(f"🗓️ **Wochenbriefing fällig** — das letzte war {_wtxt}. "
+               "Möchtest du eins erstellen? Es fasst die Briefings der letzten 7 Tage "
+               "zusammen und landet direkt in deinem ElevenReader.")
+    _wc1, _wc2 = st.columns([1, 1])
+    with _wc1:
+        if st.button("🗓️ Ja, jetzt erstellen", key="wochen_jetzt", type="primary",
+                     use_container_width=True):
+            _wcli = _locate_claude_cli()
+            if not _wcli:
+                st.error("Claude CLI nicht gefunden — bitte im Wochen-Meta-Block unten manuell starten.")
+            else:
+                import threading as _wth2
+                _wcfg2 = {"archive_dir": str(_resolve_archive_dir()), "days": 7,
+                          "model": st.session_state.get("meta_cli_model", "opus"),
+                          "cli_path": _wcli,
+                          "upload": bool(st.session_state.get("auto_reader_upload", True)),
+                          "title": f"Wochenbriefing bis {datetime.datetime.now().strftime('%d.%m.')}"}
+                _ws2 = {"started": datetime.datetime.now().isoformat(),
+                        "step": "Wird gestartet…", "ratio": 0.0, "done": False}
+                st.session_state["_meta_job"] = _ws2
+                st.session_state.pop("_meta_job_shown", None)
+                _wth2.Thread(target=_meta_worker, args=(_wcfg2, _ws2), daemon=True).start()
+                st.session_state["_wochen_frage_weg"] = _heute
+                st.rerun()
+    with _wc2:
+        if st.button("Heute nicht", key="wochen_spaeter", use_container_width=True):
+            st.session_state["_wochen_frage_weg"] = _heute
+            st.rerun()
+
+
+_wochen_erinnerung()
 
 st.markdown('<div id="nav-urls" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 st.markdown("#### Artikel-URLs")
@@ -5674,18 +5735,18 @@ with _mode_col1:
     )
 with _mode_col2:
     topic_synthesis_mode = st.checkbox(
-        "🧵 Themen-Synthese", value=True, key="topic_synthesis_mode",
+        "🧵 Themen-Synthese", key="topic_synthesis_mode",
         help="Persönliches Briefing statt Einzelbeiträge: Opus bündelt ALLE Quellen (Links, Paywall-Texte, Podcasts) thematisch — z.B. drei Artikel + ein Podcast zum Koalitionsausschuss werden EIN verwobener Vorlesetext. Nichts doppelt, nichts fehlt (jede Quelle wird garantiert genau einem Thema zugeordnet). Ersetzt die frühere Erzähl-Version. Nur im kostenlosen Claude-Weg.",
     )
     narrative_additional = False  # Erzähl-Version durch Themen-Synthese ersetzt (Code bleibt schlafend erhalten)
     if topic_synthesis_mode:
         st.caption("🧵 Alle Quellen werden thematisch zu je EINEM Beitrag verwoben — effizient informiert, nichts doppelt.")
         st.checkbox(
-            "🎙️ Unterhaltsam erzählt (Magazin-Stil)", value=True, key="synthesis_narrative_style",
+            "🎙️ Unterhaltsam erzählt (Magazin-Stil)", key="synthesis_narrative_style",
             help="Die Themen-Beiträge werden wie von einem guten Magazin-Podcast-Host erzählt: Hook, roter Faden, anschauliche Vergleiche — aber strikt faktentreu, nur mit deinen Quellen, und ernste Themen bleiben ernst. Ohne Häkchen: sachlich-klarer Nachrichtenstil.",
         )
         st.checkbox(
-            "🌐 Fehlendes intelligent ergänzen (Websuche)", value=True, key="synthesis_web_enrich",
+            "🌐 Fehlendes intelligent ergänzen (Websuche)", key="synthesis_web_enrich",
             help="Fehlt deinen Quellen ein zentraler Baustein (Wer ist die Person? Vorgeschichte? Schlüsselzahl?), darf Opus GEZIELT im Netz nachschlagen — max. 1-2 Suchen pro Thema, nur seriöse Quellen (Agenturen, Öffentlich-Rechtliche, Primärquellen). Jede Ergänzung wird im Text klar gekennzeichnet (Zur Einordnung, laut Reuters: …). Nur Lückenfüllung, nie neue Themen; bei Widerspruch gewinnen DEINE Quellen. Macht den Lauf etwas langsamer.",
         )
         st.selectbox(
