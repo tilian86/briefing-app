@@ -199,7 +199,7 @@ _DRAFT_DEFAULTS = {
     "api_auto_repair_enabled": True,
     "quality_check_enabled": True,
     "special_topics_text": "",
-    "auto_briefing_when_done": False,
+    "auto_briefing_when_done": True,
     "auto_feedly_before_briefing": False,
 }
 
@@ -1305,6 +1305,13 @@ _ERZWUNGENE_DEFAULTS = (
     "podcast_synth_mode",        # immer "Länger erhalten"
     "genius_depth_radio_main",   # immer "Keine" — Kompaktfassung standardmaessig aus (01.08.)
     "weekly_auto_7d",            # Wochenbriefing-Erinnerung immer aktiv (05.08.)
+    # 05.08.: Florian musste nach einem Neuladen Synthese, Magazin-Stil und
+    # Websuche von Hand wieder anhaken. Das sind seine Standardeinstellungen —
+    # sie gehoeren nicht in die Handarbeit.
+    "topic_synthesis_mode",      # immer an
+    "synthesis_narrative_style", # immer an
+    "synthesis_web_enrich",      # immer an
+    "auto_briefing_when_done",   # Auto-Start nach den Podcasts bleibt an
 )
 
 for _key, _default in _DRAFT_DEFAULTS.items():
@@ -2518,6 +2525,40 @@ def _round_log_reset() -> None:
         pass
 
 
+LIMIT_STATS_PATH = _APP_DIR / ".briefing_limit_stats.json"
+# Erfahrungswert bis genug Messungen da sind: Anteil des 5-Stunden-Limits je Quelle.
+# 05.08. gemessen: 148 Quellen verbrauchten >16 Prozentpunkte (Lauf brach ab).
+_LIMIT_FAKTOR_START = 0.14
+
+
+def _limit_stats_add(quellen: int, verbrauch: float) -> None:
+    """Merkt sich, wie viel Limit ein Lauf je Quelle gekostet hat."""
+    if not quellen or verbrauch <= 0:
+        return
+    try:
+        alt = json.loads(LIMIT_STATS_PATH.read_text(encoding="utf-8")) if LIMIT_STATS_PATH.exists() else []
+    except Exception:
+        alt = []
+    alt.append({"quellen": int(quellen), "verbrauch": round(float(verbrauch), 2)})
+    try:
+        LIMIT_STATS_PATH.write_text(json.dumps(alt[-12:], ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _limit_faktor() -> float:
+    """Gelernter Verbrauch je Quelle (Median der letzten Laeufe)."""
+    try:
+        daten = json.loads(LIMIT_STATS_PATH.read_text(encoding="utf-8"))
+        werte = sorted(d["verbrauch"] / d["quellen"] for d in daten
+                       if d.get("quellen") and d.get("verbrauch"))
+        if werte:
+            return werte[len(werte) // 2]
+    except Exception:
+        pass
+    return _LIMIT_FAKTOR_START
+
+
 def _conc_fix_worker(job: dict, summary: str, transcript: str, concern):
     """Faktencheck-Korrektur im HINTERGRUND. Kein st.* im Thread.
     05.08.: Vorher blockierte der Klick auf 'Korrigieren' die ganze App."""
@@ -3091,6 +3132,10 @@ def _briefing_worker(cfg: dict, status: dict):
             _upd(step="🪙 Token-Bilanz wird erstellt…", ratio=0.99)
             status["tokens"] = _sum_cli_usage(cfg["ts_iso"], datetime.datetime.now().isoformat())
             status["usage_5h_after"] = _read_real_5h_usage()
+            _u_vor, _u_nach = status.get("usage_5h_before"), status.get("usage_5h_after")
+            _n_q = sum((status.get("inputs") or {}).get(k, 0) for k in ("urls", "paywall", "podcasts"))
+            if isinstance(_u_vor, int) and isinstance(_u_nach, int) and _u_nach > _u_vor:
+                _limit_stats_add(_n_q, _u_nach - _u_vor)
         except Exception:
             pass
         _upd(step="✅ Fertig.", ratio=1.0, done=True)
@@ -6056,8 +6101,33 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         # kein Briefing als eins ohne diese Artikel. Erst anmelden, dann starten.
         _pw_stop = (detect_truncated_paywall_blocks(split_paywall_articles(paywall_text))
                     if paywall_text.strip() else [])
+        # ⛽ Limit-Bremse: Reicht das 5-Stunden-Kontingent ueberhaupt fuer so viele
+        # Quellen? 05.08.: Florian startete mit 16% Rest, das Limit war mitten im
+        # Schreiben alle — 29 Quellen fielen aus dem fertigen Briefing. Der Lauf
+        # meldete trotzdem "✅ Fertig". Das darf nicht ungewarnt passieren.
+        _n_quellen_start = (len([l for l in urls_text.splitlines() if l.strip().startswith("http")])
+                            + (len(split_paywall_articles(paywall_text)) if paywall_text.strip() else 0)
+                            + (len(split_podcast_summaries(podcast_text)) if podcast_text.strip() else 0))
+        _usage_jetzt = _read_real_5h_usage()
+        _limit_knapp = False
+        if isinstance(_usage_jetzt, int) and _n_quellen_start:
+            _rest_pct = max(0, 100 - _usage_jetzt)
+            _noetig_pct = _n_quellen_start * _limit_faktor()
+            _limit_knapp = _rest_pct < _noetig_pct
         if not (urls_text.strip() or paywall_text.strip() or podcast_text.strip() or include_weather):
             st.warning("Mindestens ein Feld ausfüllen oder Wetter aktivieren.")
+        elif _limit_knapp and not st.session_state.pop("_limit_trotzdem", False):
+            st.error(f"⛽ **Limit reicht voraussichtlich nicht** — {_n_quellen_start} Quellen "
+                     f"brauchen erfahrungsgemäß rund {_noetig_pct:.0f} % deines 5-Stunden-Kontingents, "
+                     f"frei sind aber nur noch {_rest_pct} %.")
+            st.markdown("Läuft das Limit mitten im Schreiben leer, **fehlen einzelne Quellen im "
+                        "fertigen Briefing** — der Lauf meldet trotzdem Erfolg. Genau das ist am "
+                        "05.08. passiert (29 Quellen verloren).")
+            st.markdown("**Empfehlung:** warten, bis sich das Kontingent erholt — oder Quellen "
+                        "reduzieren. Der Entwurf bleibt vollständig erhalten.")
+            if st.button("Trotzdem jetzt starten", key="limit_trotzdem_btn"):
+                st.session_state["_limit_trotzdem"] = True
+                st.rerun()
         elif _pw_stop:
             st.error(f"⛔ Gestoppt: {len(_pw_stop)} Paywall-Artikel sind nur Anrisse "
                      f"(Zeitungs-Login vermutlich abgelaufen). Das Briefing startet erst, "
