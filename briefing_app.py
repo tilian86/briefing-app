@@ -2306,11 +2306,15 @@ st.markdown("#### Paywall-Artikel")
 # Briefing (siehe _feedly_pending_ids weiter unten).
 _fl_col1, _fl_col2 = st.columns([1, 2.4])
 with _fl_col1:
+    _fl_job_now = st.session_state.get("_feedly_job")
+    _fl_busy = bool(_fl_job_now) and not _fl_job_now.get("done")
     _fl_clicked = st.button(
-        "📥 Aus Feedly holen",
+        "📥 Läuft im Hintergrund…" if _fl_busy else "📥 Aus Feedly holen",
         use_container_width=True,
+        disabled=_fl_busy,
         help="Holt alle im Feedly mit Lesezeichen markierten Artikel samt Volltext "
-             "(auch hinter Paywall über dein Zeitungs-Login) und hängt sie unten an.",
+             "(auch hinter Paywall über dein Zeitungs-Login) und hängt sie unten an. "
+             "Läuft im Hintergrund — du kannst währenddessen weiterarbeiten.",
     )
     _login_check_clicked = st.button(
         "🔐 Zeitungs-Logins testen",
@@ -2353,94 +2357,113 @@ with _fl_col2:
 # Zwischenschritt der Auto-Kette: Podcasts sind fertig, jetzt Feedly holen und
 # danach das Briefing zünden. Läuft genau einmal, dann ist die Marke wieder weg.
 _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
-if _fl_auto:
-    st.info("📥 Auto-Kette: hole die Feedly-Artikel, danach startet das Briefing…")
 
-if _fl_clicked or _fl_auto:
-    _fl_status = st.status("Feedly-Merkliste wird geholt …", expanded=True)
+
+def _feedly_worker(job: dict, skip_urls, skip_ids):
+    """Holt die Merkliste im HINTERGRUND. Ruehrt bewusst KEIN st.* an — der
+    Thread schreibt nur in `job`, die Oberflaeche liest daraus.
+    05.08.: Vorher lief der Abruf im Vordergrund und legte die ganze Seite lahm;
+    Podcasts nebenher einwerfen war unmoeglich."""
     try:
-        import feedly_fetch as _feedly
+        import feedly_fetch as _F
+        res = _F.fetch_all(progress=lambda m: job.__setitem__("step", m),
+                           skip_urls=skip_urls, skip_ids=skip_ids)
+        job["result"] = res
+    except Exception as exc:
+        job["error"] = str(exc)
+    finally:
+        job["done"] = True
 
-        # Doppel-Schutz: was schon im Paywall-Feld steht oder bereits fürs
-        # Aufräumen vorgemerkt ist, wird gar nicht erst geholt.
-        _fl_da_urls = re.findall(r"https?://\S+", st.session_state.get("paywall_text") or "")
-        _fl_da_ids = _feedly.load_pending()["entry_ids"]
-        _fl_result = _feedly.fetch_all(
-            progress=lambda m: _fl_status.write(m),
-            skip_urls=_fl_da_urls, skip_ids=_fl_da_ids)
-        _fl_ok = _fl_result["ok"]
-        _fl_problems = _fl_result["problems"]
-        _fl_skipped = _fl_result.get("skipped") or []
 
-        if _fl_ok:
-            _fl_new = _feedly.to_blocks(_fl_ok)
-            _fl_old = (st.session_state.get("paywall_text") or "").rstrip()
-            st.session_state["paywall_text_pending_value"] = (
-                (_fl_old + "\n\nmmm\n\n" + _fl_new) if _fl_old else _fl_new
-            )
-            # IDs merken — Entfernen erst nach erfolgreichem Briefing. Liegt in
-            # einer Datei, damit ein App-Neustart die Liste nicht verliert.
-            _feedly.add_pending(
-                [i["entry_id"] for i in _fl_ok if i.get("entry_id")],
-                _fl_result.get("user_id") or "",
-            )
+_fl_job = st.session_state.get("_feedly_job")
+_fl_running = bool(_fl_job) and not _fl_job.get("done")
 
-        _fl_free, _fl_walled = _feedly.split_free_and_paywall(_fl_ok)
-        if _fl_ok:
-            _fl_msg = (f"✅ {len(_fl_ok)} Artikel ins Paywall-Feld geholt "
-                       f"(davon {len(_fl_walled)} hinter Bezahlschranke).")
-        else:
-            _fl_msg = "Nichts Neues in der Merkliste."
-        if _fl_skipped:
-            _fl_msg += f" ⏭️ {len(_fl_skipped)} schon im Briefing — übersprungen."
-        if _fl_problems:
-            _fl_msg += f" ⚠️ {len(_fl_problems)} unvollständig — bleiben in der Merkliste."
-        st.session_state["_feedly_note"] = _fl_msg
-        _fl_status.update(label=_fl_msg, state="complete", expanded=bool(_fl_problems))
+if (_fl_clicked or _fl_auto) and not _fl_running:
+    import feedly_fetch as _feedly_start
+    _job = {"done": False, "step": "Starte…", "auto": bool(_fl_auto),
+            "result": None, "error": None, "applied": False}
+    st.session_state["_feedly_job"] = _job
+    import threading as _fl_threading
+    _fl_threading.Thread(
+        target=_feedly_worker,
+        args=(_job,
+              re.findall(r"https?://\S+", st.session_state.get("paywall_text") or ""),
+              _feedly_start.load_pending()["entry_ids"]),
+        daemon=True).start()
+    st.rerun()
 
-        if _fl_problems:
-            st.warning(
-                f"⚠️ {len(_fl_problems)} Artikel kamen nur als Anriss an — "
-                "meist ein abgelaufenes Zeitungs-Login. Sie wurden NICHT übernommen "
-                "und bleiben in deiner Merkliste stehen."
-            )
-            for _p in _fl_problems:
-                st.caption(f"· {_p['title'][:75]} — {_p['problem']}")
-            st.caption("Neu anmelden:  `python3 feedly_fetch.py --login`")
 
-        if _fl_auto:
-            if _fl_problems:
-                # ⛔ Florians Ansage 03.08.: KEIN Briefing ohne die Paywall-Artikel.
-                # Kette stoppt hier — erst anmelden, dann neu anstoßen.
-                st.error("⛔ Auto-Kette gestoppt: Artikel kamen nur als Anriss an "
-                         "(Zeitungs-Login abgelaufen?). Erst anmelden, dann unten "
-                         "aufs Briefing klicken — die Artikel warten in der Merkliste.")
-                st.code("cd ~/Projects/apps/briefing-app && python3 feedly_fetch.py --login",
-                        language="bash")
-            else:
-                # Kette weiterreichen — auch wenn nichts Neues dabei war, soll das
-                # Briefing laufen (die Podcasts sind ja fertig).
-                st.session_state["_auto_run_briefing"] = True
-                st.rerun()
-        if _fl_ok:
-            st.rerun()
-    except Exception as _fl_exc:
-        _fl_text = str(_fl_exc)
-        _fl_status.update(label="Feedly-Abruf fehlgeschlagen", state="error", expanded=True)
-        if "bremst" in _fl_text.lower():
-            st.warning(f"⏳ {_fl_text}")
-        elif "nicht angemeldet" in _fl_text.lower():
+# 🧩 Selbst-aktualisierender Statusblock: laeuft der Abruf, wird NUR dieser
+# Bereich alle 2 Sekunden neu gezeichnet — der Rest der Seite bleibt bedienbar,
+# du kannst also parallel Podcasts einwerfen.
+@st.fragment(run_every=2)
+def _fragment_feedly_status():
+    job = st.session_state.get("_feedly_job")
+    if not job:
+        return
+    if not job.get("done"):
+        st.info(f"📥 Feedly-Abruf läuft im Hintergrund — {job.get('step', '…')}")
+        st.caption("Die Seite bleibt nutzbar: Podcasts einwerfen, Felder bearbeiten, alles geht parallel.")
+        return
+    if job.get("applied"):
+        return
+    job["applied"] = True
+
+    import feedly_fetch as _F
+    if job.get("error"):
+        txt = str(job["error"])
+        if "bremst" in txt.lower():
+            st.warning(f"⏳ {txt}")
+        elif "nicht angemeldet" in txt.lower():
             st.error("Noch nicht bei Feedly angemeldet. Einmalig im Terminal einrichten:")
             st.code("cd ~/Projects/apps/briefing-app && python3 feedly_fetch.py --login", language="bash")
-            st.caption("Dort bei Feedly, GEA und SWP/Tagblatt anmelden, Fenster schließen — fertig.")
         else:
-            st.error(f"Feedly-Abruf fehlgeschlagen: {_fl_text}")
-        if _fl_auto:
-            # ⛔ 03.08.: Kette stoppt auch bei Abruf-Fehlern. Florian will kein
-            # Briefing ohne seine kuratierten Artikel — lieber neu anstoßen.
-            st.error("⛔ Auto-Kette gestoppt: Feedly-Artikel konnten nicht geholt "
-                     "werden. Problem beheben (Meldung oben), dann Briefing unten "
-                     "manuell starten — nichts ist verloren.")
+            st.error(f"Feedly-Abruf fehlgeschlagen: {txt}")
+        if job.get("auto"):
+            # ⛔ Kein Briefing ohne die kuratierten Artikel — Kette stoppt.
+            st.error("⛔ Auto-Kette gestoppt: Feedly-Artikel konnten nicht geholt werden. "
+                     "Problem beheben, dann Briefing unten manuell starten.")
+        st.session_state["_feedly_note"] = "❌ Abruf fehlgeschlagen."
+        return
+
+    res = job.get("result") or {}
+    ok, problems = res.get("ok") or [], res.get("problems") or []
+    skipped = res.get("skipped") or []
+    if ok:
+        neu_text = _F.to_blocks(ok)
+        alt = (st.session_state.get("paywall_text") or "").rstrip()
+        st.session_state["paywall_text_pending_value"] = (
+            (alt + "\n\nmmm\n\n" + neu_text) if alt else neu_text)
+        _F.add_pending([i["entry_id"] for i in ok if i.get("entry_id")],
+                       res.get("user_id") or "")
+
+    _free, _walled = _F.split_free_and_paywall(ok)
+    msg = (f"✅ {len(ok)} Artikel ins Paywall-Feld geholt (davon {len(_walled)} hinter Bezahlschranke)."
+           if ok else "Nichts Neues in der Merkliste.")
+    if skipped:
+        msg += f" ⏭️ {len(skipped)} schon im Briefing — übersprungen."
+    if problems:
+        msg += f" ⚠️ {len(problems)} unvollständig — bleiben in der Merkliste."
+    st.session_state["_feedly_note"] = msg
+
+    if problems:
+        st.warning(f"⚠️ {len(problems)} Artikel kamen nur als Anriss an — meist ein "
+                   "abgelaufenes Zeitungs-Login. Sie wurden NICHT übernommen und "
+                   "bleiben in deiner Merkliste stehen.")
+        for _p in problems:
+            st.caption(f"· {_p['title'][:75]} — {_p['problem']}")
+        st.code("cd ~/Projects/apps/briefing-app && python3 feedly_fetch.py --login", language="bash")
+
+    if job.get("auto"):
+        if problems:
+            st.error("⛔ Auto-Kette gestoppt: Artikel kamen nur als Anriss an. Erst neu "
+                     "anmelden, dann unten aufs Briefing klicken — nichts ist verloren.")
+        else:
+            st.session_state["_auto_run_briefing"] = True
+    st.rerun(scope="app")
+
+
+_fragment_feedly_status()
 
 paywall_text = st.text_area(
     "Paywall-Artikel",

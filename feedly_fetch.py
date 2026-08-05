@@ -106,13 +106,34 @@ def _strip_html(raw: str) -> str:
 # ── Browser ────────────────────────────────────────────────────────────────
 
 def _launch(headless: bool = True):
+    """Startet den Browser mit dem persistenten Profil.
+
+    Wichtig: Chromium sperrt ein Profil — es kann immer nur EIN Prozess damit
+    arbeiten. Lief parallel schon ein Abruf, scheiterte der zweite frueher mit
+    einer kryptischen Playwright-Meldung (05.08.: ein Parallel-Testlauf hat
+    Florians laufenden Abruf abgeschossen, ohne dass es jemand gemerkt hat).
+    Jetzt gibt es dafuer eine klare Ansage.
+    """
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
-    ctx = p.chromium.launch_persistent_context(
-        PROFILE_DIR, headless=headless,
-        viewport={"width": 1400, "height": 900}, locale="de-DE",
-        args=["--disable-blink-features=AutomationControlled"],
-    )
+    try:
+        ctx = p.chromium.launch_persistent_context(
+            PROFILE_DIR, headless=headless,
+            viewport={"width": 1400, "height": 900}, locale="de-DE",
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+    except Exception as exc:
+        try:
+            p.stop()
+        except Exception:
+            pass
+        text = str(exc)
+        if "ProcessSingleton" in text or "SingletonLock" in text or "already in use" in text.lower():
+            raise RuntimeError(
+                "Das Browser-Profil ist gerade belegt — es läuft schon ein Feedly-Abruf "
+                "oder Login-Test. Bitte warten, bis der fertig ist, dann erneut versuchen."
+            ) from exc
+        raise
     return p, ctx
 
 
