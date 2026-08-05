@@ -493,6 +493,82 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
             pass
 
 
+# ── Zeitungs-Login-Test ────────────────────────────────────────────────────
+# Startseite je Zeitung → erster Artikel-Link → Volltext holen → Anriss-Pruefung.
+# Damit prueft man VOR dem Briefing, ob die Logins noch tragen (Tagblatt wirft
+# einen gelegentlich raus). Hinweis: Erwischt der Test zufaellig einen freien
+# Artikel, kann er "ok" melden, obwohl das Login weg ist — deshalb prueft der
+# eigentliche Abruf trotzdem weiterhin jeden einzelnen Artikel.
+NEWSPAPER_PROBES = (
+    # GEA-Ressortseiten enden auf .html — ohne das kommt eine Fehlerseite (03.08. getestet).
+    ("GEA", "https://www.gea.de/reutlingen.html"),
+    ("SWP/Tagblatt", "https://www.swp.de/lokales/tuebingen/"),
+)
+
+_FIND_ARTICLE_LINK_JS = """
+() => {
+  for (const a of document.querySelectorAll('a[href]')) {
+    const h = a.href || "";
+    if (/_arid,\\d+\\.html/.test(h) || /-\\d{6,}\\.html/.test(h)) return h;
+  }
+  return null;
+}
+"""
+
+
+def check_newspaper_logins(headless: bool = True) -> list:
+    """Prueft je Zeitung: liefert ein frischer Artikel Volltext oder nur Anriss?
+
+    Rueckgabe je Eintrag: {"name", "ok" (True/False/None), "detail", "url"}.
+    ok=None heisst: Test nicht moeglich (Seite nicht ladbar o.ae.).
+    """
+    results = []
+    p, ctx = _launch(headless=headless)
+    try:
+        page = _page(ctx)
+        for name, start_url in NEWSPAPER_PROBES:
+            eintrag = {"name": name, "ok": None, "detail": "", "url": ""}
+            try:
+                page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
+                page.wait_for_timeout(1500)
+                for label in ("Alle ablehnen", "Ablehnen", "Nur notwendige", "Reject all"):
+                    try:
+                        btn = page.locator(f"text={label}")
+                        if btn.count() and btn.first.is_visible():
+                            btn.first.click(timeout=2500)
+                            page.wait_for_timeout(600)
+                            break
+                    except Exception:
+                        pass
+                href = page.evaluate(_FIND_ARTICLE_LINK_JS)
+                if not href:
+                    eintrag["detail"] = "kein Artikel-Link auf der Startseite gefunden"
+                    results.append(eintrag)
+                    continue
+                eintrag["url"] = href
+                text = _fetch_article_text(page, href)
+                grund = _detect_paywall_teaser(text)
+                if grund:
+                    eintrag["ok"] = False
+                    eintrag["detail"] = grund
+                else:
+                    eintrag["ok"] = True
+                    eintrag["detail"] = f"Volltext ({len(text.split())} Wörter)"
+            except Exception as exc:
+                eintrag["detail"] = f"nicht prüfbar ({exc.__class__.__name__})"
+            results.append(eintrag)
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        try:
+            p.stop()
+        except Exception:
+            pass
+    return results
+
+
 # ── Offene Aufraeum-Liste ──────────────────────────────────────────────────
 # Welche Artikel wurden geholt, aber noch nicht aus der Merkliste entfernt?
 # Bewusst als DATEI, nicht im Streamlit-Sitzungsspeicher: ein App-Neustart oder
