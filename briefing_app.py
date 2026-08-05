@@ -2385,6 +2385,23 @@ with _fl_col2:
 _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
 
 
+def _pc_preview_worker(job: dict, kind: str):
+    """Pocket-Casts-Vorschau im HINTERGRUND. Kein st.* im Thread.
+    05.08.: Vorher lief das im Vordergrund — ein Klick woanders (Florian stellte
+    den Podcast-Modus um) loeste einen Neuaufbau aus und brach den Abruf ab."""
+    try:
+        import pocketcasts_fetch as _P
+        if kind == "auswahl":
+            job["items"], job["status"] = _P.preview_selection()
+        else:
+            job["items"], job["status"] = _P.preview_new_releases()
+    except Exception as exc:
+        job["error"] = str(exc)
+        job["status"] = "error"
+    finally:
+        job["done"] = True
+
+
 def _feedly_worker(job: dict, skip_urls, skip_ids):
     """Holt die Merkliste im HINTERGRUND. Ruehrt bewusst KEIN st.* an — der
     Thread schreibt nur in `job`, die Oberflaeche liest daraus.
@@ -3545,8 +3562,24 @@ def _fragment_episoden_inbox():
 _fragment_episoden_inbox()
 
 # 🧩 Fragment: Klicks hier laden nur DIESEN Block neu, nicht die ganze Seite (03.08.).
-@st.fragment
 def _fragment_pocket_casts():
+    # 🎧 Läuft ein Abruf im Hintergrund? Dann nur Status zeigen (Knöpfe aus).
+    _pcjob = st.session_state.get("_pc_job")
+    if _pcjob and not _pcjob.get("done"):
+        st.info("🎧 Pocket Casts wird im Hintergrund geladen — Transkripte werden geprüft…")
+        st.caption("Die Seite bleibt bedienbar: Einstellungen ändern, Links einfügen, "
+                   "Feedly holen — der Abruf läuft weiter.")
+        return
+    if _pcjob and _pcjob.get("done") and not _pcjob.get("applied"):
+        _pcjob["applied"] = True
+        if _pcjob.get("status") == "ok":
+            st.session_state["_pc_preview"] = _pcjob.get("items") or []
+        elif _pcjob.get("error"):
+            st.session_state["_podcast_inbox_last_msg"] = f"🎧 Abruf fehlgeschlagen: {str(_pcjob['error'])[:120]}"
+        else:
+            st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login (oder keine offenen Folgen)."
+        st.rerun(scope="app")
+
     st.markdown("### 🎧 Pocket Casts — meine kuratierten Folgen")
     st.caption("Der Weg, den du am häufigsten nutzt. Prüfen kostet kein Limit — "
                "nur das Zusammenfassen der Folgen, die du anhakst.")
@@ -3595,15 +3628,19 @@ def _fragment_pocket_casts():
             try:
                 import pocketcasts_fetch as _pcf_chk
                 if _episode in _pcf_chk._load_fetched():
-                    return True
+                    return "schon geholt"
             except Exception:
                 pass
         _n = _pc_norm(_title)[:40]
         if not _n:
-            return False
+            return ""
         if _n in _pc_norm(st.session_state.get("podcast_text", "")):
-            return True
-        return _n in _pc_norm(_pc_recent_briefings_text())
+            return "schon im Feld"
+        # 05.08.: Das Feld wird nach jedem Lauf geleert — stand die Folge im
+        # letzten Briefing, hiess es trotzdem irrefuehrend "schon im Feld".
+        if _n in _pc_norm(_pc_recent_briefings_text()):
+            return "war im letzten Briefing"
+        return ""
 
     def _pc_recent_briefings_text(_n_files: int = 3) -> str:
         """Text der zuletzt erzeugten Briefings (Vorlese-Fassung).
@@ -3652,34 +3689,20 @@ def _fragment_pocket_casts():
                      use_container_width=True, type="primary",
                      help="Aktuelles aus Pocket Casts' eigener Liste (exakt) plus den "
                           "Rückkatalog der oben gemerkten Podcasts. Kostet kein Limit."):
-            try:
-                import pocketcasts_fetch as _pcf
-                with st.spinner("⭐ Auswahl zusammentragen + Transkripte prüfen…"):
-                    _items, _pst = _pcf.preview_selection()
-            except Exception as _cue:
-                st.session_state["_podcast_inbox_last_msg"] = f"⭐ Auswahl laden fehlgeschlagen: {str(_cue)[:120]}"
-                _items, _pst = [], "error"
-            if _pst == "ok":
-                st.session_state["_pc_preview"] = _items
-            elif _pst != "error":
-                st.session_state["_podcast_inbox_last_msg"] = "⭐ Kein Pocket-Casts-Login (oder keine offenen Folgen)."
-            st.rerun()
+            import threading as _pc_threading
+            _job = {"done": False, "items": None, "status": None, "error": None, "applied": False}
+            st.session_state["_pc_job"] = _job
+            _pc_threading.Thread(target=_pc_preview_worker, args=(_job, "auswahl"), daemon=True).start()
+            st.rerun(scope="app")
 
         _pcb1, _pcb2 = st.columns([3, 2])
         with _pcb1:
             if st.button("🎧 Pocket Casts prüfen", key="pocketcasts_preview_btn", use_container_width=True):
-                try:
-                    import pocketcasts_fetch as _pcf
-                    with st.spinner("🎧 New Releases laden + Transkripte prüfen (kostet kein Limit)…"):
-                        _items, _pst = _pcf.preview_new_releases()
-                except Exception as _pce:
-                    st.session_state["_podcast_inbox_last_msg"] = f"🎧 Pocket-Casts-Prüfung fehlgeschlagen: {str(_pce)[:120]}"
-                    _items, _pst = [], "error"
-                if _pst == "ok":
-                    st.session_state["_pc_preview"] = _items
-                elif _pst == "no_login_or_empty":
-                    st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login (oder keine Folgen). Einmal-Login nötig — sag mir Bescheid."
-                st.rerun()
+                import threading as _pc_threading2
+                _job = {"done": False, "items": None, "status": None, "error": None, "applied": False}
+                st.session_state["_pc_job"] = _job
+                _pc_threading2.Thread(target=_pc_preview_worker, args=(_job, "neu"), daemon=True).start()
+                st.rerun(scope="app")
         with _pcb2:
             if st.button("⚡ alle direkt holen", key="pocketcasts_direct_btn", use_container_width=True,
                          help="Ohne Vorschau: holt + fasst alle noch nicht im Feld befindlichen sofort zusammen (hands-off)."):
@@ -3703,8 +3726,10 @@ def _fragment_pocket_casts():
         _new = [it for it in _pc_preview if it["has_transcript"] and not _pc_in_field(it["title"], it.get("episode"))]
         _inf = [it for it in _pc_preview if it["has_transcript"] and _pc_in_field(it["title"], it.get("episode"))]
         _non = [it for it in _pc_preview if not it["has_transcript"]]
-        st.markdown(f"**🎧 {len(_pc_preview)} Folgen geprüft** — 🟢 {len(_new)} neu · ⚪ {len(_inf)} schon im Feld · ⏭️ {len(_non)} ohne Transkript")
-        st.caption("🟢 ist vorausgewählt. Hake ab/an, was zusammengefasst werden soll — nur das kostet Limit. ⏭️ hat kein Transkript.")
+        st.markdown(f"**🎧 {len(_pc_preview)} Folgen geprüft** — 🟢 {len(_new)} neu · ⚪ {len(_inf)} schon abgedeckt · ⏭️ {len(_non)} ohne Transkript")
+        st.caption("🟢 ist vorausgewählt. Hake ab/an, was zusammengefasst werden soll — nur das kostet Limit. "
+                   "⏭️ hat kein Transkript. ⚪ heißt: steckt schon im Feld ODER war in einem der letzten drei "
+                   "Briefings — anhaken geht trotzdem, wenn du sie nochmal willst.")
         _sel_idx = []
         for _i, _it in enumerate(_pc_preview):
             _lbl = ((f"**{_it['podcast_title']}** — {_it['title']}") if _it.get("podcast_title") else _it["title"])[:90]
@@ -3713,7 +3738,7 @@ def _fragment_pocket_casts():
             else:
                 _already = _pc_in_field(_it["title"], _it.get("episode"))
                 _icon = "⚪" if _already else "🟢"
-                if st.checkbox(f"{_icon} {_lbl}" + (" · _schon im Feld_" if _already else ""),
+                if st.checkbox(f"{_icon} {_lbl}" + (f" · _{_already}_" if _already else ""),
                                value=(not _already), key=f"pcsel_{_i}"):
                     _sel_idx.append(_i)
         _pcg1, _pcg2 = st.columns([3, 1])
@@ -3735,7 +3760,11 @@ def _fragment_pocket_casts():
                 st.session_state.pop("_pc_preview", None)
                 st.rerun()
 
-_fragment_pocket_casts()
+_pcj_now = st.session_state.get("_pc_job")
+_pc_job_active = bool(_pcj_now) and not _pcj_now.get("done")
+# Laeuft ein Abruf, frischt sich NUR dieser Block alle 2s auf — der Rest der
+# Seite bleibt bedienbar (und ein Klick woanders bricht nichts mehr ab).
+st.fragment(_fragment_pocket_casts, run_every=(2 if _pc_job_active else None))()
 
 with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)", expanded=False):
     st.caption("Transkript aus Pocket Casts hier reinkopieren (auch mehrere, mit mmm getrennt) → Knopf drücken → die fertige Zusammenfassung landet automatisch unten im Podcast-Feld. Der Riesen-Text verschwindet danach — das Feld unten bleibt schlank. Läuft über Opus/Max-Abo, 0 €. Dauer: ~2-4 Min pro Stunde Podcast, zwei laufen parallel.")
