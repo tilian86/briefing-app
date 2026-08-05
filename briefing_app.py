@@ -258,6 +258,14 @@ def _write_archive_bytes(file_name: str, data: bytes, subdir: Optional[str] = No
 
 _CLEANUP_RETENTION_DAYS = 21
 _CLEANUP_EXTENSIONS = (".pdf", ".txt", ".epub")
+# 05.08. nach Dateityp gestaffelt: PDFs verschickt Florian per Broadcast weiter,
+# eine lange Liste heisst nur laestiges Scrollen — die duerfen frueh weg. Die
+# Texte sind die Arbeitsgrundlage (Wochen-/Monats-/Jahresbriefing, Dubletten-
+# Abgleich "war das schon drin?") und bleiben deutlich laenger.
+_CLEANUP_RETENTION_BY_EXT = {".pdf": 7, ".epub": 7, ".txt": 21}
+# Der lokale Textspiegel ist klein (~100 KB je Briefing) und meine einzige
+# verlaessliche Quelle — der wird ein Jahr lang gehalten.
+_MIRROR_RETENTION_DAYS = 365
 _CLEANUP_FILENAME_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
 
@@ -268,7 +276,15 @@ def _cleanup_old_briefings(retention_days: int = _CLEANUP_RETENTION_DAYS) -> dic
     iCloud die Datei-mtime auf den Sync-Zeitpunkt setzt. Nur wenn kein Datum im Namen
     steht, dient die mtime als Fallback. Dateien ohne erkennbares Alter bleiben erhalten.
     """
-    cutoff = datetime.date.today() - datetime.timedelta(days=retention_days)
+    heute = datetime.date.today()
+
+    def _cutoff_fuer(pfad, basis) -> datetime.date:
+        """Aufbewahrung je nach Dateityp — und im lokalen Spiegel generell lang."""
+        if basis == _LOCAL_META_MIRROR_DIR:
+            return heute - datetime.timedelta(days=_MIRROR_RETENTION_DAYS)
+        tage = _CLEANUP_RETENTION_BY_EXT.get(pfad.suffix.lower(), retention_days)
+        return heute - datetime.timedelta(days=tage)
+
     deleted, errors = [], []
     seen_dirs = set()
     for base in (_PRIMARY_ARCHIVE_DIR, _FALLBACK_ARCHIVE_DIR, _LOCAL_META_MIRROR_DIR):
@@ -291,7 +307,7 @@ def _cleanup_old_briefings(retention_days: int = _CLEANUP_RETENTION_DAYS) -> dic
                 else:
                     # Kein Datum im Namen → mtime nur als Fallback
                     file_date = datetime.date.fromtimestamp(path.stat().st_mtime)
-                if file_date < cutoff:
+                if file_date < _cutoff_fuer(path, base):
                     path.unlink()
                     deleted.append(path.name)
             except Exception as exc:
@@ -314,7 +330,7 @@ def _cleanup_old_briefings(retention_days: int = _CLEANUP_RETENTION_DAYS) -> dic
                             _survivors.append(_p)
                             continue
                         _fd = datetime.date(int(_m.group(1)), int(_m.group(2)), int(_m.group(3)))
-                        if _fd < cutoff:
+                        if _fd < _cutoff_fuer(_pp, _PRIMARY_ARCHIVE_DIR):
                             try:
                                 if _pp.exists():
                                     _pp.unlink()
@@ -331,7 +347,8 @@ def _cleanup_old_briefings(retention_days: int = _CLEANUP_RETENTION_DAYS) -> dic
     except Exception as exc:
         errors.append(f"archive-index: {exc}")
 
-    return {"deleted": deleted, "errors": errors, "cutoff": cutoff}
+    return {"deleted": deleted, "errors": errors,
+            "cutoff": heute - datetime.timedelta(days=retention_days)}
 
 
 def _load_draft() -> dict:
@@ -2225,13 +2242,34 @@ def _wochen_erinnerung():
     if st.session_state.get("_meta_job") and not st.session_state.get("_meta_job", {}).get("done"):
         return
     _wtxt = f"vor {_alter} Tagen" if _alter < 900 else "noch nie"
+    # Schon vorgemerkt? Dann keine Frage mehr, nur die Bestaetigung.
+    if st.session_state.get("weekly_after_daily"):
+        st.info("🗓️ **Wochenbriefing ist vorgemerkt** — es wird direkt nach dem nächsten "
+                "Tagesbriefing gebaut, samt dessen Inhalten, und landet im ElevenReader.")
+        if st.button("Doch nicht — Vormerkung aufheben", key="wochen_abbestellen"):
+            st.session_state["weekly_after_daily"] = False
+            _save_draft()
+            st.rerun()
+        return
     st.warning(f"🗓️ **Wochenbriefing fällig** — das letzte war {_wtxt}. "
                "Möchtest du eins erstellen? Es fasst die Briefings der letzten 7 Tage "
                "zusammen und landet direkt in deinem ElevenReader.")
-    _wc1, _wc2 = st.columns([1, 1])
+    _wc0, _wc1, _wc2 = st.columns([1.4, 1, 0.8])
+    with _wc0:
+        # Der sinnvolle Regelfall: erst das heutige Briefing, dann die Woche —
+        # so ist der heutige Tag im Wochenbriefing mit drin (Florian 05.08.).
+        if st.button("📅 Nach dem nächsten Briefing", key="wochen_nachher",
+                     type="primary", use_container_width=True,
+                     help="Empfohlen: Das Wochenbriefing wartet, bis dein heutiges "
+                          "Tagesbriefing fertig ist — dann sind dessen Inhalte mit drin."):
+            st.session_state["weekly_after_daily"] = True
+            _save_draft()
+            st.rerun()
     with _wc1:
-        if st.button("🗓️ Ja, jetzt erstellen", key="wochen_jetzt", type="primary",
-                     use_container_width=True):
+        if st.button("🗓️ Sofort erstellen", key="wochen_jetzt",
+                     use_container_width=True,
+                     help="Baut es jetzt aus den bisherigen Briefings — ohne ein "
+                          "Tagesbriefing, das heute vielleicht noch kommt."):
             _wcli = _locate_claude_cli()
             if not _wcli:
                 st.error("Claude CLI nicht gefunden — bitte im Wochen-Meta-Block unten manuell starten.")
@@ -6290,7 +6328,10 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             _lm_age = 999
         _built_today = _lm_iso.startswith(datetime.datetime.now().strftime("%Y-%m-%d"))
         _want_oneshot = bool(st.session_state.get("weekly_after_daily"))
-        _want_auto = bool(st.session_state.get("weekly_auto_7d", True)) and _lm_age >= 7
+        # 05.08.: NICHT mehr ungefragt starten. weekly_auto_7d steuert nur noch die
+        # Erinnerungsfrage oben; gebaut wird ausschliesslich nach ausdruecklicher
+        # Vormerkung ("Nach dem naechsten Briefing").
+        _want_auto = False
         if (_daily_ok and _job_key and not _built_today
                 and st.session_state.get("_weekly_auto_done_for") != _job_key
                 and not _meta_running
