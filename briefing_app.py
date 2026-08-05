@@ -187,7 +187,7 @@ _DRAFT_DEFAULTS = {
     # nur in session_state + localStorage — App-Restart hat 13 Transkripte gekostet (16.07.).
     "raw_transcript_inbox": "",
     "last_weltlage_check_iso": "",
-    "briefing_depth_multi": ["Kürzer"],
+    "briefing_depth_multi": ["Intelligent"],
     "export_pdf": True,
     "genius_summary_mode": "long",
     # Run-Optionen (vorher nicht persistiert — bei Code-Reload gingen Checkbox-Werte verloren)
@@ -1312,6 +1312,7 @@ _ERZWUNGENE_DEFAULTS = (
     "synthesis_narrative_style", # immer an
     "synthesis_web_enrich",      # immer an
     "auto_briefing_when_done",   # Auto-Start nach den Podcasts bleibt an
+    "briefing_depth_multi",      # immer "Intelligent" — Florians Daily Driver
 )
 
 for _key, _default in _DRAFT_DEFAULTS.items():
@@ -2187,6 +2188,22 @@ if st.session_state.get("_raw_restore_pending"):
 
 # --- Scroll-to-Bottom per Streamlit components.html ---
 
+def _lazy_expander(titel: str, schluessel: str):
+    """Aufklapp-Block, dessen Inhalt erst gebaut wird, wenn er offen ist.
+
+    05.08.: Streamlit baut den Inhalt eines st.expander AUCH ZUGEKLAPPT bei jedem
+    Seitenaufbau komplett auf. Bei selten genutzten Bloecken (API-Version,
+    Web-Chat-Backup, Apple-Weg …) ist das reine Wartezeit beim Neuladen.
+    Rueckgabe: (container, offen) — der Aufrufer baut den Inhalt nur bei offen=True.
+    """
+    _offen = bool(st.session_state.get(f"_lazy_{schluessel}"))
+    if st.button(("▼ " if _offen else "▶ ") + titel, key=f"lazybtn_{schluessel}",
+                 use_container_width=True):
+        st.session_state[f"_lazy_{schluessel}"] = not _offen
+        st.rerun()
+    return st.container(), _offen
+
+
 def _scroll_textarea(aria_label: str):
     """Springt ans Ende eines Streamlit-Textareas und setzt den Cursor dorthin.
 
@@ -2225,6 +2242,30 @@ def _jump_to_end(field_key: str, aria_label: str):
         st.rerun()
     _scroll_textarea(aria_label)
 
+
+# ── 🛟 Feld-Wiederherstellung ───────────────────────────────────────────────
+# 05.08.: Klickt man in einem FRAGMENT (Pocket Casts, Episoden-Inbox), laeuft nur
+# dieses neu — die Textfelder ausserhalb werden nicht gerendert, und Streamlit
+# raeumt deren Widget-Zustand ab. Das Podcast-Feld stand danach leer da, obwohl
+# 18 Folgen drin waren. Die Entwurfs-Schutzschaltung verhinderte den Datenverlust
+# beim Speichern; hier kommt der Inhalt auch in der Anzeige zurueck.
+def _felder_wiederherstellen():
+    if st.session_state.get("_intentional_clear"):
+        return
+    try:
+        _platte = json.loads(_DRAFT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    for _feld in ("urls_text", "paywall_text", "podcast_text"):
+        _sitzung = st.session_state.get(_feld)
+        _gespeichert = _platte.get(_feld) or ""
+        # Nur eingreifen, wenn die Sitzung LEER ist und auf der Platte etwas steht.
+        if (_sitzung is None or not str(_sitzung).strip()) and _gespeichert.strip():
+            st.session_state[_feld] = _gespeichert
+            st.session_state["_feld_wiederhergestellt"] = _feld
+
+
+_felder_wiederherstellen()
 
 # Nach dem Ergänzen des Zeilenumbruchs den Sprung nachholen (siehe _jump_to_end).
 if st.session_state.get("_focus_end"):
@@ -5829,17 +5870,17 @@ with _mode_col1:
     if "briefing_depth_multi" not in st.session_state:
         # Migration: alter Radio-Wert (falls vorhanden) wird zur Vorauswahl.
         _old_depth = st.session_state.get("briefing_depth_radio")
-        st.session_state["briefing_depth_multi"] = [_old_depth] if _old_depth in _valid_depths else ["Kürzer"]
+        st.session_state["briefing_depth_multi"] = [_old_depth] if _old_depth in _valid_depths else ["Intelligent"]
     st.session_state["briefing_depth_multi"] = [
         d for d in st.session_state["briefing_depth_multi"] if d in _valid_depths
-    ] or ["Kürzer"]
+    ] or ["Intelligent"]
     _briefing_depth_sel = st.multiselect(
         "Briefing-Länge(n)",
         options=list(_valid_depths),
         key="briefing_depth_multi",
         help="Drei intelligente Stufen (Opus gewichtet jedes Thema selbst, du musst NICHTS bewerten — Top-Storys voll, Randnotizen 2-3 Sätze): 🧠 Intelligent kompakt (~70 Min, für eilige Tage) · 🧠 Intelligent (~90 Min, ⭐ empfohlener Daily Driver, der bewährte Sweet Spot) · 🧠 Intelligent ausführlich (~2 Std, volle Tiefe). Dazu die gleichmäßigen Klassik-Stufen: Sehr kurz / Kürzer / Ausführlich. MEHRERE anklicken = alle Versionen in einem Rutsch.",
     )
-    _depths_to_run = [d for d in _valid_depths if d in (_briefing_depth_sel or [])] or ["Kürzer"]
+    _depths_to_run = [d for d in _valid_depths if d in (_briefing_depth_sel or [])] or ["Intelligent"]
     st.session_state["_depths_to_run"] = _depths_to_run
     _briefing_depth = _depths_to_run[0]
     compact_mode = _briefing_depth != "Ausführlich"
@@ -5880,9 +5921,15 @@ with _mode_col2:
             "🌐 Fehlendes intelligent ergänzen (Websuche)", key="synthesis_web_enrich",
             help="Fehlt deinen Quellen ein zentraler Baustein (Wer ist die Person? Vorgeschichte? Schlüsselzahl?), darf Opus GEZIELT im Netz nachschlagen — max. 1-2 Suchen pro Thema, nur seriöse Quellen (Agenturen, Öffentlich-Rechtliche, Primärquellen). Jede Ergänzung wird im Text klar gekennzeichnet (Zur Einordnung, laut Reuters: …). Nur Lückenfüllung, nie neue Themen; bei Widerspruch gewinnen DEINE Quellen. Macht den Lauf etwas langsamer.",
         )
+        # 05.08.: OHNE index= nimmt Streamlit Option 0 ("Einweben"), sobald der
+        # Zustand verlorengeht (passiert durch Fragment-Reruns). Genau so stand
+        # der schlechteste Modus da, obwohl "Original übernehmen" Standard ist.
+        _pm_opt = ["Einweben (kürzen)", "Länger erhalten", "Original übernehmen"]
+        _pm_ist = st.session_state.get("podcast_synth_mode") or _DRAFT_DEFAULTS["podcast_synth_mode"]
         st.selectbox(
             "🎙️ Podcast-Behandlung",
-            options=["Einweben (kürzen)", "Länger erhalten", "Original übernehmen"],
+            options=_pm_opt,
+            index=_pm_opt.index(_pm_ist) if _pm_ist in _pm_opt else _pm_opt.index(_DRAFT_DEFAULTS["podcast_synth_mode"]),
             key="podcast_synth_mode",
             help="Wie deine kuratierten Podcast-Zusammenfassungen ins Briefing kommen — gilt in Synthese UND klassisch: "
                  "Einweben = wie alle Quellen behandelt und aufs Budget gekürzt (~100-200 W; klassisch: Kompakt-/Tragweite-Budget gilt auch für Podcasts). "
@@ -5895,9 +5942,13 @@ with _mode_col3:
     # sonst crasht st.radio (gespeicherter Wert nicht in options).
     if st.session_state.get("genius_depth_radio_main") not in ("Lang", "Kurz", "Beide", "Keine"):
         st.session_state["genius_depth_radio_main"] = "Keine"
+    # Ohne index= faellt das Feld bei Zustandsverlust auf "Lang" zurueck (05.08.).
+    _kf_opt = ["Lang", "Kurz", "Beide", "Keine"]
+    _kf_ist = st.session_state.get("genius_depth_radio_main") or _DRAFT_DEFAULTS["genius_depth_radio_main"]
     _kompakt_laenge = st.radio(
         "✨ Kompaktfassung",
-        options=["Lang", "Kurz", "Beide", "Keine"],
+        options=_kf_opt,
+        index=_kf_opt.index(_kf_ist) if _kf_ist in _kf_opt else _kf_opt.index(_DRAFT_DEFAULTS["genius_depth_radio_main"]),
         horizontal=True,
         key="genius_depth_radio_main",
         help="Separate kuratierte Verdichtung. Lang: nah am Voll-Briefing. Kurz: stark verdichtet. Beide: beide Versionen. Keine: gar keine Kompaktfassung erzeugen — spart Zeit + Opus-Kontingent, sinnvoll wenn dir das kürzere Voll-Briefing reicht (hat ja jetzt Top-3).",
@@ -7668,7 +7719,8 @@ st.markdown("---")
 st.markdown("#### 🧰 Weitere Wege & Werkzeuge")
 st.caption("Alles hier unten ist **optional und eingeklappt** — der Standard ist der kostenlose Claude-Weg oben. Aufklappen nur bei Bedarf.")
 
-with st.expander("💸 API-Version (kostenpflichtig · OpenAI/Anthropic) — nur falls der Claude-Weg mal klemmt", expanded=False):
+_lazy_c, _lazy_o = _lazy_expander("💸 API-Version (kostenpflichtig) — nur falls der Claude-Weg klemmt", "api_version")
+if _lazy_o:
     st.caption("Stabile, kostenpflichtige Alternative. Der **Standard ist Claude oben (kostenlos)**.")
 
     # === API-Setup: Provider | Key | Guthaben ===
@@ -7814,7 +7866,8 @@ if st.session_state.briefing_exports:
 # ============================================================
 
 st.markdown("---")
-with st.expander("🌐 Backup: Manueller Claude-Web-Chat-Pfad (auch kostenlos)", expanded=False):
+_lazy_c, _lazy_o = _lazy_expander("🌐 Backup: Manueller Claude-Web-Chat-Pfad", "webchat")
+if _lazy_o:
 
     st.caption(
         "**Wann brauchst du das?** Nur wenn der Auto-Pfad oben ausfällt "
@@ -7991,7 +8044,8 @@ with st.expander("🌐 Backup: Manueller Claude-Web-Chat-Pfad (auch kostenlos)",
 # ========================================================
 
 st.markdown("---")
-with st.expander("🎙️ Erweitert: Briefing in Erzählmodus konvertieren (API, kostenpflichtig)", expanded=False):
+_lazy_c, _lazy_o = _lazy_expander("🎙️ Erweitert: Erzählmodus konvertieren (API)", "erzaehl")
+if _lazy_o:
     with st.expander("ℹ️ Wofür ist das?", expanded=False):
         st.caption(
             "Nimmt eine fertige Briefing-PDF und schreibt sie als zusammenhängenden Erzähltext im Podcast-Stil neu. "
