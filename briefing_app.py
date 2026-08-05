@@ -2807,6 +2807,46 @@ def _read_real_5h_usage():
     return None
 
 
+def _read_limits_full() -> dict:
+    """Alle Kontingente inklusive Ruecksetz-Zeitpunkt — gleiche Quelle wie der
+    Limit-Waechter (Keychain-Token + /api/oauth/usage). Liefert
+    {"session": {"percent", "resets_at"}, "weekly": {...}} oder {}."""
+    try:
+        import subprocess as _sp, urllib.request as _ur, json as _js
+        _raw = _sp.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                       capture_output=True, text=True, timeout=8).stdout
+        _tok = _js.loads(_raw).get("claudeAiOauth", {}).get("accessToken", "")
+        if not _tok:
+            return {}
+        _req = _ur.Request("https://api.anthropic.com/api/oauth/usage",
+                           headers={"authorization": f"Bearer {_tok}", "anthropic-version": "2023-06-01",
+                                    "anthropic-beta": "oauth-2025-04-20"})
+        _d = _js.loads(_ur.urlopen(_req, timeout=15).read())
+        _out = {}
+        for _lim in _d.get("limits", []):
+            _art = "session" if _lim.get("kind") == "session" else (
+                "weekly" if _lim.get("group") == "weekly" and not _lim.get("scope") else None)
+            if _art and _art not in _out:
+                _out[_art] = {"percent": int(_lim.get("percent", 0) or 0),
+                              "resets_at": _lim.get("resets_at")}
+        return _out
+    except Exception:
+        return {}
+
+
+def _resets_in_text(iso: str) -> str:
+    """„in 42 Minuten" / „in 2 Std 10 Min" — fuer die Limit-Warnung."""
+    try:
+        _z = datetime.datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        _delta = _z - datetime.datetime.now(datetime.timezone.utc)
+        _min = max(0, int(_delta.total_seconds() // 60))
+        if _min < 90:
+            return f"in {_min} Minuten"
+        return f"in {_min // 60} Std {_min % 60} Min"
+    except Exception:
+        return "bald"
+
+
 def _sum_cli_usage(t0_iso: str, t1_iso: str) -> dict:
     """Summiert Token-Verbrauch der Briefing-CLI-Aufrufe im Zeitfenster aus den
     Claude-Sitzungsprotokollen (~/.claude/projects). Fable = meine Steuer-Session → raus."""
@@ -3138,7 +3178,15 @@ def _briefing_worker(cfg: dict, status: dict):
                 _limit_stats_add(_n_q, _u_nach - _u_vor)
         except Exception:
             pass
-        _upd(step="✅ Fertig.", ratio=1.0, done=True)
+        # 05.08.: Der Lauf meldete "✅ Fertig", obwohl 29 Quellen beim Schreiben
+        # ausgefallen waren (Limit alle). Das war die aergerlichste Seite des
+        # Vorfalls — der Abschluss sagt jetzt die Wahrheit.
+        _fehlend = len(status.get("uncovered_sources") or [])
+        if _fehlend:
+            _upd(step=f"⚠️ Fertig — aber {_fehlend} Quelle(n) fehlen im Briefing "
+                      f"(Limit/Auslastung beim Schreiben).", ratio=1.0, done=True)
+        else:
+            _upd(step="✅ Fertig.", ratio=1.0, done=True)
     except Exception as exc:
         _upd(step=f"❌ Unerwarteter Fehler: {str(exc)[:150]}", done=True, failed=True)
 
@@ -6108,18 +6156,24 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         _n_quellen_start = (len([l for l in urls_text.splitlines() if l.strip().startswith("http")])
                             + (len(split_paywall_articles(paywall_text)) if paywall_text.strip() else 0)
                             + (len(split_podcast_summaries(podcast_text)) if podcast_text.strip() else 0))
-        _usage_jetzt = _read_real_5h_usage()
-        _limit_knapp = False
-        if isinstance(_usage_jetzt, int) and _n_quellen_start:
-            _rest_pct = max(0, 100 - _usage_jetzt)
-            _noetig_pct = _n_quellen_start * _limit_faktor()
-            _limit_knapp = _rest_pct < _noetig_pct
+        _lims = _read_limits_full()
+        _noetig_pct = _n_quellen_start * _limit_faktor()
+        _limit_knapp, _knapp_txt = False, ""
+        for _art, _bez in (("session", "5-Stunden-Kontingent"), ("weekly", "Wochenkontingent")):
+            _l = _lims.get(_art) or {}
+            if not _l or not _n_quellen_start:
+                continue
+            _rest = max(0, 100 - int(_l.get("percent", 0)))
+            if _rest < _noetig_pct:
+                _limit_knapp = True
+                _knapp_txt = (f"{_bez}: nur noch **{_rest} %** frei, gebraucht werden rund "
+                              f"**{_noetig_pct:.0f} %**. Voll wieder {_resets_in_text(_l.get('resets_at'))}.")
+                break
         if not (urls_text.strip() or paywall_text.strip() or podcast_text.strip() or include_weather):
             st.warning("Mindestens ein Feld ausfüllen oder Wetter aktivieren.")
         elif _limit_knapp and not st.session_state.pop("_limit_trotzdem", False):
-            st.error(f"⛽ **Limit reicht voraussichtlich nicht** — {_n_quellen_start} Quellen "
-                     f"brauchen erfahrungsgemäß rund {_noetig_pct:.0f} % deines 5-Stunden-Kontingents, "
-                     f"frei sind aber nur noch {_rest_pct} %.")
+            st.error(f"⛽ **Limit reicht voraussichtlich nicht** für {_n_quellen_start} Quellen — "
+                     + _knapp_txt)
             st.markdown("Läuft das Limit mitten im Schreiben leer, **fehlen einzelne Quellen im "
                         "fertigen Briefing** — der Lauf meldet trotzdem Erfolg. Genau das ist am "
                         "05.08. passiert (29 Quellen verloren).")
