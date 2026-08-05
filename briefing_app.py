@@ -2154,21 +2154,47 @@ if st.session_state.get("_raw_restore_pending"):
 # --- Scroll-to-Bottom per Streamlit components.html ---
 
 def _scroll_textarea(aria_label: str):
-    """Scrollt ein Streamlit-Textarea anhand seines aria-label nach unten."""
+    """Springt ans Ende eines Streamlit-Textareas und setzt den Cursor dorthin.
+
+    05.08.: Vorher wurde nur gescrollt — der Cursor blieb, wo er war, und man
+    musste erst klicken und Enter druecken, bevor man einfuegen konnte.
+    """
     components.html(f"""
     <script>
     (function() {{
         const areas = window.parent.document.querySelectorAll('textarea');
         for (const ta of areas) {{
             if (ta.getAttribute('aria-label') === '{aria_label}') {{
-                ta.scrollTop = ta.scrollHeight;
                 ta.focus();
+                const n = ta.value.length;
+                ta.setSelectionRange(n, n);     // Cursor ans Ende
+                ta.scrollTop = ta.scrollHeight;
                 return;
             }}
         }}
     }})();
     </script>
     """, height=0)
+
+
+def _jump_to_end(field_key: str, aria_label: str):
+    """„↓ Ende": ans Feldende springen — und dort steht garantiert eine LEERE
+    Zeile, damit man sofort einfuegen kann, ohne vorher Enter zu druecken.
+
+    Fehlt der Zeilenumbruch, wird er ueber den Pending-Mechanismus ergaenzt und
+    der Sprung nach dem Neuaufbau nachgeholt (Merker `_focus_end`).
+    """
+    txt = st.session_state.get(field_key) or ""
+    if txt.strip() and not txt.endswith("\n"):
+        st.session_state[f"{field_key}_pending_value"] = txt.rstrip("\n") + "\n"
+        st.session_state["_focus_end"] = aria_label
+        st.rerun()
+    _scroll_textarea(aria_label)
+
+
+# Nach dem Ergänzen des Zeilenumbruchs den Sprung nachholen (siehe _jump_to_end).
+if st.session_state.get("_focus_end"):
+    _scroll_textarea(st.session_state.pop("_focus_end"))
 
 st.markdown('<div id="nav-urls" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
 st.markdown("#### Artikel-URLs")
@@ -2186,7 +2212,7 @@ with _url_desc_col:
         st.caption("Eine URL pro Zeile ist ideal — die App erkennt aber auch verklebte Links automatisch, sobald der nächste mit `https://` oder `http://` beginnt. Doppelte Links werden nur einmal verarbeitet.")
 with _url_scroll_col:
     if st.button("↓ Ende", key="scroll_urls", use_container_width=True):
-        _scroll_textarea("Artikel-URLs")
+        _jump_to_end("urls_text", "Artikel-URLs")
 url_preview = inspect_article_urls(urls_text)
 st.markdown(
     f"<div class='briefing-url-meta'><span class='briefing-url-count'>Aktuell erkannt: <strong>{len(url_preview['urls'])}</strong> URL{'s' if len(url_preview['urls']) != 1 else ''}</span><span class='briefing-url-note'>Nicht-Artikel-Links werden automatisch markiert und später übersprungen.</span></div>",
@@ -2539,7 +2565,7 @@ with _pw_desc_col:
         st.caption("Auf iPhone puffert die App diese Eingabe zusätzlich lokal im Browser, damit ein kurzer App-Wechsel den zuletzt getippten Text nicht verliert.")
 with _pw_scroll_col:
     if st.button("↓ Ende", key="scroll_paywall", use_container_width=True):
-        _scroll_textarea("Paywall-Artikel")
+        _jump_to_end("paywall_text", "Paywall-Artikel")
 
 # Podcast-Zusammenfassungen
 st.markdown('<div id="nav-podcast" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
@@ -4073,7 +4099,7 @@ with _pc_desc_col:
         st.caption("Mehrere Podcasts werden am Endmarker `Ende der Podcastzusammenfassung.` oder alternativ mit drei oder mehr `m` (`mmm`/`Mmmmmm`) getrennt. Sauber formatierte Blöcke bleiben unverändert; andere werden nur formatiert. Doppelte Blöcke landen nur einmal im Briefing.")
 with _pc_scroll_col:
     if st.button("↓ Ende", key="scroll_podcasts", use_container_width=True):
-        _scroll_textarea("Podcast-Zusammenfassungen")
+        _jump_to_end("podcast_text", "Podcast-Zusammenfassungen")
 _n_sp0 = len(split_special_topics(st.session_state.get("special_topics_text") or ""))
 _wl_last = st.session_state.get("last_weltlage_check_iso")
 _wl_days = None
