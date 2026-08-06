@@ -2535,14 +2535,25 @@ _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
 PODCAST_ROUND_LOG = _APP_DIR / ".briefing_podcast_round.json"
 
 
+def _round_log_key(titel: str) -> str:
+    """Vergleichsschluessel: nur Buchstaben/Ziffern, erste 50 Zeichen.
+    06.08.: Start schrieb Titel[:70], das Fertigwerden Titel[:60] — bei langen
+    Titeln passten die Eintraege nicht aufeinander, und neben dem ✅ blieb ein
+    'laeuft noch'-Geist stehen. Florian hielt deshalb ein VOLLSTAENDIGES
+    Briefing fuer halb leer."""
+    import re as _re
+    return _re.sub(r"[^a-zäöüß0-9]+", "", (titel or "").lower())[:50]
+
+
 def _round_log_write(eintrag: dict) -> None:
     """Haelt fest, was aus jeder angestossenen Folge wurde — dauerhaft.
     05.08.: Bisher stand das nur fluechtig in der Oberflaeche; nach dem naechsten
     Neuaufbau war nicht mehr nachvollziehbar, welche Folgen angekommen sind."""
     try:
         daten = _round_log_read()
+        _k = _round_log_key(eintrag.get("titel"))
         daten["eintraege"] = [e for e in daten.get("eintraege", [])
-                              if e.get("titel") != eintrag.get("titel")]
+                              if _round_log_key(e.get("titel")) != _k]
         daten["eintraege"].append(eintrag)
         daten["stand"] = datetime.datetime.now().isoformat()
         PODCAST_ROUND_LOG.write_text(json.dumps(daten, ensure_ascii=False), encoding="utf-8")
@@ -4318,7 +4329,23 @@ if _rl.get("eintraege"):
         for _e9 in _ok9:
             st.caption(f"✅ {_e9['titel']}　({_e9.get('woerter', '?')} Wörter)")
         for _e9 in _lauf9:
-            st.caption(f"🔄 {_e9['titel']}　— läuft noch oder abgebrochen")
+            # Steht die Folge laengst im Feld? Dann ist nur der Protokoll-
+            # Eintrag verwaist — nicht die Zusammenfassung.
+            import re as _re9
+            _norm9 = lambda x: _re9.sub(r"[^a-zäöüß0-9]+", "", (x or "").lower())
+            # Zwei Schluessel: voller Titel UND nur der Episodenteil nach dem
+            # Doppelpunkt — die fertige Zusammenfassung baut oft eine eigene
+            # Ueberschrift ("Diary Of A CEO – Michael Saylor" statt "The Diary
+            # Of A CEO with Steven Bartlett: Top Bitcoin Holder").
+            _heu9 = _norm9(st.session_state.get("podcast_text") or "")
+            _kand9 = [_norm9(_e9["titel"])[:35]]
+            if ":" in _e9["titel"]:
+                _kand9.append(_norm9(_e9["titel"].split(":", 1)[1])[:30])
+            _da9 = any(k and len(k) >= 12 and k in _heu9 for k in _kand9)
+            if _da9:
+                st.caption(f"✅ {_e9['titel']}　(angekommen — Protokoll hinkte nach)")
+            else:
+                st.caption(f"🔄 {_e9['titel']}　— läuft noch oder abgebrochen")
         for _e9 in _err9:
             st.caption(f"❌ {_e9['titel']}　— {_e9.get('grund', '?')}")
         for _e9 in _kt9:
