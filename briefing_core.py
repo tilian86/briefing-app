@@ -14974,15 +14974,41 @@ def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str
         # Sehr lange Transkripte brauchen mehr Denkstufe, um nichts zu verlieren.
         "--effort", (cli_effort("synthese") if _n_chars >= 80_000 else cli_effort("podcast")),
     ]
-    try:
-        sr = _run_claude_cli_subprocess_streaming(
-            cmd, payload, timeout_seconds=timeout_seconds,
-            expected_duration_s=150.0, label="Podcast-Zusammenfassung (Claude)",
-        )
-    except Exception as exc:
-        return {"ok": False, "summary": "", "error": str(exc), "elapsed_seconds": time.time() - t0}
-    if not sr.get("ok") or sr.get("returncode") != 0:
-        err = (sr.get("stdout") or sr.get("stderr") or "CLI-Aufruf fehlgeschlagen").strip()[:200]
+    # 08.08.: Vorübergehende Netzabbrüche (ECONNRESET) haben 6 von 22 Folgen
+    # verworfen — ein einziger Zuckung im Netz kostete eine ganze Zusammenfassung,
+    # obwohl das Limit zu 91% frei war. Solche Fehler werden jetzt wiederholt.
+    _VORUEBERGEHEND = ("econnreset", "etimedout", "econnrefused", "enotfound", "epipe",
+                       "socket hang up", "unable to connect", "connection error",
+                       "network error", "fetch failed", "502", "503", "504",
+                       "overloaded", "timed out")
+
+    def _ist_voruebergehend(text: str) -> bool:
+        t = (text or "").lower()
+        return any(m in t for m in _VORUEBERGEHEND)
+
+    sr, err = None, ""
+    for _versuch in range(1, 4):
+        try:
+            sr = _run_claude_cli_subprocess_streaming(
+                cmd, payload, timeout_seconds=timeout_seconds,
+                expected_duration_s=150.0,
+                label=f"Podcast-Zusammenfassung (Claude){'' if _versuch == 1 else f' — Versuch {_versuch}'}",
+            )
+            err = ""
+        except Exception as exc:
+            sr, err = None, str(exc)
+        if sr and sr.get("ok") and sr.get("returncode") == 0:
+            break
+        if not err:
+            err = (sr.get("stdout") or sr.get("stderr") or "CLI-Aufruf fehlgeschlagen").strip()[:200] if sr else "kein Ergebnis"
+        if not _ist_voruebergehend(err) or _versuch == 3:
+            break
+        _wartezeit = 5 * (2 ** (_versuch - 1))   # 5s, 10s
+        print(f"[podcast] vorübergehender Fehler ({err[:60]}) — Versuch {_versuch + 1} in {_wartezeit}s.",
+              file=sys.stderr)
+        time.sleep(_wartezeit)
+
+    if not (sr and sr.get("ok") and sr.get("returncode") == 0):
         err = _friendly_cli_login_error(err, cli) or err
         return {"ok": False, "summary": "", "error": err, "elapsed_seconds": time.time() - t0}
     summary = (sr.get("stdout") or "").strip()
