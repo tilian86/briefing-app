@@ -2542,7 +2542,14 @@ def _round_log_key(titel: str) -> str:
     'laeuft noch'-Geist stehen. Florian hielt deshalb ein VOLLSTAENDIGES
     Briefing fuer halb leer."""
     import re as _re
-    return _re.sub(r"[^a-zäöüß0-9]+", "", (titel or "").lower())[:50]
+    t = titel or ""
+    # Start schreibt "Podcast: <Name> — Episode: <Folge>", das Fertigwerden
+    # "<Name>: <Folge>". Nur der Folgenteil ist zuverlaessig gleich (08.08.).
+    if "Episode:" in t:
+        t = t.split("Episode:")[-1]
+    elif ":" in t:
+        t = t.split(":", 1)[1]
+    return _re.sub(r"[^a-zäöüß0-9]+", "", t.lower())[:32]
 
 
 def _round_log_write(eintrag: dict) -> None:
@@ -4323,33 +4330,48 @@ if _rl.get("eintraege"):
              + (f" · 🔄 {len(_lauf9)} offen" if _lauf9 else "")
              + (f" · ❌ {len(_err9)} fehlgeschlagen" if _err9 else "")
              + (f" · ⏭️ {len(_kt9)} ohne Transkript" if _kt9 else ""))
-    with st.expander(_kopf, expanded=bool(_err9 or _lauf9)):
+    with st.expander(_kopf, expanded=False):
         st.caption("Bleibt stehen, bis du die nächste Runde startest — damit du jederzeit "
                    "nachsehen kannst, was aus jeder Folge geworden ist.")
-        for _e9 in _ok9:
-            st.caption(f"✅ {_e9['titel']}　({_e9.get('woerter', '?')} Wörter)")
-        for _e9 in _lauf9:
-            # Steht die Folge laengst im Feld? Dann ist nur der Protokoll-
-            # Eintrag verwaist — nicht die Zusammenfassung.
+        # 08.08.: Vorher stand hier jede Folge einzeln, teils doppelt (einmal als
+        # „läuft", einmal als Fehler) — eine unlesbare Wand aus 32 Zeilen. Jetzt
+        # gruppiert, mit Details nur auf Wunsch.
+        if _err9:
+            _gruende = {}
+            for _e9 in _err9:
+                _g9 = str(_e9.get("grund", "?"))
+                _kurz = ("Netzabbruch (ECONNRESET)" if "ECONNRESET" in _g9
+                         else "Limit erreicht" if "limit" in _g9.lower()
+                         else _g9[:48])
+                _gruende[_kurz] = _gruende.get(_kurz, 0) + 1
+            for _g9, _n9x in sorted(_gruende.items(), key=lambda x: -x[1]):
+                st.markdown(f"**❌ {_n9x}× {_g9}**")
+            st.caption("Die Rohtexte liegen gesichert im Ordner `rettung_<Datum>` — "
+                       "nichts ist verloren, ein neuer Anlauf holt sie nach.")
+        with st.expander(f"Einzelne Folgen anzeigen ({len(_rl['eintraege'])})", expanded=False):
             import re as _re9
             _norm9 = lambda x: _re9.sub(r"[^a-zäöüß0-9]+", "", (x or "").lower())
-            # Zwei Schluessel: voller Titel UND nur der Episodenteil nach dem
-            # Doppelpunkt — die fertige Zusammenfassung baut oft eine eigene
-            # Ueberschrift ("Diary Of A CEO – Michael Saylor" statt "The Diary
-            # Of A CEO with Steven Bartlett: Top Bitcoin Holder").
             _heu9 = _norm9(st.session_state.get("podcast_text") or "")
-            _kand9 = [_norm9(_e9["titel"])[:35]]
-            if ":" in _e9["titel"]:
-                _kand9.append(_norm9(_e9["titel"].split(":", 1)[1])[:30])
-            _da9 = any(k and len(k) >= 12 and k in _heu9 for k in _kand9)
-            if _da9:
-                st.caption(f"✅ {_e9['titel']}　(angekommen — Protokoll hinkte nach)")
-            else:
-                st.caption(f"🔄 {_e9['titel']}　— läuft noch oder abgebrochen")
-        for _e9 in _err9:
-            st.caption(f"❌ {_e9['titel']}　— {_e9.get('grund', '?')}")
-        for _e9 in _kt9:
-            st.caption(f"⏭️ {_e9['titel']}　— kein Transkript verfügbar")
+
+            def _steht_im_feld(titel: str) -> bool:
+                """Voller Titel ODER Episodenteil — die fertige Zusammenfassung
+                baut oft eine eigene Ueberschrift."""
+                kand = [_norm9(titel)[:35]]
+                if ":" in titel:
+                    kand.append(_norm9(titel.split(":", 1)[1])[:30])
+                return any(k and len(k) >= 12 and k in _heu9 for k in kand)
+
+            for _e9 in _ok9:
+                st.caption(f"✅ {_e9['titel']}　({_e9.get('woerter', '?')} Wörter)")
+            for _e9 in _lauf9:
+                if _steht_im_feld(_e9["titel"]):
+                    st.caption(f"✅ {_e9['titel']}　(angekommen — Protokoll hinkte nach)")
+                else:
+                    st.caption(f"🔄 {_e9['titel']}　— läuft noch oder abgebrochen")
+            for _e9 in _err9:
+                st.caption(f"❌ {_e9['titel']}　— {str(_e9.get('grund', '?'))[:70]}")
+            for _e9 in _kt9:
+                st.caption(f"⏭️ {_e9['titel']}　— kein Transkript verfügbar")
 
 if st.session_state.get("_podcast_inbox_last_msg"):
     st.success(st.session_state.pop("_podcast_inbox_last_msg"))
