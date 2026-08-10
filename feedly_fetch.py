@@ -296,7 +296,7 @@ def _entry_url(entry: dict) -> str:
     return ""
 
 
-def list_saved(page, limit: int = 250) -> list:
+def list_saved(page, limit: int = 2000) -> list:
     """Liest die Read-later-Liste. Ergebnis: Liste von dicts."""
     profile = _api(page, "/v3/profile")
     user_id = profile.get("id")
@@ -304,14 +304,24 @@ def list_saved(page, limit: int = 250) -> list:
         raise RuntimeError("Feedly-Profil nicht lesbar — bist du angemeldet?")
 
     stream_id = f"user/{user_id}/tag/global.saved"
-    path = (
-        "/v3/streams/contents?streamId=" + urllib.parse.quote(stream_id, safe="")
-        + f"&count={int(limit)}&ranked=newest"
-    )
-    data = _api(page, path)
+    # 10.08.: Kein Deckel mehr — Feedly liefert die Liste seitenweise, also wird
+    # geblaettert, bis nichts mehr kommt. Vorher holten wir stur die neuesten 100;
+    # bei ~120 markierten fielen die 20 aeltesten unbemerkt hinten runter.
+    # `limit` ist nur noch eine Notbremse gegen Endlosschleifen.
+    basis = ("/v3/streams/contents?streamId=" + urllib.parse.quote(stream_id, safe="")
+             + "&count=250&ranked=newest")
+    roh, fortsetzung = [], None
+    while True:
+        pfad = basis + (f"&continuation={urllib.parse.quote(fortsetzung, safe='')}" if fortsetzung else "")
+        data = _api(page, pfad)
+        seite = data.get("items") or []
+        roh.extend(seite)
+        fortsetzung = data.get("continuation")
+        if not fortsetzung or not seite or len(roh) >= max(int(limit), 250):
+            break
 
     items = []
-    for entry in data.get("items") or []:
+    for entry in roh:
         url = _entry_url(entry)
         if not url:
             continue
@@ -377,7 +387,7 @@ def _norm_url(url: str) -> str:
     return u.rstrip("/?&").lower()
 
 
-def fetch_all(limit: int = 250, progress=None, headless: bool = True,
+def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
               skip_urls=None, skip_ids=None) -> dict:
     """Holt Merkliste + Volltexte.
 
@@ -415,7 +425,7 @@ def fetch_all(limit: int = 250, progress=None, headless: bool = True,
         # ("ranked=newest" holt die NEUESTEN zuerst) — deshalb Deckel auf 250 und
         # eine laute Warnung, falls er doch erreicht wird.
         if len(items) >= limit:
-            say(f"⚠️ Obergrenze {limit} erreicht — ältere Merkliste-Einträge fehlen womöglich!")
+            say(f"⚠️ Notbremse bei {limit} Einträgen gegriffen — das wäre höchst ungewöhnlich, bitte melden!")
 
         # Dubletten aussortieren, BEVOR die Volltexte geladen werden — spart
         # Zeit und verhindert, dass derselbe Artikel zweimal im Feld landet.

@@ -412,6 +412,26 @@ def _save_draft():
                               file=sys.stderr)
             except Exception:
                 pass
+        # 🛡 Fremdaenderungs-Schutz (10.08.): Hat eine andere Quelle die Datei
+        # geaendert, seit DIESE Sitzung geladen hat, und hat diese Sitzung das
+        # Feld selbst NICHT angefasst — dann gewinnt die Datei. Genau so haben
+        # Zombie-Tabs zweimal frisch eingespielte Artikel ueberschrieben
+        # (05.08. Podcasts, 10.08. die 18 Feedly-Volltexte; −11% rutschte unter
+        # der 15%-Schrumpf-Schwelle durch).
+        try:
+            _snap = st.session_state.get("_draft_snapshot") or {}
+            _disk = json.loads(_DRAFT_PATH.read_text(encoding="utf-8"))
+            for _feld in ("urls_text", "paywall_text", "podcast_text"):
+                _sitzung_wert = draft_data.get(_feld) or ""
+                _snap_wert = _snap.get(_feld, "")
+                _disk_wert = _disk.get(_feld) or ""
+                if _sitzung_wert == _snap_wert and _disk_wert != _snap_wert:
+                    draft_data[_feld] = _disk_wert
+                    print(f"[draft-schutz] {_feld}: Datei wurde extern geändert, "
+                          f"diese Sitzung hat das Feld nicht angefasst — Datei-Stand behalten.",
+                          file=sys.stderr)
+        except Exception:
+            pass
         _backup_draft_before_shrink(draft_data)
         _DRAFT_PATH.write_text(
             json.dumps(draft_data, ensure_ascii=False, indent=2),
@@ -1274,6 +1294,13 @@ def _apply_cost_to_balances(check: dict):
 
 
 _saved_draft = _load_draft()
+# 🛡 10.08.: Schnappschuss der Inhaltsfelder beim Sitzungsstart. Damit erkennt
+# _save_draft, ob eine ANDERE Quelle (zweiter Tab, Claude-Skript) die Datei
+# inzwischen geaendert hat — und ueberschreibt deren Stand dann nicht mehr.
+if "_draft_snapshot" not in st.session_state:
+    st.session_state["_draft_snapshot"] = {
+        k: (_saved_draft.get(k) or "") for k in ("urls_text", "paywall_text", "podcast_text")
+    }
 _saved_exports, _saved_check, _saved_sections = _load_last_briefing()
 
 # Auto-Aufräumen: Briefings älter als 21 Tage einmal pro Session löschen
