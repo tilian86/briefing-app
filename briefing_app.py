@@ -2721,7 +2721,8 @@ def _fragment_feedly_status():
         alt = (st.session_state.get("paywall_text") or "").rstrip()
         st.session_state["paywall_text_pending_value"] = (
             (alt + "\n\nmmm\n\n" + neu_text) if alt else neu_text)
-        _F.add_pending([i["entry_id"] for i in ok if i.get("entry_id")],
+        _F.add_pending([i["entry_id"] for i in ok if i.get("entry_id")]
+                       + [i["entry_id"] for i in skipped if i.get("entry_id")],
                        res.get("user_id") or "")
 
     _free, _walled = _F.split_free_and_paywall(ok)

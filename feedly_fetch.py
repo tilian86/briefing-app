@@ -296,7 +296,7 @@ def _entry_url(entry: dict) -> str:
     return ""
 
 
-def list_saved(page, limit: int = 100) -> list:
+def list_saved(page, limit: int = 250) -> list:
     """Liest die Read-later-Liste. Ergebnis: Liste von dicts."""
     profile = _api(page, "/v3/profile")
     user_id = profile.get("id")
@@ -377,7 +377,7 @@ def _norm_url(url: str) -> str:
     return u.rstrip("/?&").lower()
 
 
-def fetch_all(limit: int = 100, progress=None, headless: bool = True,
+def fetch_all(limit: int = 250, progress=None, headless: bool = True,
               skip_urls=None, skip_ids=None) -> dict:
     """Holt Merkliste + Volltexte.
 
@@ -411,6 +411,11 @@ def fetch_all(limit: int = 100, progress=None, headless: bool = True,
         listing = list_saved(page, limit=limit)
         items = listing["items"]
         say(f"{len(items)} Artikel in der Merkliste.")
+        # 09.08.: Bei limit=100 fielen 20 aeltere Artikel unbemerkt hinten runter
+        # ("ranked=newest" holt die NEUESTEN zuerst) — deshalb Deckel auf 250 und
+        # eine laute Warnung, falls er doch erreicht wird.
+        if len(items) >= limit:
+            say(f"⚠️ Obergrenze {limit} erreicht — ältere Merkliste-Einträge fehlen womöglich!")
 
         # Dubletten aussortieren, BEVOR die Volltexte geladen werden — spart
         # Zeit und verhindert, dass derselbe Artikel zweimal im Feld landet.
