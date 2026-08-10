@@ -437,6 +437,10 @@ def _save_draft():
             json.dumps(draft_data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        try:
+            st.session_state["_draft_mtime_seen"] = _DRAFT_PATH.stat().st_mtime
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -2277,19 +2281,32 @@ def _jump_to_end(field_key: str, aria_label: str):
 # 18 Folgen drin waren. Die Entwurfs-Schutzschaltung verhinderte den Datenverlust
 # beim Speichern; hier kommt der Inhalt auch in der Anzeige zurueck.
 def _felder_wiederherstellen():
+    """Die Entwurfsdatei ist die Wahrheit — nicht der Browser-Zwischenspeicher.
+
+    10.08.: Beim Wiederverbinden schickt Streamlit die ALTEN Widget-Werte des
+    Browsers mit. Der frueherer Schutz hielt das faelschlich fuer eine
+    Nutzereingabe und schrieb damit frisch eingespielte Inhalte zu — dreimal
+    passiert (Podcasts, 14 Artikel, 18 Feedly-Volltexte). Deshalb jetzt: Ist die
+    Datei neuer als der Stand, den diese Sitzung kennt, gewinnt die Datei.
+    """
     if st.session_state.get("_intentional_clear"):
         return
     try:
+        _mtime = _DRAFT_PATH.stat().st_mtime
         _platte = json.loads(_DRAFT_PATH.read_text(encoding="utf-8"))
     except Exception:
         return
+    _gesehen = st.session_state.get("_draft_mtime_seen")
+    _fremd_geaendert = _gesehen is not None and _mtime > _gesehen + 0.5
     for _feld in ("urls_text", "paywall_text", "podcast_text"):
         _sitzung = st.session_state.get(_feld)
         _gespeichert = _platte.get(_feld) or ""
-        # Nur eingreifen, wenn die Sitzung LEER ist und auf der Platte etwas steht.
-        if (_sitzung is None or not str(_sitzung).strip()) and _gespeichert.strip():
+        _leer = _sitzung is None or not str(_sitzung).strip()
+        if ((_leer and _gespeichert.strip()) or
+                (_fremd_geaendert and str(_sitzung or "") != _gespeichert)):
             st.session_state[_feld] = _gespeichert
             st.session_state["_feld_wiederhergestellt"] = _feld
+    st.session_state["_draft_mtime_seen"] = _mtime
 
 
 _felder_wiederherstellen()
