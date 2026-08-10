@@ -2559,6 +2559,23 @@ with _fl_col2:
 _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
 
 
+PC_ARCHIVE_FRAGE = _APP_DIR / ".briefing_pc_archive_frage.json"
+
+
+def _pc_archive_frage_lesen() -> list:
+    try:
+        return json.loads(PC_ARCHIVE_FRAGE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _pc_archive_frage_schreiben(eintraege) -> None:
+    try:
+        PC_ARCHIVE_FRAGE.write_text(json.dumps(eintraege, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 PODCAST_ROUND_LOG = _APP_DIR / ".briefing_podcast_round.json"
 
 
@@ -4073,6 +4090,14 @@ def _fragment_pocket_casts():
                 # Neue Runde: Protokoll frisch anlegen, alle Beteiligten eintragen —
                 # so ist hinterher lueckenlos sichtbar, was aus jeder Folge wurde.
                 _round_log_reset()
+                # 🗂 Kandidaten fuer die spaetere Frage "aus Pocket Casts entfernen?"
+                _pc_archive_frage_schreiben([
+                    {"titel": (f"{_t9.get('podcast_title')}: {_t9['title']}"
+                               if _t9.get("podcast_title") else _t9["title"])[:80],
+                     "episode": _t9.get("episode"), "podcast": _t9.get("podcast"),
+                     "fertig": False}
+                    for _t9 in _chosen if _t9.get("episode") and _t9.get("podcast")
+                ])
                 for _t9 in _chosen:
                     _n9 = (f"{_t9.get('podcast_title')}: {_t9['title']}"
                            if _t9.get("podcast_title") else _t9["title"])[:70]
@@ -4299,6 +4324,12 @@ def _round_jobs_collector():
             st.session_state["_bg_status"] = _bgs
             _round_log_write({"titel": (_j.get("title") or "Podcast")[:70],
                               "status": "ok", "woerter": len((_r.get("summary") or "").split())})
+            if _j.get("episode"):
+                _fr9 = _pc_archive_frage_lesen()
+                for _e in _fr9:
+                    if _e.get("episode") == _j["episode"]:
+                        _e["fertig"] = True
+                _pc_archive_frage_schreiben(_fr9)
         else:
             _bgs = st.session_state.get("_bg_status") or []
             _bgs.append({"t": (_j.get("title") or "Podcast")[:55], "s": "❌"})
@@ -4400,6 +4431,50 @@ if _rl.get("eintraege"):
                 st.caption(f"❌ {_e9['titel']}　— {str(_e9.get('grund', '?'))[:70]}")
             for _e9 in _kt9:
                 st.caption(f"⏭️ {_e9['titel']}　— kein Transkript verfügbar")
+
+# ── 🗂 Nach der Runde: welche Folgen sollen aus Pocket Casts raus? ──────────
+# Florians Wunsch (10.08.): Manche Folgen will er trotz Zusammenfassung noch
+# selbst hoeren — deshalb FRAGEN statt automatisch archivieren. Haken = raus.
+@st.fragment
+def _fragment_pc_archive_frage():
+    _kand = _pc_archive_frage_lesen()
+    _fertige = [e for e in _kand if e.get("fertig")]
+    if not _fertige:
+        return
+    _noch_offen = len(_kand) - len(_fertige)
+    with st.expander(f"🗂 {len(_fertige)} zusammengefasste Folge(n) aus Pocket Casts entfernen?"
+                     + (f" ({_noch_offen} laufen noch)" if _noch_offen else ""),
+                     expanded=(_noch_offen == 0)):
+        st.caption("Haken = wird in Pocket Casts archiviert (aus deiner Liste genommen). "
+                   "Haken weg bei Folgen, die du noch selbst hören willst.")
+        _ausgewaehlt = []
+        for _i, _e in enumerate(_fertige):
+            if st.checkbox(_e["titel"], value=True, key=f"pcarch_{_i}"):
+                _ausgewaehlt.append(_e)
+        _c1, _c2 = st.columns([2, 1])
+        with _c1:
+            if st.button(f"🗂 {len(_ausgewaehlt)} Folge(n) aus Pocket Casts entfernen",
+                         key="pcarch_go", type="primary", use_container_width=True,
+                         disabled=not _ausgewaehlt):
+                try:
+                    import pocketcasts_fetch as _pcf_arch
+                    _n = _pcf_arch.archive_episodes(_ausgewaehlt)
+                    _behalten = [e for e in _kand if e not in _ausgewaehlt and not e.get("fertig")]
+                    _pc_archive_frage_schreiben(_behalten)
+                    st.session_state["_podcast_inbox_last_msg"] = (
+                        f"🗂 {_n} Folge(n) in Pocket Casts archiviert"
+                        + (f", {len(_fertige) - len(_ausgewaehlt)} behalten." if len(_fertige) > len(_ausgewaehlt) else "."))
+                    st.rerun(scope="app")
+                except Exception as _aex:
+                    st.error(f"Archivieren fehlgeschlagen: {str(_aex)[:120]} — "
+                             "deine Liste ist unverändert.")
+        with _c2:
+            if st.button("Alle behalten", key="pcarch_keep", use_container_width=True):
+                _pc_archive_frage_schreiben([e for e in _kand if not e.get("fertig")])
+                st.rerun(scope="app")
+
+
+_fragment_pc_archive_frage()
 
 if st.session_state.get("_podcast_inbox_last_msg"):
     st.success(st.session_state.pop("_podcast_inbox_last_msg"))

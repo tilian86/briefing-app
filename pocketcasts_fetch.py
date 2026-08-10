@@ -11,6 +11,7 @@ Zweiteiliger Weg (am 21.07.2026 live verifiziert):
 Kein Cmd+A-Crap: das VTT enthält nur den gesprochenen Text, keine UI/Menüs.
 Python 3.9-kompatibel.
 """
+import json
 import os
 import re
 import sys
@@ -477,6 +478,35 @@ def preview_new_releases(progress=None):
                       "podcast": ep["podcast"], "episode": ep["episode"],
                       "text": text, "has_transcript": bool(text)})
     return items, "ok"
+
+
+_API_ARCHIVE_URL = "https://api.pocketcasts.com/sync/update_episode_archive"
+
+
+def archive_episodes(eps, token: str = None) -> int:
+    """Archiviert Folgen in Pocket Casts (= aus der Liste nehmen, wie am Handy).
+
+    eps: Liste von {"episode": uuid, "podcast": uuid}. Gibt die Anzahl zurueck.
+    10.08.: Florians Wunsch — nach den Zusammenfassungen fragt die App, welche
+    Folgen aus der Liste sollen; manche will er ja noch selbst ganz hoeren.
+    """
+    eintraege = [{"uuid": e["episode"], "podcast": e["podcast"]}
+                 for e in (eps or []) if e.get("episode") and e.get("podcast")]
+    if not eintraege:
+        return 0
+    token = token or get_api_token()
+    if not token:
+        raise RuntimeError("Kein Pocket-Casts-Login — bitte einmal neu anmelden.")
+    import urllib.request as _ur
+    req = _ur.Request(_API_ARCHIVE_URL,
+                      data=json.dumps({"episodes": eintraege, "archive": True}).encode("utf-8"),
+                      headers={"Authorization": f"Bearer {token}",
+                               "Content-Type": "application/json"},
+                      method="POST")
+    with _ur.urlopen(req, timeout=30) as r:
+        if r.status not in (200, 204):
+            raise RuntimeError(f"Pocket Casts antwortete mit HTTP {r.status}.")
+    return len(eintraege)
 
 
 def summarize_selection_mark(episode_uuids):
