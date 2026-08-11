@@ -124,6 +124,35 @@ st.set_page_config(
 # Tests MÜSSEN BRIEFING_DRAFT_PATH auf einen Wegwerf-Pfad setzen — AppTest führt
 # die echte App aus und hat am 03.07. Florians echten Draft mit Testdaten überschrieben.
 _DRAFT_PATH = Path(os.getenv("BRIEFING_DRAFT_PATH") or (_APP_DIR / ".briefing_draft.json"))
+
+AUTO_KETTE = _APP_DIR / ".briefing_auto_kette.json"
+
+
+def _kette_setzen(schritt: str) -> None:
+    """Merkt den naechsten Schritt der Auto-Kette DAUERHAFT.
+    11.08.: Die Kette lag nur in st.session_state — ein App-Neustart (oder ein
+    geschlossener Tab) hat sie verschluckt, und das Briefing startete nie."""
+    try:
+        AUTO_KETTE.write_text(json.dumps({"schritt": schritt}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _kette_holen() -> str:
+    try:
+        return (json.loads(AUTO_KETTE.read_text(encoding="utf-8")) or {}).get("schritt") or ""
+    except Exception:
+        return ""
+
+
+def _kette_loeschen() -> None:
+    try:
+        if AUTO_KETTE.exists():
+            AUTO_KETTE.unlink()
+    except Exception:
+        pass
+
+
 _LAST_BRIEFING_DIR = _APP_DIR / ".last_briefing"
 _PRIMARY_ARCHIVE_DIR = Path("/Users/florian/Library/Mobile Documents/com~apple~CloudDocs/Downloads/Briefings")
 _FALLBACK_ARCHIVE_DIR = _APP_DIR / ".archive"
@@ -2585,34 +2614,6 @@ if not st.session_state.get("_kette_geprueft"):
         st.session_state["_auto_run_briefing"] = True
 
 _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
-
-
-AUTO_KETTE = _APP_DIR / ".briefing_auto_kette.json"
-
-
-def _kette_setzen(schritt: str) -> None:
-    """Merkt den naechsten Schritt der Auto-Kette DAUERHAFT.
-    11.08.: Die Kette lag nur in st.session_state — ein App-Neustart (oder ein
-    geschlossener Tab) hat sie verschluckt, und das Briefing startete nie."""
-    try:
-        AUTO_KETTE.write_text(json.dumps({"schritt": schritt}), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _kette_holen() -> str:
-    try:
-        return (json.loads(AUTO_KETTE.read_text(encoding="utf-8")) or {}).get("schritt") or ""
-    except Exception:
-        return ""
-
-
-def _kette_loeschen() -> None:
-    try:
-        if AUTO_KETTE.exists():
-            AUTO_KETTE.unlink()
-    except Exception:
-        pass
 
 
 PC_ARCHIVE_FRAGE = _APP_DIR / ".briefing_pc_archive_frage.json"
