@@ -480,7 +480,9 @@ def preview_new_releases(progress=None):
     return items, "ok"
 
 
-_API_ARCHIVE_URL = "https://api.pocketcasts.com/sync/update_episode_archive"
+# 11.08.: Endpunkt abgetastet — "update_episode_archive" (Einzahl) gibt 404,
+# richtig ist die MEHRZAHL. Der 404 liess das Archivieren scheitern.
+_API_ARCHIVE_URL = "https://api.pocketcasts.com/sync/update_episodes_archive"
 
 
 def archive_episodes(eps, token: str = None) -> int:

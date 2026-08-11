@@ -173,10 +173,12 @@ _DRAFT_DEFAULTS = {
     "topic_synthesis_mode": True,
     "synthesis_narrative_style": True,
     "synthesis_web_enrich": True,
-    # 01.08.: "Original übernehmen" ist neuer Standard — im Lauf vom 01.08. hat er
-    # 10 Podcasts als je eigenen Beitrag mit 327-1568 Woertern geliefert, also
-    # genau das, was "Länger erhalten" nur annaehernd erreicht hat.
-    "podcast_synth_mode": "Original übernehmen",
+    # 11.08.: zurueck auf "Länger erhalten" — Florians Wunsch, und fachlich das
+    # bessere Standardverhalten: die Folge wird in die Briefing-Sprache
+    # uebertragen (Mindestbudget 220-340 W, jede Folge ein eigener Beitrag),
+    # statt die Roh-Zusammenfassung 1:1 durchzureichen. "Original übernehmen"
+    # war zwar laenger, klang aber wie ein Fremdkoerper im Vorlesetext.
+    "podcast_synth_mode": "Länger erhalten",
     "auto_reader_upload": True,
     "reader_cleanup_days": 14,
     "whatsapp_pdf_additional": True,
@@ -1333,7 +1335,7 @@ if st.session_state.get("_cleanup_count", 0) and not st.session_state.get("_clea
 _ERZWUNGENE_DEFAULTS = (
     "quality_check_enabled",     # immer an
     "auto_reader_upload",        # immer an
-    "podcast_synth_mode",        # immer "Länger erhalten"
+    "podcast_synth_mode",        # immer "Länger erhalten" (11.08.)
     "genius_depth_radio_main",   # immer "Keine" — Kompaktfassung standardmaessig aus (01.08.)
     "weekly_auto_7d",            # Wochenbriefing-Erinnerung immer aktiv (05.08.)
     # 05.08.: Florian musste nach einem Neuladen Synthese, Magazin-Stil und
@@ -2573,7 +2575,44 @@ with _fl_col2:
 
 # Zwischenschritt der Auto-Kette: Podcasts sind fertig, jetzt Feedly holen und
 # danach das Briefing zünden. Läuft genau einmal, dann ist die Marke wieder weg.
+# Offenen Kettenschritt nach einem Neustart wieder aufnehmen (nur einmal je Sitzung).
+if not st.session_state.get("_kette_geprueft"):
+    st.session_state["_kette_geprueft"] = True
+    _k = _kette_holen()
+    if _k == "feedly":
+        st.session_state["_auto_feedly_pending"] = True
+    elif _k == "briefing":
+        st.session_state["_auto_run_briefing"] = True
+
 _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
+
+
+AUTO_KETTE = _APP_DIR / ".briefing_auto_kette.json"
+
+
+def _kette_setzen(schritt: str) -> None:
+    """Merkt den naechsten Schritt der Auto-Kette DAUERHAFT.
+    11.08.: Die Kette lag nur in st.session_state — ein App-Neustart (oder ein
+    geschlossener Tab) hat sie verschluckt, und das Briefing startete nie."""
+    try:
+        AUTO_KETTE.write_text(json.dumps({"schritt": schritt}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _kette_holen() -> str:
+    try:
+        return (json.loads(AUTO_KETTE.read_text(encoding="utf-8")) or {}).get("schritt") or ""
+    except Exception:
+        return ""
+
+
+def _kette_loeschen() -> None:
+    try:
+        if AUTO_KETTE.exists():
+            AUTO_KETTE.unlink()
+    except Exception:
+        pass
 
 
 PC_ARCHIVE_FRAGE = _APP_DIR / ".briefing_pc_archive_frage.json"
@@ -3363,11 +3402,13 @@ def _maybe_autostart_briefing(source: str):
     # weggehen — und alles Weitere passiert von selbst.
     if st.session_state.get("auto_feedly_before_briefing"):
         st.session_state["_auto_feedly_pending"] = True
+        _kette_setzen("feedly")
         st.session_state["_podcast_inbox_last_msg"] = (
             f"🚀 Podcasts fertig ({source}) — hole jetzt die Feedly-Artikel, "
             f"danach startet das Briefing…")
         return
     st.session_state["_auto_run_briefing"] = True
+    _kette_setzen("briefing")
     st.session_state["_podcast_inbox_last_msg"] = f"🚀 Podcasts fertig ({source}) — das Briefing startet automatisch…"
 
 
@@ -6363,6 +6404,8 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         disabled=(not _cli_available) or _job_active,
         help="Startet den kompletten Lauf im Hintergrund: Hauptversion zuerst (wird sofort in den ElevenReader geladen — hören, während der Rest rechnet), dann WhatsApp + weitere Längen. Klicken, Neuladen, Browser zumachen — alles egal, der Lauf läuft weiter. Nutzt dein Max-Abo, keine API-Kosten.",
     )
+    if _auto_fire:
+        _kette_loeschen()
     if (_btn_clicked or _auto_fire) and not _job_active:
         # ⛔ Paywall-Gate: Anriss statt Volltext im Paywall-Feld (Zeitungs-Login
         # abgelaufen) stoppt den Start KOMPLETT — Florians Ansage 03.08.: lieber
