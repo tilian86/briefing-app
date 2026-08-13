@@ -63,16 +63,30 @@ PAYWALL_MARKERS = (
 )
 
 
+# Ab dieser Laenge ist ein Text erkennbar ein Volltext — dann sind Woerter wie
+# "Jahresabo" oder "Jetzt anmelden" bloss Inhalt (Newsletter-Kasten, Kommentare,
+# oder ein Artikel, der ueber Abos berichtet) und kein Hinweis auf einen Anriss.
+VOLLTEXT_AB_WOERTERN = 400
+
+
 def _detect_paywall_teaser(text: str):
-    """Gibt einen Grund zurueck, wenn der Text nach Anriss statt Volltext aussieht."""
+    """Gibt einen Grund zurueck, wenn der Text nach Anriss statt Volltext aussieht.
+
+    11.08.: Die Marker-Suche schlug im ganzen Text zu — und warf damit vier
+    vollstaendige Artikel raus: heise (849 W, "Jetzt anmelden" im Newsletter-
+    Kasten), Kontext (2142 W, dito), stadt-bremerhaven (2512 W, "Probeabo" war
+    das THEMA des Artikels; 1856 W, "Jahresabo" stand in einem Leserkommentar).
+    Marker zaehlen deshalb nur noch bei kurzen Texten.
+    """
     t = (text or "").strip()
     if not t:
         return "leer"
     lower = t.lower()
-    for marker in PAYWALL_MARKERS:
-        if marker in lower:
-            return f"Paywall-Hinweis „{marker}“ im Text"
     words = len(t.split())
+    if words < VOLLTEXT_AB_WOERTERN:
+        for marker in PAYWALL_MARKERS:
+            if marker in lower:
+                return f"Paywall-Hinweis „{marker}“ bei nur {words} Wörtern"
     mid_sentence = t[-1] not in '.!?"\'»)' or t.endswith("…") or t.endswith("...")
     if words < 100 and (mid_sentence or words < 60):
         return f"verdächtig kurz ({words} Wörter) — Teaser statt Volltext?"

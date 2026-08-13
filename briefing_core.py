@@ -1171,12 +1171,18 @@ def detect_truncated_paywall_blocks(blocks: List[str]) -> List[dict]:
     truncated = []
     for idx, block in enumerate(blocks):
         # Paywall-Marker gefunden? (case-insensitiv — "JETZT ANMELDEN" zählt auch)
+        # 11.08.: NUR bei kurzen Bloecken. Vorher warf ein 2512-Woerter-Artikel
+        # ueber Abo-Fallen das ganze Briefing raus, weil "Probeabo" darin das
+        # Thema war — und "Jahresabo"/"Jetzt anmelden" stehen auch in
+        # Newsletter-Kaesten und Leserkommentaren vollstaendiger Artikel.
+        # Gleiche Schwelle wie feedly_fetch.VOLLTEXT_AB_WOERTERN und TabClip.
         _bl = block.lower()
         found_marker = None
-        for marker in _PAYWALL_MARKERS:
-            if marker.lower() in _bl:
-                found_marker = marker
-                break
+        if len(block.split()) < 400:
+            for marker in _PAYWALL_MARKERS:
+                if marker.lower() in _bl:
+                    found_marker = marker
+                    break
         if not found_marker:
             # TEASER-HEURISTIK: Ausgeloggt kopiert man oft nur Titel+Anriss OHNE die
             # Abo-Box (kein Marker!). Verdächtig: sehr kurz und/oder mitten im Satz
