@@ -2329,6 +2329,17 @@ def _felder_wiederherstellen():
         return
     _gesehen = st.session_state.get("_draft_mtime_seen")
     _fremd_geaendert = _gesehen is not None and _mtime > _gesehen + 0.5
+
+    # 14.08.: Nicht nur die Textfelder — auch die Einstellungen wurden von
+    # zurueckgespielten Browser-Werten ueberschrieben. So stand
+    # auto_reader_upload auf False, obwohl es ein erzwungener Standard ist;
+    # das Briefing wurde gebaut, aber nicht in den ElevenReader geladen.
+    # Erzwungene Standards gelten immer, egal was der Browser mitschickt.
+    for _key in _ERZWUNGENE_DEFAULTS:
+        _soll = _DRAFT_DEFAULTS.get(_key)
+        if _fremd_geaendert and st.session_state.get(_key) != _platte.get(_key, _soll):
+            st.session_state[_key] = _platte.get(_key, _soll)
+
     for _feld in ("urls_text", "paywall_text", "podcast_text"):
         _sitzung = st.session_state.get(_feld)
         _gespeichert = _platte.get(_feld) or ""
@@ -6470,7 +6481,13 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "wa": bool(st.session_state.get("whatsapp_pdf_additional", True)),
                 "qc": bool(st.session_state.get("quality_check_enabled", True)),
                 "specials": split_special_topics(st.session_state.get("special_topics_text") or ""),
-                "upload": bool(st.session_state.get("auto_reader_upload", True)),
+                # 14.08.: Upload NIE stillschweigend ueberspringen. Stand die
+                # Sitzung faelschlich auf False (zurueckgespielter Browser-Wert),
+                # gewinnt der gespeicherte Entwurf bzw. der Standard.
+                "upload": bool(st.session_state.get("auto_reader_upload",
+                                                    _DRAFT_DEFAULTS["auto_reader_upload"])
+                               or _saved_draft.get("auto_reader_upload")
+                               or _DRAFT_DEFAULTS["auto_reader_upload"]),
                 "cleanup_days": int(st.session_state.get("reader_cleanup_days", 14) or 0),
                 "model": _cli_model, "ts": _now9.strftime("%Y-%m-%d_%H-%M"), "ts_iso": _now9.isoformat(),
                 "inputs_hash": _inputs_hash(urls_text, paywall_text, podcast_text),
