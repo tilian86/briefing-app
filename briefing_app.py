@@ -2576,17 +2576,29 @@ with _fl_col1:
              "Läuft im Hintergrund — du kannst währenddessen weiterarbeiten.",
     )
     _login_check_clicked = st.button(
-        "🔐 Zeitungs-Logins testen",
+        "🔐 Alle Logins testen (Feedly · GEA · SWP)",
         use_container_width=True,
-        help="Holt je einen frischen GEA- und SWP/Tagblatt-Artikel und prüft, ob "
-             "Volltext oder nur Anriss kommt — VOR dem Briefing, damit du dich "
-             "rechtzeitig neu anmelden kannst. Dauert ~20 Sekunden.",
+        help="Prüft alle drei Anmeldungen: Feedly (sonst keine Merkliste) sowie "
+             "GEA und SWP/Tagblatt (sonst nur Anrisse statt Volltext). "
+             "Dauert ~25 Sekunden.",
+    )
+    _lf_job = st.session_state.get("_login_fenster_job")
+    _lf_busy = bool(_lf_job) and not _lf_job.get("done")
+    _lf_clicked = st.button(
+        "🪟 Fenster ist offen — dort anmelden" if _lf_busy else "🔓 Anmeldefenster öffnen",
+        use_container_width=True,
+        disabled=_lf_busy or _fl_busy,
+        help="Öffnet ein sichtbares Browser-Fenster mit deinem Nachrichten-Profil. "
+             "Dort meldest du dich bei Feedly, GEA oder SWP an — die Anmeldung bleibt "
+             "im Profil gespeichert, die App sieht dein Passwort nie. "
+             "Fenster einfach zumachen, wenn du fertig bist.",
     )
 if _login_check_clicked:
-    with st.spinner("Teste GEA und SWP/Tagblatt über dein Browser-Profil…"):
+    with st.spinner("Teste Feedly, GEA und SWP/Tagblatt über dein Browser-Profil…"):
         try:
             import feedly_fetch as _feedly_lc
-            _lc = _feedly_lc.check_newspaper_logins()
+            _feedly_lc.login_check_verwerfen()
+            _lc = _feedly_lc.login_check_cached()
         except Exception as _lcex:
             _lc = []
             st.error(f"Test nicht möglich: {str(_lcex)[:140]}")
@@ -2595,10 +2607,48 @@ if _login_check_clicked:
         _sym = {True: "✅", False: "⛔"}.get(_r["ok"], "❓")
         st.caption(f"{_sym} {_r['name']}: {_r['detail'][:90]}")
     if _lc_kaputt:
-        st.error(f"⛔ {len(_lc_kaputt)} Login(s) abgelaufen — erst neu anmelden, sonst stoppt das Briefing.")
-        st.code("cd ~/Projects/apps/briefing-app && python3 feedly_fetch.py --login", language="bash")
+        st.error(f"⛔ {len(_lc_kaputt)} Login(s) abgelaufen — unten das Anmeldefenster öffnen.")
+        st.session_state["_login_fenster_anbieten"] = True
     elif _lc and all(_r["ok"] for _r in _lc):
         st.success("✅ Beide Zeitungs-Logins tragen — freie Fahrt.")
+
+if _lf_clicked and not _lf_busy:
+    def _lf_worker(job):
+        try:
+            import feedly_fetch as _FL
+            _FL.open_login_window()
+        except Exception as exc:
+            job["error"] = str(exc)
+        finally:
+            job["done"] = True
+    _lfj = {"done": False, "error": None}
+    st.session_state["_login_fenster_job"] = _lfj
+    import threading as _lf_threading
+    _lf_threading.Thread(target=_lf_worker, args=(_lfj,), daemon=True).start()
+    st.rerun()
+
+if _lf_job and _lf_job.get("done"):
+    if _lf_job.get("error"):
+        st.error(f"Anmeldefenster: {str(_lf_job['error'])[:160]}")
+    else:
+        st.info("Fenster geschlossen — der nächste Login-Test prüft neu.")
+    st.session_state.pop("_login_fenster_job", None)
+
+# Letzter bekannter Login-Stand — damit man VOR dem Abruf sieht, woran man ist.
+try:
+    import json as _lcj, os as _lco, time as _lct
+    _lcp = _lco.path.expanduser("~/.briefing_login_check.json")
+    _lcd = _lcj.loads(open(_lcp, encoding="utf-8").read())
+    _lc_alter = int((_lct.time() - _lcd.get("stand", 0)) / 60)
+    _lc_bad = [r for r in (_lcd.get("ergebnis") or []) if r.get("ok") is False]
+    _lc_wann = f"vor {_lc_alter} Min." if _lc_alter < 90 else f"vor {_lc_alter // 60} Std."
+    if _lc_bad:
+        st.warning("⛔ Letzter Stand (" + _lc_wann + "): " +
+                   ", ".join(r["name"] for r in _lc_bad) + " nicht angemeldet.")
+    elif _lcd.get("ergebnis"):
+        st.caption(f"✅ Logins geprüft {_lc_wann} — alle drei tragen.")
+except Exception:
+    pass
 with _fl_col2:
     st.checkbox(
         "🔗 In die Auto-Kette: nach den Podcasts automatisch holen, dann Briefing",
@@ -2765,6 +2815,18 @@ def _feedly_worker(job: dict, skip_urls, skip_ids):
     Podcasts nebenher einwerfen war unmoeglich."""
     try:
         import feedly_fetch as _F
+        # 17.08.: Erst Logins pruefen, dann holen. Vorher lief der Abruf los,
+        # lieferte Anrisse und Florian musste hinterher aufraeumen — genau die
+        # Bastelzeit, die er sich sparen will.
+        job["step"] = "Prüfe Anmeldungen…"
+        _lc = _F.login_check_cached()
+        _kaputt = [r for r in _lc if r["ok"] is False]
+        if _kaputt:
+            job["login_kaputt"] = _kaputt
+            job["error"] = ("Abbruch vor dem Holen: " +
+                            ", ".join(r["name"] for r in _kaputt) +
+                            " nicht angemeldet. Sonst kämen nur Anrisse.")
+            return
         res = _F.fetch_all(progress=lambda m: job.__setitem__("step", m),
                            skip_urls=skip_urls, skip_ids=skip_ids)
         job["result"] = res
@@ -2814,8 +2876,10 @@ def _fragment_feedly_status():
         if "bremst" in txt.lower():
             st.warning(f"⏳ {txt}")
         elif "nicht angemeldet" in txt.lower():
-            st.error("Noch nicht bei Feedly angemeldet. Einmalig im Terminal einrichten:")
-            st.code("cd ~/Projects/apps/briefing-app && python3 feedly_fetch.py --login", language="bash")
+            st.error(f"⛔ {txt}")
+            st.caption("Oben „🔓 Anmeldefenster öffnen“ — dort anmelden, Fenster zu, "
+                       "dann noch mal „📥 Aus Feedly holen“. Die Merkliste bleibt "
+                       "unangetastet, es geht nichts verloren.")
         else:
             st.error(f"Feedly-Abruf fehlgeschlagen: {txt}")
         if job.get("auto"):

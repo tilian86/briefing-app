@@ -549,25 +549,101 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
 # einen gelegentlich raus). Hinweis: Erwischt der Test zufaellig einen freien
 # Artikel, kann er "ok" melden, obwohl das Login weg ist — deshalb prueft der
 # eigentliche Abruf trotzdem weiterhin jeden einzelnen Artikel.
+# Kontoseiten mit eindeutigem Anmelde-Zeichen. Das ist die VERLAESSLICHE Pruefung:
+# kein Raten an zufaelligen Artikeln, sondern der Kontostatus selbst.
+# 16.08.: SWP zeigt auf /mein-konto ein "Abmelden", wenn die Sitzung gilt. GEA
+# gibt so etwas nicht her — dort bleibt es beim Artikel-Test.
+KONTO_PROBEN = {
+    "SWP/Tagblatt": ("https://www.swp.de/mein-konto", "abmelden"),
+}
+
+
 NEWSPAPER_PROBES = (
     # GEA-Ressortseiten enden auf .html — ohne das kommt eine Fehlerseite (03.08. getestet).
     ("GEA", "https://www.gea.de/reutlingen.html"),
     ("SWP/Tagblatt", "https://www.swp.de/lokales/tuebingen/"),
 )
 
-_FIND_ARTICLE_LINK_JS = """
+_FIND_ARTICLE_LINKS_JS = """
 () => {
+  const out = [];
   for (const a of document.querySelectorAll('a[href]')) {
     const h = a.href || "";
-    if (/_arid,\\d+\\.html/.test(h) || /-\\d{6,}\\.html/.test(h)) return h;
+    if ((/_arid,\\d+\\.html/.test(h) || /-\\d{6,}\\.html/.test(h)) && !out.includes(h)) out.push(h);
+    if (out.length >= 6) break;
   }
-  return null;
+  return out;
 }
 """
 
 
+# Eindeutige Beweise fuer "nicht angemeldet" — diese Saetze stehen NUR in der
+# Anmelde-Aufforderung, nicht im Artikeltext. 14.08.: Der alte Test nahm einen
+# zufaelligen Artikel von der Startseite; erwischte er einen freien, meldete er
+# faelschlich "angemeldet", waehrend neun Premium-Artikel als Anriss zurueckkamen.
+LOGIN_AUFFORDERUNG = (
+    "sie haben bereits ein abo", "hier einloggen", "jetzt weiterlesen mit",
+    "kennenlernabo", "anmelden und weiterlesen",
+)
+
+
+LOGIN_CHECK_CACHE = os.path.expanduser("~/.briefing_login_check.json")
+
+
+def login_check_cached(max_alter_min: int = 180) -> list:
+    """Login-Ergebnis mit Zwischenspeicher — damit der Abruf nicht jedes Mal
+    25 Sekunden extra braucht. 16.08.: Florian soll VOR dem Holen erfahren,
+    dass ein Login weg ist, statt hinterher Anrisse im Feld zu finden."""
+    import time as _t
+    try:
+        daten = json.loads(open(LOGIN_CHECK_CACHE, encoding="utf-8").read())
+        if (_t.time() - daten.get("stand", 0)) < max_alter_min * 60:
+            return daten.get("ergebnis") or []
+    except Exception:
+        pass
+    ergebnis = check_newspaper_logins()
+    try:
+        with open(LOGIN_CHECK_CACHE, "w", encoding="utf-8") as fh:
+            json.dump({"stand": _t.time(), "ergebnis": ergebnis}, fh, ensure_ascii=False)
+    except Exception:
+        pass
+    return ergebnis
+
+
+def login_check_verwerfen() -> None:
+    """Zwischenspeicher wegwerfen — nach einem Login-Fenster oder auf Zuruf."""
+    try:
+        if os.path.exists(LOGIN_CHECK_CACHE):
+            os.remove(LOGIN_CHECK_CACHE)
+    except Exception:
+        pass
+
+
+def open_login_window() -> None:
+    """Oeffnet das sichtbare Anmeldefenster und wartet, bis Florian es schliesst.
+    Passwoerter tippt er selbst — die App speichert und sieht keine Zugangsdaten."""
+    p, ctx = _launch(headless=False)
+    try:
+        page = _page(ctx)
+        page.goto(FEEDLY_URL, wait_until="domcontentloaded", timeout=60000)
+        try:
+            page.wait_for_event("close", timeout=0)
+        except Exception:
+            pass
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        try:
+            p.stop()
+        except Exception:
+            pass
+    login_check_verwerfen()
+
+
 def check_newspaper_logins(headless: bool = True) -> list:
-    """Prueft je Zeitung: liefert ein frischer Artikel Volltext oder nur Anriss?
+    """Prueft alle Anmeldungen: Feedly UND die Zeitungen.
 
     Rueckgabe je Eintrag: {"name", "ok" (True/False/None), "detail", "url"}.
     ok=None heisst: Test nicht moeglich (Seite nicht ladbar o.ae.).
@@ -576,8 +652,47 @@ def check_newspaper_logins(headless: bool = True) -> list:
     p, ctx = _launch(headless=headless)
     try:
         page = _page(ctx)
+
+        # 1) Feedly — ohne das laeuft gar nichts (14.08. von Florian vermisst).
+        feedly = {"name": "Feedly", "ok": None, "detail": "", "url": FEEDLY_URL}
+        try:
+            _open_feedly(page)
+            zustand, detail = _login_state(page)
+            if zustand == "ok":
+                feedly["ok"] = True
+                feedly["detail"] = "angemeldet"
+            elif zustand == "anonym":
+                feedly["ok"] = False
+                feedly["detail"] = "nicht angemeldet — Merkliste nicht abrufbar"
+            else:
+                feedly["detail"] = detail[:80]
+        except Exception as exc:
+            feedly["detail"] = f"nicht prüfbar ({exc.__class__.__name__})"
+        results.append(feedly)
+
         for name, start_url in NEWSPAPER_PROBES:
             eintrag = {"name": name, "ok": None, "detail": "", "url": ""}
+            # Erst die Kontoseite — schnell und eindeutig, wo es sie gibt.
+            konto = KONTO_PROBEN.get(name)
+            if konto:
+                try:
+                    page.goto(konto[0], wait_until="domcontentloaded", timeout=40000)
+                    page.wait_for_timeout(2500)
+                    seite = (page.inner_text("body") or "").lower()
+                    if konto[1] in seite:
+                        eintrag["ok"] = True
+                        eintrag["detail"] = "angemeldet (Kontoseite)"
+                        eintrag["url"] = konto[0]
+                        results.append(eintrag)
+                        continue
+                    if "anmelden" in seite or "einloggen" in seite:
+                        eintrag["ok"] = False
+                        eintrag["detail"] = "NICHT angemeldet (Kontoseite zeigt Anmelde-Formular)"
+                        eintrag["url"] = konto[0]
+                        results.append(eintrag)
+                        continue
+                except Exception:
+                    pass   # Kontoseite nicht erreichbar → Artikel-Test unten
             try:
                 page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
                 page.wait_for_timeout(1500)
@@ -590,20 +705,35 @@ def check_newspaper_logins(headless: bool = True) -> list:
                             break
                     except Exception:
                         pass
-                href = page.evaluate(_FIND_ARTICLE_LINK_JS)
-                if not href:
+                hrefs = page.evaluate(_FIND_ARTICLE_LINKS_JS)
+                if not hrefs:
                     eintrag["detail"] = "kein Artikel-Link auf der Startseite gefunden"
                     results.append(eintrag)
                     continue
-                eintrag["url"] = href
-                text = _fetch_article_text(page, href)
-                grund = _detect_paywall_teaser(text)
-                if grund:
-                    eintrag["ok"] = False
-                    eintrag["detail"] = grund
-                else:
+                # 14.08.: EIN Artikel reicht nicht — erwischt der Test zufaellig
+                # einen freien, meldet er "angemeldet", waehrend die Bezahl-
+                # Artikel als Anriss zurueckkommen. Genau so passierte es mit
+                # neun SWP-Artikeln. Deshalb bis zu drei pruefen: EIN Treffer
+                # mit Anmelde-Aufforderung genuegt fuer "nicht angemeldet".
+                bester = None
+                for href in hrefs[:3]:
+                    eintrag["url"] = href
+                    try:
+                        text = _fetch_article_text(page, href)
+                    except Exception:
+                        continue
+                    unten = text.lower()
+                    aufforderung = next((m for m in LOGIN_AUFFORDERUNG if m in unten), None)
+                    if aufforderung:
+                        eintrag["ok"] = False
+                        eintrag["detail"] = f"NICHT angemeldet — „{aufforderung}“ im Artikel"
+                        bester = None
+                        break
+                    if not _detect_paywall_teaser(text):
+                        bester = f"Volltext ({len(text.split())} Wörter, {hrefs.index(href)+1} von 3 geprüft)"
+                if bester:
                     eintrag["ok"] = True
-                    eintrag["detail"] = f"Volltext ({len(text.split())} Wörter)"
+                    eintrag["detail"] = bester
             except Exception as exc:
                 eintrag["detail"] = f"nicht prüfbar ({exc.__class__.__name__})"
             results.append(eintrag)
