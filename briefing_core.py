@@ -14580,7 +14580,14 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         t["_model_used"] = "opus" if _use_opus else "sonnet"
         c = [cli, "--print", "--output-format", "text", "--model", _model,
              "--dangerously-skip-permissions", "--effort", cli_effort("verwebung")]
-        for attempt in (1, 2):
+        # 21.08.: Zwei Versuche gab es schon — aber OHNE Pause. Bei "overloaded"
+        # lief der zweite sofort in dieselbe Auslastung und das Thema war weg
+        # (2 Quellen verloren: n-tv Waffenkriminalitaet, tagesschau E-Scooter).
+        # Gleiche Kur wie bei den Podcast-Zusammenfassungen am 08.08.: dritter
+        # Versuch plus wachsende Wartezeit. Kostet nur im Fehlerfall Zeit.
+        for attempt in (1, 2, 3):
+            if attempt > 1:
+                time.sleep(4.0 * (attempt - 1))
             try:
                 sr2 = _run_claude_cli_subprocess_streaming(
                     c, pl, timeout_seconds=timeout_seconds,
