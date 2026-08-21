@@ -6726,7 +6726,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 with st.expander(f"⚠️ {len(_unc)} Quelle(n) haben es NICHT ins Briefing geschafft — prüfen", expanded=True):
                     st.caption("Diese Quellen gingen verloren, weil ihr Thema beim Schreiben scheiterte (meist Limit/Auslastung). Nochmal erstellen holt sie nach.")
                     for _u in _unc[:20]:
-                        _kind_de = {"podcast": "🎙️ Podcast", "paywall": "📰 Paywall", "article": "🔗 Link"}.get(_u.get("kind"), "Quelle")
+                        _kind_de = {"podcast": "🎙️ Podcast", "paywall": "📰 Volltext", "article": "🔗 Link"}.get(_u.get("kind"), "Quelle")
                         st.markdown(f"  ❌ {_kind_de} — {(_u.get('label') or '')}: {(_u.get('title') or '')[:70]}")
             else:
                 st.caption("✅ Deckungs-Check: Alle eingegebenen Quellen sind im Briefing vertreten.")
