@@ -415,12 +415,18 @@ def _backup_draft_before_shrink(new_data: dict):
         pass
 
 
-def _save_draft():
+def _save_draft(**ueberschreiben):
+    """Entwurf sichern. Mit ueberschreiben=... lassen sich einzelne Felder
+    setzen, die noch nicht in der Sitzung stehen — noetig fuer Widget-Felder,
+    deren neuer Wert erst beim naechsten Durchlauf greift (Pending-Mechanik)."""
     try:
         draft_data = {
             key: st.session_state.get(key, default)
             for key, default in _DRAFT_DEFAULTS.items()
         }
+        for _k, _v in (ueberschreiben or {}).items():
+            if _k in draft_data:
+                draft_data[_k] = _v
         # FIREWALL: podcast_text darf ohne ausdrückliches Leeren (Neues Briefing) nie
         # um >50% schrumpfen — schützt vor Zombie-Tabs/alten Sessions, die mit veraltetem
         # Stand speichern (13er-Vorfall, 2× am 03./04.07.).
@@ -2945,6 +2951,12 @@ st.markdown(
 
 # Paywall-Erkennung: warnt wenn ein Block offensichtlich abgeschnitten ist
 _truncated = detect_truncated_paywall_blocks(_paywall_blocks) if _paywall_blocks else []
+# „Trotzdem behalten" gilt nur fuer genau diesen Textstand — kommt neuer Text
+# dazu, wird wieder geprueft und gewarnt.
+_trunc_signatur = f"{len(_paywall_blocks)}:{hash(paywall_text)}"
+if _truncated and st.session_state.get("_trunc_akzeptiert") == _trunc_signatur:
+    st.caption(f"✅ {len(_truncated)} kurze(r) Block/Blöcke — von dir bewusst behalten.")
+    _truncated = []
 if _truncated:
     st.warning(
         f"⚠️ {len(_truncated)} Block{'e' if len(_truncated) != 1 else ''} sind offensichtlich abgeschnitten "
@@ -2981,6 +2993,11 @@ if _truncated:
                     _new_text += "\n\nmmm\n"
                 st.session_state["paywall_text_pending_value"] = _new_text
                 st.session_state["paywall_text_pending_set"] = True
+                # 24.08.: Ohne dieses Speichern stand der entfernte Block beim
+                # naechsten Seitenaufbau wieder da — die Datei gewinnt seit dem
+                # mtime-Umbau gegen die Sitzung. Genau deshalb ging die Warnung
+                # nie weg, obwohl Florian geklickt hatte.
+                _save_draft(paywall_text=_new_text)
                 st.success(f"{len(_truncated)} abgeschnittene Block{'e' if len(_truncated) != 1 else ''} entfernt. Hol jetzt die Volltexte und füge sie unten an.")
                 st.rerun()
         with _act_col2:
@@ -2990,7 +3007,8 @@ if _truncated:
                 use_container_width=True,
                 help="Lässt die abgeschnittenen Blöcke wie sie sind. Sie werden ins Briefing übernommen, sind aber inhaltlich dünn.",
             ):
-                st.info("OK, abgeschnittene Blöcke bleiben drin. Sie werden ins Briefing übernommen.")
+                st.session_state["_trunc_akzeptiert"] = _trunc_signatur
+                st.rerun()
 
         st.caption(
             "**Workflow-Tipp:** 1) Auf 'Entfernen' klicken, 2) bei SWP einloggen, 3) Volltexte neu kopieren "
