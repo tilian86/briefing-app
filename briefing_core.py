@@ -995,7 +995,11 @@ def _parse_created_at(value: Optional[str]) -> datetime.datetime:
 
 
 SEPARATOR_LINE_PATTERN = r"^\s*(?:-{2,}|={2,}|artikel ende)\s*$"
-SEPARATOR_ANYWHERE_PATTERN = r"(?:-{2,}|={2,}|artikel ende|m{3,})"
+# 24.08.: "mmm" trennte auch MITTEN IM WORT — "Schwimmmeister" hat nach der
+# Rechtschreibreform drei m. Ein GEA-Artikel über den Sanitätsdienst im Freibad
+# zerfiel dadurch in drei Bruchstücke, eines meldete die App als "abgeschnittener
+# Paywall-Block". Der Trenner muss jetzt allein stehen (keine Buchstaben daneben).
+SEPARATOR_ANYWHERE_PATTERN = r"(?:-{2,}|={2,}|artikel ende|(?<![A-Za-zÄÖÜäöüß])m{3,}(?![A-Za-zÄÖÜäöüß]))"
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_KEYS = {
     "fbclid",
@@ -1016,7 +1020,7 @@ def _split_on_manual_separators(text: str) -> List[str]:
         flags=re.MULTILINE | re.IGNORECASE,
     )
     normalized = re.sub(
-        r"(?i)\bartikel ende\b|m{3,}",
+        r"(?i)\bartikel ende\b|(?<![A-Za-zÄÖÜäöüß])m{3,}(?![A-Za-zÄÖÜäöüß])",
         "\n<<<BRIEFING_SPLIT>>>\n",
         normalized,
     )
@@ -1280,10 +1284,10 @@ def split_podcast_summaries(text: str) -> List[str]:
     chunks = []
     manual_chunks = [text]
     # Podcast-spezifische Trenner: nur mmm und "Artikel Ende", NICHT --- (kommt in Podcast-Texten vor)
-    _podcast_sep_pattern = r"(?:m{3,}|artikel ende)"
+    _podcast_sep_pattern = r"(?:(?<![A-Za-zÄÖÜäöüß])m{3,}(?![A-Za-zÄÖÜäöüß])|artikel ende)"
     if re.search(_podcast_sep_pattern, text, flags=re.IGNORECASE):
         normalized = re.sub(
-            r"(?i)\bartikel ende\b|m{3,}",
+            r"(?i)\bartikel ende\b|(?<![A-Za-zÄÖÜäöüß])m{3,}(?![A-Za-zÄÖÜäöüß])",
             "\n<<<BRIEFING_SPLIT>>>\n",
             text,
         )
@@ -15069,7 +15073,7 @@ def preprocess_podcast_text(podcast_text: str, cli_path: Optional[str] = None,
     if not podcast_text or not podcast_text.strip():
         return podcast_text, 0, []
     # Gleiche Trenner wie split_podcast_summaries (mmm / Artikel Ende, NICHT ---)
-    normalized = re.sub(r"(?i)\bartikel ende\b|m{3,}", "\n<<<BRIEFING_SPLIT>>>\n", podcast_text)
+    normalized = re.sub(r"(?i)\bartikel ende\b|(?<![A-Za-zÄÖÜäöüß])m{3,}(?![A-Za-zÄÖÜäöüß])", "\n<<<BRIEFING_SPLIT>>>\n", podcast_text)
     blocks = [b.strip() for b in normalized.split("<<<BRIEFING_SPLIT>>>") if b.strip()]
     raw_idx = [i for i, b in enumerate(blocks)
                if "Ende der Podcastzusammenfassung" not in b and len(b) >= _RAW_TRANSCRIPT_MIN_CHARS]
