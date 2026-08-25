@@ -145,6 +145,33 @@ def _kette_holen() -> str:
         return ""
 
 
+def _wachhalter_start():
+    """caffeinate -i für die Dauer eines Hintergrund-Jobs.
+
+    24.08.: Die Claude-CLI-Aufrufe sind einzeln schon caffeinate-geschützt —
+    aber Feedly-Abruf (Playwright, Minuten) und PDF/Upload-Phasen liegen
+    DAZWISCHEN. Auf Akku schläft der Mac nach 1 Min Leerlauf; genau da riss
+    die Auto-Kette. Ein Wachhalter je Job schließt die Lücke. Deckel zu
+    schläft trotzdem — das kann Software nicht verhindern."""
+    try:
+        import shutil as _sh
+        _caf = _sh.which("caffeinate")
+        if _caf and sys.platform == "darwin":
+            return subprocess.Popen([_caf, "-i"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    return None
+
+
+def _wachhalter_stop(proc) -> None:
+    try:
+        if proc:
+            proc.terminate()
+    except Exception:
+        pass
+
+
 def _podcast_arbeit_offen() -> bool:
     """Läuft noch irgendeine Podcast-Arbeit? (Runde, Hintergrund-Jobs, Whisper)
     24.08.: Zentraler Baustein der Auto-Kette — gezündet wird erst, wenn
@@ -2810,6 +2837,7 @@ def _pc_preview_worker(job: dict, kind: str):
     """Pocket-Casts-Vorschau im HINTERGRUND. Kein st.* im Thread.
     05.08.: Vorher lief das im Vordergrund — ein Klick woanders (Florian stellte
     den Podcast-Modus um) loeste einen Neuaufbau aus und brach den Abruf ab."""
+    _wach = _wachhalter_start()
     try:
         import pocketcasts_fetch as _P
         if kind == "auswahl":
@@ -2820,6 +2848,7 @@ def _pc_preview_worker(job: dict, kind: str):
         job["error"] = str(exc)
         job["status"] = "error"
     finally:
+        _wachhalter_stop(_wach)
         job["done"] = True
 
 
@@ -2828,6 +2857,7 @@ def _feedly_worker(job: dict, skip_urls, skip_ids):
     Thread schreibt nur in `job`, die Oberflaeche liest daraus.
     05.08.: Vorher lief der Abruf im Vordergrund und legte die ganze Seite lahm;
     Podcasts nebenher einwerfen war unmoeglich."""
+    _wach = _wachhalter_start()
     try:
         import feedly_fetch as _F
         # 17.08.: Erst Logins pruefen, dann holen. Vorher lief der Abruf los,
@@ -2848,6 +2878,7 @@ def _feedly_worker(job: dict, skip_urls, skip_ids):
     except Exception as exc:
         job["error"] = str(exc)
     finally:
+        _wachhalter_stop(_wach)
         import time as _t
         job["fertig_um"] = _t.time()
         job["done"] = True
@@ -3232,6 +3263,7 @@ def _briefing_worker(cfg: dict, status: dict):
     kann hören), dann WhatsApp + weitere Längen."""
     import json as _json
     import threading as _th
+    _wach = _wachhalter_start()   # PDF-/Upload-Phasen zwischen den CLI-Aufrufen abdecken
 
     def _upd(step=None, ratio=None, **kw):
         if step is not None:
@@ -3462,6 +3494,8 @@ def _briefing_worker(cfg: dict, status: dict):
             _upd(step="✅ Fertig.", ratio=1.0, done=True)
     except Exception as exc:
         _upd(step=f"❌ Unerwarteter Fehler: {str(exc)[:150]}", done=True, failed=True)
+    finally:
+        _wachhalter_stop(_wach)
 
 
 def _meta_worker(cfg, status):
