@@ -145,6 +145,14 @@ def _kette_holen() -> str:
         return ""
 
 
+def _podcast_arbeit_offen() -> bool:
+    """Läuft noch irgendeine Podcast-Arbeit? (Runde, Hintergrund-Jobs, Whisper)
+    24.08.: Zentraler Baustein der Auto-Kette — gezündet wird erst, wenn
+    NICHTS mehr läuft, egal in welcher Reihenfolge die Aufgaben fertig werden."""
+    return bool(st.session_state.get("apple_round") or st.session_state.get("_round_jobs")
+                or st.session_state.get("whisper_running") or st.session_state.get("whisper_queue"))
+
+
 def _kette_loeschen() -> None:
     try:
         if AUTO_KETTE.exists():
@@ -2660,10 +2668,11 @@ with _fl_col2:
         "🔗 In die Auto-Kette: nach den Podcasts automatisch holen, dann Briefing",
         key="auto_feedly_before_briefing",
         on_change=_save_draft,
-        help="Für deinen üblichen Ablauf: im Feedly alles markieren, unten die Podcast-Runde "
-             "starten, weggehen. Sobald die letzte Zusammenfassung fertig ist, werden die "
-             "Feedly-Artikel geholt und danach startet das Briefing — ohne weiteren Klick. "
-             "Braucht zusätzlich das Häkchen „Briefing automatisch starten“ bei den Podcasts.",
+        help="Spart nur den Klick auf „Aus Feedly holen“: Sobald die Podcasts fertig sind, "
+             "wird die Merkliste automatisch geholt. Fürs automatische Briefing selbst ist "
+             "dieses Häkchen NICHT nötig — gezündet wird immer erst, wenn alles fertig ist, "
+             "egal ob du Feedly von Hand angestoßen hast oder es hier automatisch läuft. "
+             "Läuft schon ein Abruf, wartet die Kette auf ihn statt vorbeizulaufen.",
     )
     _fl_note = st.session_state.get("_feedly_note") or ""
     if _fl_note:
@@ -2839,6 +2848,8 @@ def _feedly_worker(job: dict, skip_urls, skip_ids):
     except Exception as exc:
         job["error"] = str(exc)
     finally:
+        import time as _t
+        job["fertig_um"] = _t.time()
         job["done"] = True
 
 
@@ -2928,6 +2939,13 @@ def _fragment_feedly_status():
         if problems:
             st.error("⛔ Auto-Kette gestoppt: Artikel kamen nur als Anriss an. Erst neu "
                      "anmelden, dann unten aufs Briefing klicken — nichts ist verloren.")
+        elif _podcast_arbeit_offen():
+            # 24.08.: Kette lief andersrum — Feedly wurde vor den Podcasts fertig.
+            # Nicht zünden; der Podcast-Abschluss übernimmt (sieht den frischen
+            # Abruf und startet dann direkt, ohne erneut zu holen).
+            st.session_state["_podcast_inbox_last_msg"] = (
+                "📥 Feedly fertig — warte noch auf die Podcast-Zusammenfassungen, "
+                "dann startet das Briefing.")
         else:
             st.session_state["_auto_run_briefing"] = True
     st.rerun(scope="app")
@@ -3411,13 +3429,14 @@ def _briefing_worker(cfg: dict, status: dict):
         if any(_e.get("ok") for _e in results) and not _cancelled():
             try:
                 import feedly_fetch as _feedly_done
-                _pend = _feedly_done.load_pending()
+                # Nur den Start-Schnappschuss abräumen — Nachzügler bleiben vorgemerkt.
+                _pend = cfg.get("feedly_pending") or {"entry_ids": [], "user_id": ""}
                 if _pend["entry_ids"]:
                     _upd(step=f"📥 Entferne {len(_pend['entry_ids'])} erledigte Artikel aus der Feedly-Merkliste…",
                          ratio=0.985)
                     _n_weg = _feedly_done.mark_done(_pend["entry_ids"], _pend["user_id"])
                     if _n_weg:
-                        _feedly_done.clear_pending()
+                        _feedly_done.remove_pending(_pend["entry_ids"])
                     status["feedly_removed"] = _n_weg
             except Exception as _flex:
                 status["feedly_error"] = str(_flex)[:160]
@@ -3484,17 +3503,34 @@ def _bg_feed_summarize(_ep):
 
 
 def _maybe_autostart_briefing(source: str):
-    """🚀 Auto-Start: Wenn die Option an ist und KEINE Podcast-Arbeit mehr offen
-    (keine Runde, keine Hintergrund-Jobs, keine Whisper-Frage/-Arbeit), Briefing zünden."""
+    """🚀 Auto-Start — EINE Regel: gezündet wird erst, wenn NICHTS mehr läuft.
+
+    24.08. (Florians Frage nach dem Wettlauf der beiden Häkchen): Vorher prüfte
+    dieser Auslöser nur die Podcast-Arbeit — lief parallel noch ein Feedly-Abruf,
+    startete das Briefing OHNE dessen Artikel. Jetzt gilt, egal in welcher
+    Reihenfolge die Aufgaben fertig werden:
+      · Feedly läuft noch  → Kette an den laufenden Abruf übergeben, der zündet.
+      · Feedly frisch fertig → direkt zünden (nicht erneut holen).
+      · Häkchen "vorher holen" an, kein frischer Abruf → erst holen, dann zünden.
+    """
     if not st.session_state.get("auto_briefing_when_done"):
         return
-    if (st.session_state.get("apple_round") or st.session_state.get("_round_jobs")
-            or st.session_state.get("whisper_running") or st.session_state.get("whisper_queue")):
+    if _podcast_arbeit_offen():
         return
-    # 📥 Optionaler Zwischenschritt: erst die Feedly-Merkliste holen, dann zünden.
-    # Deckt den typischen Ablauf ab: im Feedly markieren, Podcast-Runde starten,
-    # weggehen — und alles Weitere passiert von selbst.
-    if st.session_state.get("auto_feedly_before_briefing"):
+    _fj = st.session_state.get("_feedly_job")
+    if _fj and not _fj.get("done"):
+        # Abruf läuft (auch manuell gestartete): Staffelstab übergeben statt
+        # vorbeizulaufen. Der Fertig-Handler zündet dann.
+        _fj["auto"] = True
+        _kette_setzen("feedly")
+        st.session_state["_podcast_inbox_last_msg"] = (
+            f"🚀 Podcasts fertig ({source}) — warte auf den laufenden "
+            f"Feedly-Abruf, danach startet das Briefing…")
+        return
+    import time as _t
+    _frisch = bool(_fj and _fj.get("done") and not _fj.get("error") and _fj.get("applied")
+                   and (_t.time() - _fj.get("fertig_um", 0)) < 20 * 60)
+    if st.session_state.get("auto_feedly_before_briefing") and not _frisch:
         st.session_state["_auto_feedly_pending"] = True
         _kette_setzen("feedly")
         st.session_state["_podcast_inbox_last_msg"] = (
@@ -6576,6 +6612,14 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "archive_dir": _resolve_archive_dir(for_write=True),
                 "title_base": f"Tagesbriefing {_wd_de9[_now9.weekday()]} {_now9.strftime('%d.%m.')}",
             }
+            # 📥 Feedly-Vormerkliste beim START einfrieren: Artikel, die WÄHREND
+            # des Laufs eintreffen, sind nicht im Briefing — sie dürfen am Ende
+            # auch nicht aus der Merkliste entfernt werden (24.08.).
+            try:
+                import feedly_fetch as _fl_snap
+                _cfg["feedly_pending"] = _fl_snap.load_pending()
+            except Exception:
+                _cfg["feedly_pending"] = {"entry_ids": [], "user_id": ""}
             _inp_counts = {
                 "urls": len([l for l in urls_text.splitlines() if l.strip().startswith("http")]),
                 "paywall": len(split_paywall_articles(paywall_text)) if paywall_text.strip() else 0,

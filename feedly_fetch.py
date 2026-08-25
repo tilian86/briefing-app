@@ -785,6 +785,28 @@ def add_pending(entry_ids, user_id: str = "") -> int:
     return len(current["entry_ids"])
 
 
+def remove_pending(entry_ids) -> None:
+    """Traegt NUR die uebergebenen IDs aus der Vormerkliste aus.
+
+    24.08.: clear_pending() loeschte die ganze Datei — kamen waehrend eines
+    laufenden Briefings neue Artikel an, verschwanden deren Vormerkungen mit,
+    obwohl sie in keinem Briefing waren. Jetzt bleibt Nachzuegler-Vormerkung
+    erhalten und wird erst mit dem NAECHSTEN erfolgreichen Briefing abgeraeumt."""
+    weg = set(entry_ids or [])
+    if not weg:
+        return
+    daten = load_pending()
+    rest = [e for e in daten["entry_ids"] if e not in weg]
+    try:
+        if rest:
+            with open(PENDING_PATH, "w", encoding="utf-8") as fh:
+                json.dump({"user_id": daten["user_id"], "entry_ids": rest}, fh)
+        elif os.path.exists(PENDING_PATH):
+            os.remove(PENDING_PATH)
+    except Exception:
+        pass
+
+
 def clear_pending() -> None:
     try:
         if os.path.exists(PENDING_PATH):
