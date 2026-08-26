@@ -6300,11 +6300,17 @@ with _mode_col2:
         # Zustand verlorengeht (passiert durch Fragment-Reruns). Genau so stand
         # der schlechteste Modus da, obwohl "Original übernehmen" Standard ist.
         _pm_opt = ["Einweben (kürzen)", "Länger erhalten", "Original übernehmen"]
+        # 26.08.: Streamlit warnt gelb, wenn ein Widget BEIDES bekommt — index=
+        # UND einen Sitzungswert unter demselben Schlüssel. Der Schlüssel ist hier
+        # die Wahrheit (steht in _ERZWUNGENE_DEFAULTS), also wird er vorher gesetzt
+        # und index= weggelassen. Verhalten bleibt identisch, die Meldung verschwindet.
         _pm_ist = st.session_state.get("podcast_synth_mode") or _DRAFT_DEFAULTS["podcast_synth_mode"]
+        if _pm_ist not in _pm_opt:
+            _pm_ist = _DRAFT_DEFAULTS["podcast_synth_mode"]
+        st.session_state.setdefault("podcast_synth_mode", _pm_ist)
         st.selectbox(
             "🎙️ Podcast-Behandlung",
             options=_pm_opt,
-            index=_pm_opt.index(_pm_ist) if _pm_ist in _pm_opt else _pm_opt.index(_DRAFT_DEFAULTS["podcast_synth_mode"]),
             key="podcast_synth_mode",
             help="Wie deine kuratierten Podcast-Zusammenfassungen ins Briefing kommen — gilt in Synthese UND klassisch: "
                  "Einweben = wie alle Quellen behandelt und aufs Budget gekürzt (~100-200 W; klassisch: Kompakt-/Tragweite-Budget gilt auch für Podcasts). "

@@ -15039,17 +15039,28 @@ def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str
     _concerns = _check.get("concerns") or []
     _applied = []
     for _fix in (_check.get("fixes") or []):
+        # 26.08.: Ein einzelner unbrauchbarer Korrektur-Eintrag (None statt dict,
+        # oder ein fehlendes/leeres Feld) hat hier die GANZE fertige Zusammenfassung
+        # gekippt — "'NoneType' object is not subscriptable", und die Arbeit war weg.
+        # Jetzt wird ein kaputter Eintrag uebersprungen, der Rest bleibt erhalten.
+        if not isinstance(_fix, dict):
+            continue
+        _falsch, _richtig = _fix.get("falsch"), _fix.get("richtig")
+        if not isinstance(_falsch, str) or not isinstance(_richtig, str) or not _falsch.strip():
+            continue
         # Whitespace-tolerant ersetzen: der Modelltext kann anders umgebrochen sein
         # als die Zusammenfassung, gemeint ist aber dieselbe Stelle.
-        _pat = r"\s+".join(re.escape(tok) for tok in _fix["falsch"].split())
-        _new, _n = re.subn(_pat, lambda _m, _r=_fix["richtig"]: _r, summary, count=1)
+        try:
+            _pat = r"\s+".join(re.escape(tok) for tok in _falsch.split())
+            _new, _n = re.subn(_pat, lambda _m, _r=_richtig: _r, summary, count=1)
+        except Exception:
+            continue
         if _n:
             summary = _new
             _applied.append(_fix)
-    if _applied:
-        for _fix in _applied:
-            print(f"[podcast-faktencheck] korrigiert: '{_fix['falsch']}' → '{_fix['richtig']}' "
-                  f"(Beleg: '{_fix['beleg'][:80]}…')", file=sys.stderr)
+    for _fix in _applied:
+        print(f"[podcast-faktencheck] korrigiert: '{_fix.get('falsch')}' → '{_fix.get('richtig')}' "
+              f"(Beleg: '{str(_fix.get('beleg') or '')[:80]}…')", file=sys.stderr)
     if _concerns:
         print(f"[podcast-faktencheck] {len(_concerns)} Hinweis(e): {_concerns}", file=sys.stderr)
     return {"ok": True, "summary": summary, "error": None, "concerns": _concerns,
