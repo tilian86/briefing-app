@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import browser_pfad  # muss VOR jedem Playwright-Import stehen (25.08.)
 from pathlib import Path
 from typing import Optional
 from briefing_core import (

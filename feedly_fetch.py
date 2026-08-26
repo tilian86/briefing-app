@@ -29,6 +29,7 @@ import json
 import os
 import re
 import sys
+import browser_pfad  # muss VOR jedem Playwright-Import stehen (25.08.)
 import urllib.parse
 
 PROFILE_DIR = os.path.expanduser("~/.briefing_news_profile")
@@ -142,6 +143,8 @@ def _launch(headless: bool = True):
         except Exception:
             pass
         text = str(exc)
+        if browser_pfad.ist_browser_fehler(text):
+            raise RuntimeError(browser_pfad.NACHINSTALL_HINWEIS) from exc
         if "ProcessSingleton" in text or "SingletonLock" in text or "already in use" in text.lower():
             raise RuntimeError(
                 "Das Browser-Profil ist gerade belegt — es läuft schon ein Feedly-Abruf "

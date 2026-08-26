@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+import browser_pfad  # muss VOR jedem Playwright-Import stehen (25.08.)
 import urllib.request
 
 PROFILE_DIR = os.path.expanduser("~/.briefing_pocketcasts_profile")
@@ -240,11 +241,21 @@ _EXTRACT_JS = r"""() => {
 def _launch(headless: bool = True):
     from playwright.sync_api import sync_playwright
     p = sync_playwright().start()
-    ctx = p.chromium.launch_persistent_context(
-        PROFILE_DIR, headless=headless,
-        viewport={"width": 1400, "height": 900}, locale="de-DE",
-        args=["--disable-blink-features=AutomationControlled"],
-    )
+    try:
+        ctx = p.chromium.launch_persistent_context(
+            PROFILE_DIR, headless=headless,
+            viewport={"width": 1400, "height": 900}, locale="de-DE",
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+    except Exception as exc:
+        try:
+            p.stop()
+        except Exception:
+            pass
+        # 25.08.: Rohmeldung "Executable doesn't exist at …" sagt niemandem etwas.
+        if browser_pfad.ist_browser_fehler(str(exc)):
+            raise RuntimeError(browser_pfad.NACHINSTALL_HINWEIS) from exc
+        raise
     return p, ctx
 
 
