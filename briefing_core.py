@@ -16099,9 +16099,13 @@ def run_briefing_via_claude_cli_chunked(
                 _heilung["buendel"] = repair_bundled_sections(
                     all_sections, _buendel_now,
                     cli_path=cli, model=_CLI_JUDGE_MODEL)
-            if _heilung["artefakte"] or _heilung["stubs"] or _heilung["buendel"]:
+                _heilung["buendel_fehlalarme"] = sorted(
+                    getattr(repair_bundled_sections, "letzte_fehlalarme", set()))
+            _fehlalarme = set(_heilung.get("buendel_fehlalarme") or ())
+            if _heilung["artefakte"] or _heilung["stubs"] or _heilung["buendel"] or _fehlalarme:
                 self_check = run_self_check(all_sections, now=now,
-                                            content_check=content_check_data)
+                                            content_check=content_check_data,
+                                            buendel_fehlalarme=_fehlalarme)
                 self_check["repaired"] = _heilung
                 self_check["score_before"] = _score_vorher
                 print(f"[selbstheilung] Score {_score_vorher} → {self_check['score']} "
@@ -16819,7 +16823,8 @@ def _sc_is_regular(section: dict) -> bool:
 
 
 def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None,
-                   content_check: Optional[dict] = None) -> dict:
+                   content_check: Optional[dict] = None,
+                   buendel_fehlalarme: Optional[set] = None) -> dict:
     """Regelbasierte Prüfung des fertigen Briefings — ohne Modell, ohne Kosten.
 
     Returns {"score": 0..100, "criteria": [...], "issues": [...]}.
@@ -16933,6 +16938,13 @@ def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None
     # Erkennung liegt in find_bundled_sections() — dieselbe Funktion, die auch
     # die Selbstheilung benutzt. Eine Logik, eine Stelle (Lehre vom 01.08.).
     _bu_funde = find_bundled_sections(sections)
+    # 26.08.: Hat die Selbstheilung einen Befund geprueft und als EINE Meldung
+    # bestaetigt, ist er ein Fehlalarm und darf nicht weiter Punkte kosten.
+    # Beispiel: "Norovirus im Hotel: 16 Faelle bestaetigt" — die 16 im Titel
+    # sind Krankheitsfaelle, keine 16 zusammengeklebten Meldungen. Das Briefing
+    # bekam dafuer 95 statt 100, obwohl inhaltlich nichts zu beanstanden war.
+    _fehlalarm = set(buendel_fehlalarme or ())
+    _bu_funde = [f for f in _bu_funde if f["index"] not in _fehlalarm]
     buendel_issues = [f"Beitrag {f['index']}: {f['reason']}" for f in _bu_funde if f["sicher"]]
     buendel_verdacht = [f"Beitrag {f['index']}: {f['reason']}" for f in _bu_funde if not f["sicher"]]
     # Titel-Befunde sind eindeutig (der Beitrag sagt selbst, dass er bündelt),
@@ -17083,6 +17095,11 @@ def repair_bundled_sections(sections: List[dict], bundles: List[dict],
     # Nur sichere Funde teilen: bei blossem Quellen-Verdacht ist oft gar nichts
     # zu teilen (ein Thema, viele Zitate) — da waere Aufteilen schlimmer.
     kandidaten = [b for b in (bundles or []) if b.get("sicher")]
+    # 26.08.: Geprüfte Fehlalarme wandern hierher und werden vom Aufrufer aus
+    # der Bündelungs-Wertung genommen — sonst kostet ein Titel wie "16 Fälle
+    # bestätigt" dauerhaft Punkte, obwohl inhaltlich alles stimmt.
+    fehlalarme = set()
+    repair_bundled_sections.letzte_fehlalarme = fehlalarme
     if not cli or not kandidaten:
         return []
 
@@ -17113,6 +17130,7 @@ def repair_bundled_sections(sections: List[dict], bundles: List[dict],
         if not antwort or "NICHT_TEILBAR" in antwort.upper():
             print(f"[selbstheilung] Beitrag {idx}: laut Prüfung nur eine Meldung — unverändert.",
                   file=sys.stderr)
+            fehlalarme.add(idx)
             continue
 
         teile = [t.strip() for t in re.split(r"(?m)^\s*-{3,}BEITRAG-{3,}\s*$", antwort)

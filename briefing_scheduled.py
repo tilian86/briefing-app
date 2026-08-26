@@ -158,6 +158,10 @@ def main():
     cc = r.get("content_check") or {}
     if cc:
         entry["plausi"] = "%sW/%sN, repariert %s" % (cc.get("warnings", "?"), cc.get("notices", "?"), r.get("content_repaired", 0))
+    # 26.08.: Der Qualitaetsscore stand nur im Log — die App zeigte nach einem
+    # terminierten Lauf gar keinen. Jetzt wandert er wie beim App-Lauf mit.
+    if r.get("self_check"):
+        entry["self_check"] = r["self_check"]
     if r.get("uncovered_sources"):
         status["uncovered_sources"] = r["uncovered_sources"]
 
