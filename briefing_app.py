@@ -2946,8 +2946,14 @@ def _fragment_feedly_status():
         alt = (st.session_state.get("paywall_text") or "").rstrip()
         st.session_state["paywall_text_pending_value"] = (
             (alt + "\n\nmmm\n\n" + neu_text) if alt else neu_text)
+        # 26.08.: Artikel von Zeitungen ohne Abo (z. B. Spiegel) kommen zwangs-
+        # laeufig nur als Anriss. Sie wandern mit auf die Aufraeumliste, sonst
+        # stehen sie bis in alle Ewigkeit in der Merkliste und werden jedes Mal
+        # neu geladen.
         _F.add_pending([i["entry_id"] for i in ok if i.get("entry_id")]
-                       + [i["entry_id"] for i in skipped if i.get("entry_id")],
+                       + [i["entry_id"] for i in skipped if i.get("entry_id")]
+                       + [i["entry_id"] for i in (res.get("ohne_zugang") or [])
+                          if i.get("entry_id")],
                        res.get("user_id") or "")
 
     _free, _walled = _F.split_free_and_paywall(ok)
@@ -2955,6 +2961,9 @@ def _fragment_feedly_status():
            if ok else "Nichts Neues in der Merkliste.")
     if skipped:
         msg += f" ⏭️ {len(skipped)} schon im Briefing — übersprungen."
+    _oz = res.get("ohne_zugang") or []
+    if _oz:
+        msg += f" 🔒 {len(_oz)} von Zeitungen ohne Abo — übersprungen."
     if problems:
         msg += f" ⚠️ {len(problems)} unvollständig — bleiben in der Merkliste."
     st.session_state["_feedly_note"] = msg

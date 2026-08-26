@@ -50,6 +50,20 @@ PAYWALL_DOMAINS = (
     "kontextwochenzeitung.de", "athletic.com", "wsj.com", "ft.com",
 )
 
+# Zeitungen OHNE Abo — dort kommt zwangslaeufig nur der Anriss. 26.08.: Florian
+# hat kein Spiegel-Abo; seine beiden Spiegel-Artikel wurden jedes Mal als
+# "Problem — Login pruefen" gemeldet, obwohl es nichts zu pruefen gab. Solche
+# Treffer werden jetzt ruhig uebersprungen statt als Handlungsbedarf gemeldet.
+KEIN_ZUGANG_DOMAINS = (
+    "spiegel.de",
+)
+
+
+def _ohne_zugang(url: str) -> bool:
+    host = (urllib.parse.urlparse(url or "").hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in KEIN_ZUGANG_DOMAINS)
+
+
 # Spiegel der TabClip-Extension (extensions/tabclip/shared.js) — beide Listen
 # bei Aenderungen synchron halten.
 PAYWALL_MARKERS = (
@@ -455,7 +469,7 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
             items = [i for i in items if id(i) not in _skip_set]
             say(f"{len(skipped)} bereits im Briefing — übersprungen.")
 
-        ok, problems = [], []
+        ok, problems, ohne_zugang = [], [], []
         for idx, item in enumerate(items, 1):
             title = item["title"][:55]
             # 1) Reicht der Text aus dem Feed schon?
@@ -480,15 +494,21 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
                 item["source"] = "Feed"
                 reason = _detect_paywall_teaser(item["text"])
 
-            if reason:
+            if reason and _ohne_zugang(item.get("url")):
+                # Kein Abo, kein Handlungsbedarf: still uebergehen und aus der
+                # Merkliste nehmen, damit er nicht immer wieder auftaucht.
+                item["problem"] = "kein Abo bei dieser Zeitung — übersprungen"
+                ohne_zugang.append(item)
+            elif reason:
                 item["problem"] = reason
                 problems.append(item)
             else:
                 ok.append(item)
 
-        say(f"Fertig: {len(ok)} vollständig, {len(problems)} problematisch.")
+        _zusatz = f", {len(ohne_zugang)} ohne Abo übersprungen" if ohne_zugang else ""
+        say(f"Fertig: {len(ok)} vollständig, {len(problems)} problematisch{_zusatz}.")
         return {"ok": ok, "problems": problems, "skipped": skipped,
-                "user_id": listing["user_id"]}
+                "ohne_zugang": ohne_zugang, "user_id": listing["user_id"]}
     finally:
         try:
             ctx.close()
