@@ -6259,135 +6259,154 @@ else:
 
 st.markdown("---")
 
-# === Output-Varianten ===
-_mode_col1, _mode_col2, _mode_col3 = st.columns(3)
-with _mode_col1:
-    # Mehrfachauswahl: eine oder mehrere Längen anklicken — bei mehreren werden die
-    # Versionen nacheinander erstellt, die Artikel aber nur EINMAL geladen+gemergt.
-    _valid_depths = ("Intelligent kompakt", "Intelligent", "Intelligent ausführlich", "Sehr kurz", "Kürzer", "Ausführlich")
-    # Migration alter gespeicherter Wahl: "Intelligent kurz" war (verbugt) ~13,6k = neuer
-    # Sweet Spot "Intelligent"; altes nacktes "Intelligent" ebenfalls dorthin.
-    _dm0 = st.session_state.get("briefing_depth_multi")
-    if _dm0:
-        st.session_state["briefing_depth_multi"] = ["Intelligent" if d == "Intelligent kurz" else d for d in _dm0]
-    if "briefing_depth_multi" not in st.session_state:
-        # Migration: alter Radio-Wert (falls vorhanden) wird zur Vorauswahl.
-        _old_depth = st.session_state.get("briefing_depth_radio")
-        st.session_state["briefing_depth_multi"] = [_old_depth] if _old_depth in _valid_depths else ["Intelligent"]
-    st.session_state["briefing_depth_multi"] = [
-        d for d in st.session_state["briefing_depth_multi"] if d in _valid_depths
-    ] or ["Intelligent"]
-    _briefing_depth_sel = st.multiselect(
-        "Briefing-Länge(n)",
-        options=list(_valid_depths),
-        key="briefing_depth_multi",
-        help="Drei intelligente Stufen (Opus gewichtet jedes Thema selbst, du musst NICHTS bewerten — Top-Storys voll, Randnotizen 2-3 Sätze): 🧠 Intelligent kompakt (~70 Min, für eilige Tage) · 🧠 Intelligent (~90 Min, ⭐ empfohlener Daily Driver, der bewährte Sweet Spot) · 🧠 Intelligent ausführlich (~2 Std, volle Tiefe). Dazu die gleichmäßigen Klassik-Stufen: Sehr kurz / Kürzer / Ausführlich. MEHRERE anklicken = alle Versionen in einem Rutsch.",
-    )
-    _depths_to_run = [d for d in _valid_depths if d in (_briefing_depth_sel or [])] or ["Intelligent"]
-    st.session_state["_depths_to_run"] = _depths_to_run
-    _briefing_depth = _depths_to_run[0]
-    compact_mode = _briefing_depth != "Ausführlich"
-    ultra_compact = _briefing_depth == "Sehr kurz"
-    st.session_state["compact_mode"] = compact_mode
-    st.session_state["ultra_compact"] = ultra_compact
-    if len(_depths_to_run) > 1:
-        st.caption(f"🔁 {len(_depths_to_run)} Versionen werden nacheinander erstellt — gemeinsame Artikel-Basis, nur die Verdichtung läuft pro Länge.")
-    elif _briefing_depth == "Intelligent kompakt":
-        st.caption("🧠 S · Kluge Gewichtung, straff gehalten (~70 Min): Randnotizen 1-2 Sätze, nur Top-Storys atmen. Für eilige Tage.")
-    elif _briefing_depth == "Intelligent":
-        st.caption("🧠 M · ⭐ Empfohlener Daily Driver (~90 Min): kluge Gewichtung, inhaltlich stimmig — dein bewährter Sweet Spot.")
-    elif _briefing_depth == "Intelligent ausführlich":
-        st.caption("🧠 L · Volle Tiefe (~2 Std): Schwerpunkte ausführlich erzählt. Wenn du Zeit und Interesse hast.")
-    elif ultra_compact:
-        st.caption("Sehr kurz: höchstens ~120 Wörter pro Beitrag — volles Briefing, aber für umfangreiche Tage (viele Artikel) deutlich kürzer.")
-    elif compact_mode:
-        st.caption("Kürzere Artikel — volles Briefing in voller Qualität, nur knackiger. Für die meisten Tagesläufe.")
-    else:
-        st.caption("Ausführlicher: mehr Kontext pro Beitrag, dafür länger.")
-    st.checkbox(
-        "📱 WhatsApp-Lese-PDF zusätzlich", key="whatsapp_pdf_additional",
-        help="Erstellt bei jedem Lauf zusätzlich eine kompakte LESE-Version für deinen WhatsApp-Broadcast: klassisches Format (ein Beitrag pro Quelle, wie deine Leser es kennen) in der Stufe Sehr kurz. Artikel werden nur EINMAL geladen — es kommt nur ein zweiter Verdichtungs-Durchlauf dazu (0 € übers Abo). Datei endet auf _whatsapp.pdf. Geht NICHT automatisch an ElevenReader.",
-    )
-with _mode_col2:
-    topic_synthesis_mode = st.checkbox(
-        "🧵 Themen-Synthese", key="topic_synthesis_mode",
-        help="Persönliches Briefing statt Einzelbeiträge: Opus bündelt ALLE Quellen (Links, Paywall-Texte, Podcasts) thematisch — z.B. drei Artikel + ein Podcast zum Koalitionsausschuss werden EIN verwobener Vorlesetext. Nichts doppelt, nichts fehlt (jede Quelle wird garantiert genau einem Thema zugeordnet). Ersetzt die frühere Erzähl-Version. Nur im kostenlosen Claude-Weg.",
-    )
-    narrative_additional = False  # Erzähl-Version durch Themen-Synthese ersetzt (Code bleibt schlafend erhalten)
-    if topic_synthesis_mode:
-        st.caption("🧵 Alle Quellen werden thematisch zu je EINEM Beitrag verwoben — effizient informiert, nichts doppelt.")
-        st.checkbox(
-            "🎙️ Unterhaltsam erzählt (Magazin-Stil)", key="synthesis_narrative_style",
-            help="Die Themen-Beiträge werden wie von einem guten Magazin-Podcast-Host erzählt: Hook, roter Faden, anschauliche Vergleiche — aber strikt faktentreu, nur mit deinen Quellen, und ernste Themen bleiben ernst. Ohne Häkchen: sachlich-klarer Nachrichtenstil.",
+# 🧩 Fragment (27.08.): Diese Einstellungen loesten bisher einen KOMPLETTEN
+# Seiten-Neuaufbau aus. Gemessen: 5,7 Sekunden pro Haekchen, 219 ausgegraute
+# Elemente, 2589 DOM-Aenderungen — genau das "alles verschwindet und kommt
+# spaeter wieder", das Florian gemeldet hat. Als Fragment wird nur noch dieser
+# Block neu gezeichnet.
+#
+# Die einzigen Werte, die spaetere Stellen brauchen, stehen in session_state
+# (_depths_to_run, topic_synthesis_mode) — geprueft, keine weiteren Kreuzungen.
+@st.fragment
+def _fragment_briefing_einstellungen():
+    # === Output-Varianten ===
+    _mode_col1, _mode_col2, _mode_col3 = st.columns(3)
+    with _mode_col1:
+        # Mehrfachauswahl: eine oder mehrere Längen anklicken — bei mehreren werden die
+        # Versionen nacheinander erstellt, die Artikel aber nur EINMAL geladen+gemergt.
+        _valid_depths = ("Intelligent kompakt", "Intelligent", "Intelligent ausführlich", "Sehr kurz", "Kürzer", "Ausführlich")
+        # Migration alter gespeicherter Wahl: "Intelligent kurz" war (verbugt) ~13,6k = neuer
+        # Sweet Spot "Intelligent"; altes nacktes "Intelligent" ebenfalls dorthin.
+        _dm0 = st.session_state.get("briefing_depth_multi")
+        if _dm0:
+            st.session_state["briefing_depth_multi"] = ["Intelligent" if d == "Intelligent kurz" else d for d in _dm0]
+        if "briefing_depth_multi" not in st.session_state:
+            # Migration: alter Radio-Wert (falls vorhanden) wird zur Vorauswahl.
+            _old_depth = st.session_state.get("briefing_depth_radio")
+            st.session_state["briefing_depth_multi"] = [_old_depth] if _old_depth in _valid_depths else ["Intelligent"]
+        st.session_state["briefing_depth_multi"] = [
+            d for d in st.session_state["briefing_depth_multi"] if d in _valid_depths
+        ] or ["Intelligent"]
+        _briefing_depth_sel = st.multiselect(
+            "Briefing-Länge(n)",
+            options=list(_valid_depths),
+            key="briefing_depth_multi",
+            help="Drei intelligente Stufen (Opus gewichtet jedes Thema selbst, du musst NICHTS bewerten — Top-Storys voll, Randnotizen 2-3 Sätze): 🧠 Intelligent kompakt (~70 Min, für eilige Tage) · 🧠 Intelligent (~90 Min, ⭐ empfohlener Daily Driver, der bewährte Sweet Spot) · 🧠 Intelligent ausführlich (~2 Std, volle Tiefe). Dazu die gleichmäßigen Klassik-Stufen: Sehr kurz / Kürzer / Ausführlich. MEHRERE anklicken = alle Versionen in einem Rutsch.",
         )
-        st.checkbox(
-            "🌐 Fehlendes intelligent ergänzen (Websuche)", key="synthesis_web_enrich",
-            help="Fehlt deinen Quellen ein zentraler Baustein (Wer ist die Person? Vorgeschichte? Schlüsselzahl?), darf Opus GEZIELT im Netz nachschlagen — max. 1-2 Suchen pro Thema, nur seriöse Quellen (Agenturen, Öffentlich-Rechtliche, Primärquellen). Jede Ergänzung wird im Text klar gekennzeichnet (Zur Einordnung, laut Reuters: …). Nur Lückenfüllung, nie neue Themen; bei Widerspruch gewinnen DEINE Quellen. Macht den Lauf etwas langsamer.",
-        )
-        # 05.08.: OHNE index= nimmt Streamlit Option 0 ("Einweben"), sobald der
-        # Zustand verlorengeht (passiert durch Fragment-Reruns). Genau so stand
-        # der schlechteste Modus da, obwohl "Original übernehmen" Standard ist.
-        _pm_opt = ["Einweben (kürzen)", "Länger erhalten", "Original übernehmen"]
-        # 26.08.: Streamlit warnt gelb, wenn ein Widget BEIDES bekommt — index=
-        # UND einen Sitzungswert unter demselben Schlüssel. Der Schlüssel ist hier
-        # die Wahrheit (steht in _ERZWUNGENE_DEFAULTS), also wird er vorher gesetzt
-        # und index= weggelassen. Verhalten bleibt identisch, die Meldung verschwindet.
-        _pm_ist = st.session_state.get("podcast_synth_mode") or _DRAFT_DEFAULTS["podcast_synth_mode"]
-        if _pm_ist not in _pm_opt:
-            _pm_ist = _DRAFT_DEFAULTS["podcast_synth_mode"]
-        st.session_state.setdefault("podcast_synth_mode", _pm_ist)
-        st.selectbox(
-            "🎙️ Podcast-Behandlung",
-            options=_pm_opt,
-            key="podcast_synth_mode",
-            help="Wie deine kuratierten Podcast-Zusammenfassungen ins Briefing kommen — gilt in Synthese UND klassisch: "
-                 "Einweben = wie alle Quellen behandelt und aufs Budget gekürzt (~100-200 W; klassisch: Kompakt-/Tragweite-Budget gilt auch für Podcasts). "
-                 "Länger erhalten = mit Mindestlänge ~250-350 W, damit die Substanz bleibt. "
-                 "Original übernehmen = deine Zusammenfassung 1:1 unverändert (STANDARD — eine Folge ist oft ein bis drei Stunden Gespräch, "
-                 "und 1:1 liefert je Folge einen eigenen ausführlichen Beitrag; Synthese: eigener Podcast-Block am Ende).",
-        )
-with _mode_col3:
-    # Altlasten normalisieren: früher gab es "Standard" — auf gültige Option mappen,
-    # sonst crasht st.radio (gespeicherter Wert nicht in options).
-    if st.session_state.get("genius_depth_radio_main") not in ("Lang", "Kurz", "Beide", "Keine"):
-        st.session_state["genius_depth_radio_main"] = "Keine"
-    # Ohne index= faellt das Feld bei Zustandsverlust auf "Lang" zurueck (05.08.).
-    _kf_opt = ["Lang", "Kurz", "Beide", "Keine"]
-    _kf_ist = st.session_state.get("genius_depth_radio_main") or _DRAFT_DEFAULTS["genius_depth_radio_main"]
-    _kompakt_laenge = st.radio(
-        "✨ Kompaktfassung",
-        options=_kf_opt,
-        index=_kf_opt.index(_kf_ist) if _kf_ist in _kf_opt else _kf_opt.index(_DRAFT_DEFAULTS["genius_depth_radio_main"]),
-        horizontal=True,
-        key="genius_depth_radio_main",
-        help="Separate kuratierte Verdichtung. Lang: nah am Voll-Briefing. Kurz: stark verdichtet. Beide: beide Versionen. Keine: gar keine Kompaktfassung erzeugen — spart Zeit + Opus-Kontingent, sinnvoll wenn dir das kürzere Voll-Briefing reicht (hat ja jetzt Top-3).",
-    )
-    genius_additional = _kompakt_laenge != "Keine"
-    st.session_state["genius_additional_main"] = genius_additional
-    if not genius_additional:
-        st.caption("Keine separate Kompaktfassung — nur das Voll-Briefing wird erstellt.")
-    st.checkbox(
-        "🔍 Qualitäts-Check + Auto-Korrektur", key="quality_check_enabled",
-        help="Nach dem Erstellen prüft Claude jeden Beitrag inhaltlich gegen die Quellen (Zahlen, Kernaussagen, Verfälschungen) und korrigiert Warnungen automatisch — alle Ausgaben (PDF, TXT, ePub, ElevenReader) tragen die geprüfte Fassung. Das Zusammenführen von Doppel-Themen läuft immer, unabhängig von diesem Schalter. ~3–5 Min extra pro Lauf, 0 € übers Abo.",
-    )
-
-if narrative_additional:
-    _narr_depth_col, _narr_info_col = st.columns([1, 3])
-    with _narr_depth_col:
-        narrative_depth = st.radio(
-            "Erzähl-Tiefe",
-            options=["Standard", "Ausführlich"],
-            key="narrative_depth_radio",
-            horizontal=True,
-            help="Standard = kompakter Überblick über alle Themen. Ausführlich = volle Original-Tiefe je Beitrag.",
-        )
-    with _narr_info_col:
-        if narrative_depth == "Standard":
-            st.caption("🎙️ Kompakter Podcast-Stil — schneller Überblick über alle Themen")
+        _depths_to_run = [d for d in _valid_depths if d in (_briefing_depth_sel or [])] or ["Intelligent"]
+        st.session_state["_depths_to_run"] = _depths_to_run
+        _briefing_depth = _depths_to_run[0]
+        compact_mode = _briefing_depth != "Ausführlich"
+        ultra_compact = _briefing_depth == "Sehr kurz"
+        st.session_state["compact_mode"] = compact_mode
+        st.session_state["ultra_compact"] = ultra_compact
+        if len(_depths_to_run) > 1:
+            st.caption(f"🔁 {len(_depths_to_run)} Versionen werden nacheinander erstellt — gemeinsame Artikel-Basis, nur die Verdichtung läuft pro Länge.")
+        elif _briefing_depth == "Intelligent kompakt":
+            st.caption("🧠 S · Kluge Gewichtung, straff gehalten (~70 Min): Randnotizen 1-2 Sätze, nur Top-Storys atmen. Für eilige Tage.")
+        elif _briefing_depth == "Intelligent":
+            st.caption("🧠 M · ⭐ Empfohlener Daily Driver (~90 Min): kluge Gewichtung, inhaltlich stimmig — dein bewährter Sweet Spot.")
+        elif _briefing_depth == "Intelligent ausführlich":
+            st.caption("🧠 L · Volle Tiefe (~2 Std): Schwerpunkte ausführlich erzählt. Wenn du Zeit und Interesse hast.")
+        elif ultra_compact:
+            st.caption("Sehr kurz: höchstens ~120 Wörter pro Beitrag — volles Briefing, aber für umfangreiche Tage (viele Artikel) deutlich kürzer.")
+        elif compact_mode:
+            st.caption("Kürzere Artikel — volles Briefing in voller Qualität, nur knackiger. Für die meisten Tagesläufe.")
         else:
-            st.caption("🎙️ Ausführliche Erzähl-Version — gleiche Tiefe wie das klassische Briefing, nur flüssiger erzählt")
+            st.caption("Ausführlicher: mehr Kontext pro Beitrag, dafür länger.")
+        st.checkbox(
+            "📱 WhatsApp-Lese-PDF zusätzlich", key="whatsapp_pdf_additional",
+            help="Erstellt bei jedem Lauf zusätzlich eine kompakte LESE-Version für deinen WhatsApp-Broadcast: klassisches Format (ein Beitrag pro Quelle, wie deine Leser es kennen) in der Stufe Sehr kurz. Artikel werden nur EINMAL geladen — es kommt nur ein zweiter Verdichtungs-Durchlauf dazu (0 € übers Abo). Datei endet auf _whatsapp.pdf. Geht NICHT automatisch an ElevenReader.",
+        )
+    with _mode_col2:
+        topic_synthesis_mode = st.checkbox(
+            "🧵 Themen-Synthese", key="topic_synthesis_mode",
+            help="Persönliches Briefing statt Einzelbeiträge: Opus bündelt ALLE Quellen (Links, Paywall-Texte, Podcasts) thematisch — z.B. drei Artikel + ein Podcast zum Koalitionsausschuss werden EIN verwobener Vorlesetext. Nichts doppelt, nichts fehlt (jede Quelle wird garantiert genau einem Thema zugeordnet). Ersetzt die frühere Erzähl-Version. Nur im kostenlosen Claude-Weg.",
+        )
+        narrative_additional = False  # Erzähl-Version durch Themen-Synthese ersetzt (Code bleibt schlafend erhalten)
+        if topic_synthesis_mode:
+            st.caption("🧵 Alle Quellen werden thematisch zu je EINEM Beitrag verwoben — effizient informiert, nichts doppelt.")
+            st.checkbox(
+                "🎙️ Unterhaltsam erzählt (Magazin-Stil)", key="synthesis_narrative_style",
+                help="Die Themen-Beiträge werden wie von einem guten Magazin-Podcast-Host erzählt: Hook, roter Faden, anschauliche Vergleiche — aber strikt faktentreu, nur mit deinen Quellen, und ernste Themen bleiben ernst. Ohne Häkchen: sachlich-klarer Nachrichtenstil.",
+            )
+            st.checkbox(
+                "🌐 Fehlendes intelligent ergänzen (Websuche)", key="synthesis_web_enrich",
+                help="Fehlt deinen Quellen ein zentraler Baustein (Wer ist die Person? Vorgeschichte? Schlüsselzahl?), darf Opus GEZIELT im Netz nachschlagen — max. 1-2 Suchen pro Thema, nur seriöse Quellen (Agenturen, Öffentlich-Rechtliche, Primärquellen). Jede Ergänzung wird im Text klar gekennzeichnet (Zur Einordnung, laut Reuters: …). Nur Lückenfüllung, nie neue Themen; bei Widerspruch gewinnen DEINE Quellen. Macht den Lauf etwas langsamer.",
+            )
+            # 05.08.: OHNE index= nimmt Streamlit Option 0 ("Einweben"), sobald der
+            # Zustand verlorengeht (passiert durch Fragment-Reruns). Genau so stand
+            # der schlechteste Modus da, obwohl "Original übernehmen" Standard ist.
+            _pm_opt = ["Einweben (kürzen)", "Länger erhalten", "Original übernehmen"]
+            # 26.08.: Streamlit warnt gelb, wenn ein Widget BEIDES bekommt — index=
+            # UND einen Sitzungswert unter demselben Schlüssel. Der Schlüssel ist hier
+            # die Wahrheit (steht in _ERZWUNGENE_DEFAULTS), also wird er vorher gesetzt
+            # und index= weggelassen. Verhalten bleibt identisch, die Meldung verschwindet.
+            _pm_ist = st.session_state.get("podcast_synth_mode") or _DRAFT_DEFAULTS["podcast_synth_mode"]
+            if _pm_ist not in _pm_opt:
+                _pm_ist = _DRAFT_DEFAULTS["podcast_synth_mode"]
+            st.session_state.setdefault("podcast_synth_mode", _pm_ist)
+            st.selectbox(
+                "🎙️ Podcast-Behandlung",
+                options=_pm_opt,
+                key="podcast_synth_mode",
+                help="Wie deine kuratierten Podcast-Zusammenfassungen ins Briefing kommen — gilt in Synthese UND klassisch: "
+                     "Einweben = wie alle Quellen behandelt und aufs Budget gekürzt (~100-200 W; klassisch: Kompakt-/Tragweite-Budget gilt auch für Podcasts). "
+                     "Länger erhalten = mit Mindestlänge ~250-350 W, damit die Substanz bleibt. "
+                     "Original übernehmen = deine Zusammenfassung 1:1 unverändert (STANDARD — eine Folge ist oft ein bis drei Stunden Gespräch, "
+                     "und 1:1 liefert je Folge einen eigenen ausführlichen Beitrag; Synthese: eigener Podcast-Block am Ende).",
+            )
+    with _mode_col3:
+        # Altlasten normalisieren: früher gab es "Standard" — auf gültige Option mappen,
+        # sonst crasht st.radio (gespeicherter Wert nicht in options).
+        if st.session_state.get("genius_depth_radio_main") not in ("Lang", "Kurz", "Beide", "Keine"):
+            st.session_state["genius_depth_radio_main"] = "Keine"
+        # Ohne index= faellt das Feld bei Zustandsverlust auf "Lang" zurueck (05.08.).
+        _kf_opt = ["Lang", "Kurz", "Beide", "Keine"]
+        _kf_ist = st.session_state.get("genius_depth_radio_main") or _DRAFT_DEFAULTS["genius_depth_radio_main"]
+        _kompakt_laenge = st.radio(
+            "✨ Kompaktfassung",
+            options=_kf_opt,
+            index=_kf_opt.index(_kf_ist) if _kf_ist in _kf_opt else _kf_opt.index(_DRAFT_DEFAULTS["genius_depth_radio_main"]),
+            horizontal=True,
+            key="genius_depth_radio_main",
+            help="Separate kuratierte Verdichtung. Lang: nah am Voll-Briefing. Kurz: stark verdichtet. Beide: beide Versionen. Keine: gar keine Kompaktfassung erzeugen — spart Zeit + Opus-Kontingent, sinnvoll wenn dir das kürzere Voll-Briefing reicht (hat ja jetzt Top-3).",
+        )
+        genius_additional = _kompakt_laenge != "Keine"
+        st.session_state["genius_additional_main"] = genius_additional
+        if not genius_additional:
+            st.caption("Keine separate Kompaktfassung — nur das Voll-Briefing wird erstellt.")
+        st.checkbox(
+            "🔍 Qualitäts-Check + Auto-Korrektur", key="quality_check_enabled",
+            help="Nach dem Erstellen prüft Claude jeden Beitrag inhaltlich gegen die Quellen (Zahlen, Kernaussagen, Verfälschungen) und korrigiert Warnungen automatisch — alle Ausgaben (PDF, TXT, ePub, ElevenReader) tragen die geprüfte Fassung. Das Zusammenführen von Doppel-Themen läuft immer, unabhängig von diesem Schalter. ~3–5 Min extra pro Lauf, 0 € übers Abo.",
+        )
 
-genius_depth_label = "Lang"
+    if narrative_additional:
+        _narr_depth_col, _narr_info_col = st.columns([1, 3])
+        with _narr_depth_col:
+            narrative_depth = st.radio(
+                "Erzähl-Tiefe",
+                options=["Standard", "Ausführlich"],
+                key="narrative_depth_radio",
+                horizontal=True,
+                help="Standard = kompakter Überblick über alle Themen. Ausführlich = volle Original-Tiefe je Beitrag.",
+            )
+        with _narr_info_col:
+            if narrative_depth == "Standard":
+                st.caption("🎙️ Kompakter Podcast-Stil — schneller Überblick über alle Themen")
+            else:
+                st.caption("🎙️ Ausführliche Erzähl-Version — gleiche Tiefe wie das klassische Briefing, nur flüssiger erzählt")
+
+    genius_depth_label = "Lang"
+
+
+_fragment_briefing_einstellungen()
+# Werte fuer die Stellen weiter unten aus session_state zurueckholen.
+_depths_to_run = st.session_state.get("_depths_to_run") or ["Intelligent"]
+_briefing_depth = _depths_to_run[0]
+compact_mode = _briefing_depth != "Ausführlich"
+ultra_compact = _briefing_depth == "Sehr kurz"
+topic_synthesis_mode = bool(st.session_state.get("topic_synthesis_mode", True))
 
 # "Neues Briefing" bleibt sichtbar (geteilter Reset für beide Pfade)
 _nb_col1, _nb_col2 = st.columns([3, 1])
