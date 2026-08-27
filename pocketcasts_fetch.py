@@ -469,6 +469,30 @@ def collect_new_releases(progress=None):
     return transcripts, skipped, "ok"
 
 
+# Florians intelligente Playlist auf dem iPhone (Leerzeichen am Ende gehoert dazu!).
+IOS_FILTER_TITLE = "All Together "
+# Ohne Altersgrenze liefert der Filter den kompletten Rueckstand (369 Folgen).
+IOS_FILTER_MAX_AGE_DAYS = 4
+
+
+def _neueste_zuerst(episoden: list, max_alter_tage: float) -> list:
+    """Nur Folgen aus dem Zeitfenster, neueste zuerst."""
+    import datetime as _dt
+    jetzt = _dt.datetime.now(_dt.timezone.utc)
+
+    def _alter(e):
+        try:
+            d = _dt.datetime.fromisoformat((e.get("published") or "").replace("Z", "+00:00"))
+            if not d.tzinfo:
+                d = d.replace(tzinfo=_dt.timezone.utc)
+            return (jetzt - d).total_seconds() / 86400.0
+        except Exception:
+            return 1e9
+
+    frisch = [e for e in episoden if _alter(e) <= max_alter_tage]
+    return sorted(frisch, key=_alter)
+
+
 def preview_new_releases(progress=None):
     """VORSCHAU ohne Zusammenfassen (kostet KEIN 5-Std-Limit — nur HTTP): holt die
     Liste + prüft je Folge, ob ein Transkript da ist, und hält den Volltext gleich
@@ -477,7 +501,23 @@ def preview_new_releases(progress=None):
     text (oder None), has_transcript (bool)}, ...] in Listen-Reihenfolge.
     Überspringt bewusst NICHTS (auch nicht schon Geholtes) — die App klassifiziert
     „schon im Feld" selbst gegen podcast_text."""
-    episodes = list_new_releases()
+    # 27.08.: Erste Wahl ist Florians ECHTE intelligente Playlist. Bisher wurde
+    # die Seite "New Releases" abgeschabt — eine ANDERE Liste mit anderen Regeln:
+    # sie zeigt angefangene Folgen weiter an, seine iOS-Liste blendet sie aus.
+    # Daher standen online regelmaessig mehr Folgen als auf dem iPhone, und
+    # aussortierte tauchten wieder auf. Der Filter kommt live aus dem Konto, ist
+    # also auch beim Aussortieren sofort aktuell.
+    episodes = []
+    try:
+        _res = list_curated_episodes(filter_title=IOS_FILTER_TITLE)
+        _eps = _res.get("episodes") or []
+        if _eps:
+            episodes = _neueste_zuerst(_eps, IOS_FILTER_MAX_AGE_DAYS)
+    except Exception:
+        episodes = []
+    if not episodes:
+        # Rueckfallebene: der bisherige Weg ueber die New-Releases-Seite.
+        episodes = list_new_releases()
     if not episodes:
         return [], "no_login_or_empty"
     items = []
@@ -761,7 +801,13 @@ def list_curated_episodes(podcasts=None, token: str = None, max_workers: int = 1
     else:
         used_filter = flt.get("title")
         if not flt.get("allPodcasts") and flt.get("podcastUuids"):
-            allowed = set(flt["podcastUuids"])
+            # 27.08.: podcastUuids kommt als KOMMA-ZEICHENKETTE, nicht als Liste.
+            # set() darauf ergibt eine Menge einzelner Buchstaben — es passte kein
+            # einziges Abo, die Funktion lieferte immer 0 Folgen und wurde deshalb
+            # nie benutzt. Beide Formen werden jetzt akzeptiert.
+            _roh = flt["podcastUuids"]
+            allowed = ({x.strip() for x in _roh.split(",") if x.strip()}
+                       if isinstance(_roh, str) else set(_roh))
             subs = [s for s in subs if s["uuid"] in allowed]
 
     done = {"n": 0}
