@@ -460,8 +460,12 @@ def collect_new_releases(progress=None):
                                 "episode": ep["episode"], "text": text})
         else:
             skipped.append({"title": title, "podcast_title": pt, "reason": err})
-    if transcripts:
-        _mark_fetched([t["episode"] for t in transcripts])
+    # 27.08.: Frueher wurde hier markiert — also schon beim TRANSKRIPT-Download,
+    # lange vor der Zusammenfassung. Brach der Lauf danach ab (Limit, Netz,
+    # geschlossene Sitzung), galt die Folge als erledigt und verschwand fuer
+    # immer aus der Liste, ohne je im Briefing gelandet zu sein. Markiert wird
+    # jetzt ausschliesslich nach erfolgreicher Zusammenfassung, ueber
+    # summarize_selection_mark() — so wie es der Vorschau-Weg laengst macht.
     return transcripts, skipped, "ok"
 
 

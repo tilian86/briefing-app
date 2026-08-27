@@ -2757,15 +2757,34 @@ def _round_log_key(titel: str) -> str:
     return _re.sub(r"[^a-zäöüß0-9]+", "", t.lower())[:32]
 
 
+def _round_log_gleiche_folge(a: str, b: str) -> bool:
+    """Sind zwei Protokoll-Titel dieselbe Folge?
+
+    27.08.: Start und Fertigmeldung kuerzen den Rohtitel unterschiedlich lang ab.
+    Bleibt nach dem Abschneiden des Podcast-Namens weniger als 32 Zeichen uebrig,
+    gleicht die Kuerzung auf 32 das NICHT mehr aus — "themanwhocallsbsonaia" und
+    "themanwhocallsb" galten als verschiedene Folgen. Ergebnis: neben jedem ✅
+    blieb ein 'laeuft'-Geist stehen, die App meldete "10 offen" bei tatsaechlich
+    6. Deshalb wird jetzt auf Praefix verglichen, nicht auf Gleichheit.
+    """
+    ka, kb = _round_log_key(a), _round_log_key(b)
+    if not ka or not kb:
+        return False
+    kurz, lang = (ka, kb) if len(ka) <= len(kb) else (kb, ka)
+    # 12 Zeichen sind lang genug, um Verwechslungen auszuschliessen, und kurz
+    # genug, um jede vorkommende Kuerzung zu ueberbruecken.
+    return len(kurz) >= 12 and lang.startswith(kurz)
+
+
 def _round_log_write(eintrag: dict) -> None:
     """Haelt fest, was aus jeder angestossenen Folge wurde — dauerhaft.
     05.08.: Bisher stand das nur fluechtig in der Oberflaeche; nach dem naechsten
     Neuaufbau war nicht mehr nachvollziehbar, welche Folgen angekommen sind."""
     try:
         daten = _round_log_read()
-        _k = _round_log_key(eintrag.get("titel"))
+        _t = eintrag.get("titel")
         daten["eintraege"] = [e for e in daten.get("eintraege", [])
-                              if _round_log_key(e.get("titel")) != _k]
+                              if not _round_log_gleiche_folge(e.get("titel"), _t)]
         daten["eintraege"].append(eintrag)
         daten["stand"] = datetime.datetime.now().isoformat()
         PODCAST_ROUND_LOG.write_text(json.dumps(daten, ensure_ascii=False), encoding="utf-8")
