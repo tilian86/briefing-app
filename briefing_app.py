@@ -6267,6 +6267,9 @@ st.markdown("---")
 #
 # Die einzigen Werte, die spaetere Stellen brauchen, stehen in session_state
 # (_depths_to_run, topic_synthesis_mode) — geprueft, keine weiteren Kreuzungen.
+# on_change=_save_draft an jedem Feld: Bisher landeten diese Einstellungen erst
+# beim Briefing-Start in der Entwurfsdatei — ein Neustart davor verwarf sie.
+# Im Fragment kostet das Sofort-Speichern praktisch nichts mehr.
 @st.fragment
 def _fragment_briefing_einstellungen():
     # === Output-Varianten ===
@@ -6290,7 +6293,7 @@ def _fragment_briefing_einstellungen():
         _briefing_depth_sel = st.multiselect(
             "Briefing-Länge(n)",
             options=list(_valid_depths),
-            key="briefing_depth_multi",
+            key="briefing_depth_multi", on_change=_save_draft,
             help="Drei intelligente Stufen (Opus gewichtet jedes Thema selbst, du musst NICHTS bewerten — Top-Storys voll, Randnotizen 2-3 Sätze): 🧠 Intelligent kompakt (~70 Min, für eilige Tage) · 🧠 Intelligent (~90 Min, ⭐ empfohlener Daily Driver, der bewährte Sweet Spot) · 🧠 Intelligent ausführlich (~2 Std, volle Tiefe). Dazu die gleichmäßigen Klassik-Stufen: Sehr kurz / Kürzer / Ausführlich. MEHRERE anklicken = alle Versionen in einem Rutsch.",
         )
         _depths_to_run = [d for d in _valid_depths if d in (_briefing_depth_sel or [])] or ["Intelligent"]
@@ -6315,23 +6318,23 @@ def _fragment_briefing_einstellungen():
         else:
             st.caption("Ausführlicher: mehr Kontext pro Beitrag, dafür länger.")
         st.checkbox(
-            "📱 WhatsApp-Lese-PDF zusätzlich", key="whatsapp_pdf_additional",
+            "📱 WhatsApp-Lese-PDF zusätzlich", key="whatsapp_pdf_additional", on_change=_save_draft,
             help="Erstellt bei jedem Lauf zusätzlich eine kompakte LESE-Version für deinen WhatsApp-Broadcast: klassisches Format (ein Beitrag pro Quelle, wie deine Leser es kennen) in der Stufe Sehr kurz. Artikel werden nur EINMAL geladen — es kommt nur ein zweiter Verdichtungs-Durchlauf dazu (0 € übers Abo). Datei endet auf _whatsapp.pdf. Geht NICHT automatisch an ElevenReader.",
         )
     with _mode_col2:
         topic_synthesis_mode = st.checkbox(
-            "🧵 Themen-Synthese", key="topic_synthesis_mode",
+            "🧵 Themen-Synthese", key="topic_synthesis_mode", on_change=_save_draft,
             help="Persönliches Briefing statt Einzelbeiträge: Opus bündelt ALLE Quellen (Links, Paywall-Texte, Podcasts) thematisch — z.B. drei Artikel + ein Podcast zum Koalitionsausschuss werden EIN verwobener Vorlesetext. Nichts doppelt, nichts fehlt (jede Quelle wird garantiert genau einem Thema zugeordnet). Ersetzt die frühere Erzähl-Version. Nur im kostenlosen Claude-Weg.",
         )
         narrative_additional = False  # Erzähl-Version durch Themen-Synthese ersetzt (Code bleibt schlafend erhalten)
         if topic_synthesis_mode:
             st.caption("🧵 Alle Quellen werden thematisch zu je EINEM Beitrag verwoben — effizient informiert, nichts doppelt.")
             st.checkbox(
-                "🎙️ Unterhaltsam erzählt (Magazin-Stil)", key="synthesis_narrative_style",
+                "🎙️ Unterhaltsam erzählt (Magazin-Stil)", key="synthesis_narrative_style", on_change=_save_draft,
                 help="Die Themen-Beiträge werden wie von einem guten Magazin-Podcast-Host erzählt: Hook, roter Faden, anschauliche Vergleiche — aber strikt faktentreu, nur mit deinen Quellen, und ernste Themen bleiben ernst. Ohne Häkchen: sachlich-klarer Nachrichtenstil.",
             )
             st.checkbox(
-                "🌐 Fehlendes intelligent ergänzen (Websuche)", key="synthesis_web_enrich",
+                "🌐 Fehlendes intelligent ergänzen (Websuche)", key="synthesis_web_enrich", on_change=_save_draft,
                 help="Fehlt deinen Quellen ein zentraler Baustein (Wer ist die Person? Vorgeschichte? Schlüsselzahl?), darf Opus GEZIELT im Netz nachschlagen — max. 1-2 Suchen pro Thema, nur seriöse Quellen (Agenturen, Öffentlich-Rechtliche, Primärquellen). Jede Ergänzung wird im Text klar gekennzeichnet (Zur Einordnung, laut Reuters: …). Nur Lückenfüllung, nie neue Themen; bei Widerspruch gewinnen DEINE Quellen. Macht den Lauf etwas langsamer.",
             )
             # 05.08.: OHNE index= nimmt Streamlit Option 0 ("Einweben"), sobald der
@@ -6349,7 +6352,7 @@ def _fragment_briefing_einstellungen():
             st.selectbox(
                 "🎙️ Podcast-Behandlung",
                 options=_pm_opt,
-                key="podcast_synth_mode",
+                key="podcast_synth_mode", on_change=_save_draft,
                 help="Wie deine kuratierten Podcast-Zusammenfassungen ins Briefing kommen — gilt in Synthese UND klassisch: "
                      "Einweben = wie alle Quellen behandelt und aufs Budget gekürzt (~100-200 W; klassisch: Kompakt-/Tragweite-Budget gilt auch für Podcasts). "
                      "Länger erhalten = mit Mindestlänge ~250-350 W, damit die Substanz bleibt. "
@@ -6369,7 +6372,7 @@ def _fragment_briefing_einstellungen():
             options=_kf_opt,
             index=_kf_opt.index(_kf_ist) if _kf_ist in _kf_opt else _kf_opt.index(_DRAFT_DEFAULTS["genius_depth_radio_main"]),
             horizontal=True,
-            key="genius_depth_radio_main",
+            key="genius_depth_radio_main", on_change=_save_draft,
             help="Separate kuratierte Verdichtung. Lang: nah am Voll-Briefing. Kurz: stark verdichtet. Beide: beide Versionen. Keine: gar keine Kompaktfassung erzeugen — spart Zeit + Opus-Kontingent, sinnvoll wenn dir das kürzere Voll-Briefing reicht (hat ja jetzt Top-3).",
         )
         genius_additional = _kompakt_laenge != "Keine"
@@ -6377,7 +6380,7 @@ def _fragment_briefing_einstellungen():
         if not genius_additional:
             st.caption("Keine separate Kompaktfassung — nur das Voll-Briefing wird erstellt.")
         st.checkbox(
-            "🔍 Qualitäts-Check + Auto-Korrektur", key="quality_check_enabled",
+            "🔍 Qualitäts-Check + Auto-Korrektur", key="quality_check_enabled", on_change=_save_draft,
             help="Nach dem Erstellen prüft Claude jeden Beitrag inhaltlich gegen die Quellen (Zahlen, Kernaussagen, Verfälschungen) und korrigiert Warnungen automatisch — alle Ausgaben (PDF, TXT, ePub, ElevenReader) tragen die geprüfte Fassung. Das Zusammenführen von Doppel-Themen läuft immer, unabhängig von diesem Schalter. ~3–5 Min extra pro Lauf, 0 € übers Abo.",
         )
 
@@ -6387,7 +6390,7 @@ def _fragment_briefing_einstellungen():
             narrative_depth = st.radio(
                 "Erzähl-Tiefe",
                 options=["Standard", "Ausführlich"],
-                key="narrative_depth_radio",
+                key="narrative_depth_radio", on_change=_save_draft,
                 horizontal=True,
                 help="Standard = kompakter Überblick über alle Themen. Ausführlich = volle Original-Tiefe je Beitrag.",
             )
