@@ -2925,7 +2925,17 @@ if (_fl_clicked or _fl_auto) and not _fl_running:
 # 🧩 Selbst-aktualisierender Statusblock: laeuft der Abruf, wird NUR dieser
 # Bereich alle 2 Sekunden neu gezeichnet — der Rest der Seite bleibt bedienbar,
 # du kannst also parallel Podcasts einwerfen.
-@st.fragment(run_every=2)
+#
+# 30.08.: Der Takt lief BEDINGUNGSLOS — auch wenn gar kein Abruf offen war,
+# ging alle 2 Sekunden eine Anfrage an den Server, rund um die Uhr. Die drei
+# anderen Takt-Fragmente machen es laengst richtig. Jetzt tickt es nur noch,
+# solange ein Auftrag offen oder gerade fertig geworden ist (das Ergebnis muss
+# einmal angewandt werden, bevor Ruhe einkehren darf).
+_fls_job = st.session_state.get("_feedly_job")
+_fls_aktiv = bool(_fls_job) and not _fls_job.get("applied")
+
+
+@st.fragment(run_every=(2 if _fls_aktiv else None))
 def _fragment_feedly_status():
     job = st.session_state.get("_feedly_job")
     if not job:
