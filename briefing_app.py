@@ -3635,7 +3635,27 @@ st.markdown('<div id="nav-inbox" style="position:relative; top:-64px;"></div>', 
 # 🧩 Fragment: Klicks hier laden nur DIESEN Block neu, nicht die ganze Seite (03.08.).
 @st.fragment
 def _fragment_episoden_inbox():
-    with st.expander("📡 Episoden-Inbox — neue Folgen aus deinen Feeds", expanded=False):
+    # 30.08.: Diese Liste war der groesste Brocken der ganzen Seite — 60 Zeilen
+    # à ~14 Elemente ≈ 840 DOM-Knoten von insgesamt 7.487, und Streamlit baut den
+    # Inhalt eines zugeklappten st.expander TROTZDEM bei jedem Aufbau komplett.
+    # Jetzt wird er nur gebaut, wenn er offen ist.
+    #
+    # Zwei Sicherungen:
+    #  · Laeuft eine Runde (Apple/Whisper/Hintergrund-Jobs), bleibt der Block
+    #    offen — sonst waere der Fortschritt unsichtbar.
+    #  · Beim Zuklappen wirft Streamlit die Haekchen weg. Die Auswahl liegt auf
+    #    Platte; die Saat-Marke wird zurueckgesetzt, damit sie beim Aufklappen
+    #    wieder geladen wird.
+    _ib_arbeit = bool(st.session_state.get("apple_round")
+                      or st.session_state.get("_round_jobs")
+                      or st.session_state.get("whisper_running")
+                      or st.session_state.get("whisper_queue"))
+    _ib_box, _ib_offen = _lazy_expander(
+        "📡 Episoden-Inbox — neue Folgen aus deinen Feeds", "episoden_inbox")
+    if not (_ib_offen or _ib_arbeit):
+        st.session_state.pop("_ibx_sel_seeded", None)
+        return
+    with _ib_box:
         st.caption("Zeigt NUR neue Folgen im gewählten Zeitfenster — nie den Back-Katalog. Archiviertes bleibt dauerhaft weg. 📄 = Transkript im Feed (null Klicks nötig) · 🍎 = einmal in Apple Podcasts antippen, dann unten abholen. Der Pocket-Casts-Weg übers Einwurf-Feld bleibt wie gehabt.")
         _ib_c1, _ib_c2 = st.columns([2, 3])
         with _ib_c1:
@@ -6810,7 +6830,13 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         try:
             _fjp = json.loads(_BRIEFING_JOB_STATUS_PATH.read_text(encoding="utf-8"))
             _fjp_age = (datetime.datetime.now() - datetime.datetime.fromisoformat(_fjp.get("started"))).total_seconds()
-            _bjf_active = (not _fjp.get("done")) and _fjp_age < 9000
+            # 30.08.: Bricht ein Lauf ab, ohne "done" zu setzen, tickerte die
+            # Seite danach 2,5 Stunden lang alle 2 Sekunden weiter. Zusaetzlich
+            # zur Startzeit zaehlt jetzt, wann die Statusdatei zuletzt angefasst
+            # wurde — ein lebender Lauf schreibt mindestens jede Minute hinein.
+            import time as _t_still
+            _fjp_still = _t_still.time() - _BRIEFING_JOB_STATUS_PATH.stat().st_mtime
+            _bjf_active = (not _fjp.get("done")) and _fjp_age < 9000 and _fjp_still < 300
         except Exception:
             pass
     @st.fragment(run_every=(2 if _bjf_active else None))
