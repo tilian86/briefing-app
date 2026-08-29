@@ -162,7 +162,16 @@ def fetch_transcript(podcast_uuid: str, episode_uuid: str, timeout: int = 30, ti
             text = _vtt_to_text(raw)
             if len(text) >= 200:
                 return text, None
-    except urllib.error.HTTPError:
+    except urllib.error.HTTPError as _he:
+        # 30.08.: Hier wurde JEDER HTTP-Fehler als "kein Transkript vorhanden"
+        # gewertet — auch 429 (Drosselung) und 5xx. Solche Folgen bot die App
+        # danach zum Archivieren an: sie verschwanden endgültig aus Pocket Casts,
+        # ohne je im Briefing gewesen zu sein. Nur 403/404 heissen wirklich
+        # "gibt es nicht"; alles andere ist eine Störung und wird gemeldet.
+        _code = getattr(_he, "code", 0)
+        if _code not in (403, 404):
+            return None, (f"Pocket Casts bremst gerade oder ist gestört (HTTP {_code}) — "
+                          "später nochmal versuchen. Die Folge bleibt in deiner Liste.")
         pass  # 403/404 = kein generiertes → Feed-Quelle probieren
     except Exception as e:
         return None, ("Abruf-Fehler: %s" % str(e)[:80])

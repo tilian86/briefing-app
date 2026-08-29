@@ -650,7 +650,11 @@ def open_login_window() -> None:
         page = _page(ctx)
         page.goto(FEEDLY_URL, wait_until="domcontentloaded", timeout=60000)
         try:
-            page.wait_for_event("close", timeout=0)
+            # 30.08.: timeout=0 hiess "ewig warten". Blieb das Fenster offen
+            # (minimiert, vergessen), hielt Chromium das Profil dauerhaft belegt
+            # und JEDER Feedly-Abruf scheiterte mit "Profil belegt" — bis zum
+            # App-Neustart. 30 Minuten sind reichlich fuer eine Anmeldung.
+            page.wait_for_event("close", timeout=30 * 60 * 1000)
         except Exception:
             pass
     finally:
@@ -869,7 +873,11 @@ def _cli_login() -> int:
         page.goto(FEEDLY_URL, wait_until="domcontentloaded", timeout=60000)
         print("Warte, bis du das Fenster schließt …")
         try:
-            page.wait_for_event("close", timeout=0)
+            # 30.08.: timeout=0 hiess "ewig warten". Blieb das Fenster offen
+            # (minimiert, vergessen), hielt Chromium das Profil dauerhaft belegt
+            # und JEDER Feedly-Abruf scheiterte mit "Profil belegt" — bis zum
+            # App-Neustart. 30 Minuten sind reichlich fuer eine Anmeldung.
+            page.wait_for_event("close", timeout=30 * 60 * 1000)
         except Exception:
             pass
     finally:

@@ -58,11 +58,23 @@ def _cleanup():
 
 def main():
     _log("=== Terminierter Lauf gestartet ===")
+    # 30.08.: Der Status wurde erst NACH dem Laden des Entwurfs geschrieben.
+    # Starb der Lauf davor (kaputte Entwurfsdatei, Import-Fehler), stand in der
+    # Statusdatei weiter der VORIGE Lauf — die App zeigte "✅ Fertig" von
+    # gestern, und dass heute nichts lief, sah niemand. Jetzt wird sofort
+    # gestempelt, und der Absturz-Handler unten schreibt das Scheitern hinein.
+    import datetime as _dt
+    _write_status({"active": True, "started": _dt.datetime.now().isoformat(),
+                   "step": "⏰ Terminierter Lauf gestartet…", "ratio": 0.0,
+                   "done": False, "cancel": False, "results": [], "scheduled": True})
     import briefing_core as core
     from reader_upload import upload_briefing_epub, upload_briefing_txt
 
     if not os.path.exists(DRAFT_PATH):
         _log("Kein Entwurf gefunden — Abbruch.")
+        _write_status({"active": True, "started": _dt.datetime.now().isoformat(),
+                       "step": "❌ Kein Entwurf gefunden — nichts zu bauen.",
+                       "ratio": 1.0, "done": True, "failed": True, "results": []})
         _cleanup()
         return
     draft = json.loads(open(DRAFT_PATH, encoding="utf-8").read())
@@ -72,6 +84,9 @@ def main():
     podcast = draft.get("podcast_text", "") or ""
     if not (urls.strip() or paywall.strip() or podcast.strip()):
         _log("Entwurf leer (keine Quellen) — Abbruch.")
+        _write_status({"active": True, "started": _dt.datetime.now().isoformat(),
+                       "step": "❌ Entwurf war leer — keine Quellen zum Bauen.",
+                       "ratio": 1.0, "done": True, "failed": True, "results": []})
         _cleanup()
         return
 
@@ -200,7 +215,14 @@ def main():
         status["usage_5h_after"] = core._read_real_5h_usage()
     except Exception:
         pass
-    status.update({"active": True, "done": True, "step": "✅ Fertig (terminiert).", "ratio": 1.0, "results": [entry]})
+    # 30.08.: Hier stand IMMER "✅ Fertig", auch wenn beim Schreiben Quellen
+    # ausgefallen waren. Die App-Variante sagt an derselben Stelle laengst die
+    # Wahrheit — der terminierte Lauf jetzt auch.
+    _fehlend = len(status.get("uncovered_sources") or [])
+    _schluss = ("✅ Fertig (terminiert)." if not _fehlend else
+                f"⚠️ Fertig (terminiert) — aber {_fehlend} Quelle(n) fehlen im "
+                f"Briefing (Limit/Auslastung beim Schreiben).")
+    status.update({"active": True, "done": True, "step": _schluss, "ratio": 1.0, "results": [entry]})
     _write_status(status)
     _log("=== Fertig: %s Beiträge, Upload=%s ===" % (entry.get("sections"), entry.get("upload")))
     _cleanup()
@@ -209,8 +231,16 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception as _fatal:
         _log("Fataler Fehler:\n" + traceback.format_exc())
+        # Muss in die Statusdatei — sonst zeigt die App den Lauf von gestern.
+        try:
+            import datetime as _dt2
+            _write_status({"active": True, "started": _dt2.datetime.now().isoformat(),
+                           "step": f"❌ Terminierter Lauf abgestürzt: {str(_fatal)[:150]}",
+                           "ratio": 1.0, "done": True, "failed": True, "results": []})
+        except Exception:
+            pass
         try:
             _cleanup()
         except Exception:

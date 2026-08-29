@@ -1205,7 +1205,13 @@ def detect_truncated_paywall_blocks(blocks: List[str]) -> List[dict]:
                 })
             continue
         # Text vor dem Paywall-Marker extrahieren (das ist der tatsächliche Artikel)
-        marker_pos = block.find(found_marker)
+        # 30.08.: Die Marker-Liste ist kleingeschrieben, die Suche lief aber
+        # case-SENSITIV gegen den Originaltext. Bei "JETZT ANMELDEN" (so stehen
+        # Abo-Kaesten meist da) kam -1 zurueck, und block[:-1] war der GANZE
+        # Block statt des Textes davor — der Anriss galt dann als Volltext.
+        marker_pos = block.lower().find(found_marker.lower())
+        if marker_pos < 0:
+            marker_pos = len(block)
         actual_content = block[:marker_pos].strip()
         # Kurz genug um als "abgeschnitten" zu gelten? (< 1500 Zeichen Nutzinhalt)
         if len(actual_content) > 1500:
@@ -16944,7 +16950,17 @@ def run_self_check(sections: List[dict], now: Optional[datetime.datetime] = None
     # sind Krankheitsfaelle, keine 16 zusammengeklebten Meldungen. Das Briefing
     # bekam dafuer 95 statt 100, obwohl inhaltlich nichts zu beanstanden war.
     _fehlalarm = set(buendel_fehlalarme or ())
-    _bu_funde = [f for f in _bu_funde if f["index"] not in _fehlalarm]
+
+    def _ist_fehlalarm(f):
+        # Markierung am Abschnitt selbst gewinnt — sie ueberlebt Verschiebungen.
+        try:
+            if sections[f["index"] - 1].get("_buendel_fehlalarm"):
+                return True
+        except Exception:
+            pass
+        return f["index"] in _fehlalarm
+
+    _bu_funde = [f for f in _bu_funde if not _ist_fehlalarm(f)]
     buendel_issues = [f"Beitrag {f['index']}: {f['reason']}" for f in _bu_funde if f["sicher"]]
     buendel_verdacht = [f"Beitrag {f['index']}: {f['reason']}" for f in _bu_funde if not f["sicher"]]
     # Titel-Befunde sind eindeutig (der Beitrag sagt selbst, dass er bündelt),
@@ -17130,6 +17146,14 @@ def repair_bundled_sections(sections: List[dict], bundles: List[dict],
         if not antwort or "NICHT_TEILBAR" in antwort.upper():
             print(f"[selbstheilung] Beitrag {idx}: laut Prüfung nur eine Meldung — unverändert.",
                   file=sys.stderr)
+            # 30.08.: Frueher wurde der INDEX gemerkt. Wird danach ein anderer
+            # Beitrag aufgeteilt, verschiebt sich alles dahinter — der Fehlalarm
+            # zeigte dann auf einen fremden Beitrag. Jetzt wird der Abschnitt
+            # selbst markiert, das ueberlebt jede Verschiebung.
+            try:
+                sections[idx - 1]["_buendel_fehlalarm"] = True
+            except Exception:
+                pass
             fehlalarme.add(idx)
             continue
 

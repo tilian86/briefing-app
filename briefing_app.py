@@ -3081,6 +3081,11 @@ if _truncated:
                     _new_text += "\n\nmmm\n"
                 st.session_state["paywall_text_pending_value"] = _new_text
                 st.session_state["paywall_text_pending_set"] = True
+                # 30.08.: Ohne diese Marke drehte die Schrumpf-Firewall das
+                # bewusste Entfernen still zurueck — die Oberflaeche meldete
+                # trotzdem Erfolg, und beim naechsten Laden waren die Bloecke
+                # wieder da (und Neuzugaenge dafuer weg).
+                st.session_state["_intentional_clear"] = True
                 # 24.08.: Ohne dieses Speichern stand der entfernte Block beim
                 # naechsten Seitenaufbau wieder da — die Datei gewinnt seit dem
                 # mtime-Umbau gegen die Sitzung. Genau deshalb ging die Warnung
@@ -3497,7 +3502,17 @@ def _briefing_worker(cfg: dict, status: dict):
         # nach einem erfolgreichen Lauf. 03.08.: Dieser Block stand vorher im
         # Legacy-Zweig `if False:` und lief deshalb nie; die Merkliste wuchs auf
         # 86 Einträge an, die beim nächsten Abruf erneut gekommen wären.
-        if any(_e.get("ok") for _e in results) and not _cancelled():
+        # 30.08.: Frueher genuegte EIN erfolgreicher Lauf — auch wenn beim
+        # Schreiben Themen ausgefallen waren. Dann verschwanden Artikel aus der
+        # Merkliste, die nie im Briefing standen, und waren unwiederbringlich weg.
+        # Fehlt auch nur eine Quelle, bleibt die Merkliste jetzt unangetastet.
+        _unc_jetzt = status.get("uncovered_sources") or []
+        if _unc_jetzt:
+            status["feedly_removed"] = 0
+            status["feedly_hinweis"] = (
+                f"Merkliste NICHT geleert — {len(_unc_jetzt)} Quelle(n) fehlen im "
+                f"Briefing. Nach einem vollständigen Lauf wird aufgeräumt.")
+        elif any(_e.get("ok") for _e in results) and not _cancelled():
             try:
                 import feedly_fetch as _feedly_done
                 # Nur den Start-Schnappschuss abräumen — Nachzügler bleiben vorgemerkt.
