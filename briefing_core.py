@@ -14240,7 +14240,12 @@ DAS IST FALSCH (so darfst du NICHT gruppieren):
 - Alle KI-Nachrichten des Tages als ein Thema „Die KI-Woche"
 Jeder dieser Fälle ist ein EIGENES Thema. Ein Mord in Trier und ein Betrug in Ulm haben nichts miteinander zu tun, nur weil beides Straftaten sind.
 
-Der Normalfall ist: ein Thema = eine Quelle. Gruppen entstehen nur bei echten Dubletten desselben Ereignisses. Im Zweifel IMMER trennen.
+DAS MUSST DU ZUSAMMENLEGEN (Gegenprobe zu oben):
+- Dieselbe Lokalmeldung in GEA UND Schwäbischem Tagblatt UND/ODER SWR. Diese Quellen berichten systematisch über dieselbe Region — derselbe Bau, dieselbe Eröffnung, derselbe Gemeinderatsbeschluss erscheint dort regelmäßig doppelt. Beispiel: „Neue Aussicht auf alte Hirsche im Schönbuch" (GEA) und „Neue Kanzel, alter Streit ums Rotwild" (Tagblatt) sind DIESELBE Einweihung derselben Beobachtungskanzel — ein Thema, nicht zwei.
+- Mehrere Meldungen zu DEMSELBEN eng umrissenen Vorgang am selben Ort am selben Tag, auch wenn sie ihn aus verschiedenen Blickwinkeln beleuchten (Zahlen, Betroffene, Behördenreaktion).
+Erkennungszeichen einer Dublette: dieselben Eigennamen, dieselben Zahlen, derselbe Ort, dasselbe Datum. Wenn zwei Quellen dieselbe Summe, denselben Ortsnamen und dasselbe Ereignis nennen, gehören sie zusammen — egal wie verschieden die Überschriften klingen.
+
+Der Normalfall ist: ein Thema = eine Quelle. Prüfe aber bei JEDER Quelle aktiv, ob eine andere denselben Vorgang beschreibt. Nur bei blosser Sachgebiets-Ähnlichkeit (beides Kriminalität, beides KI) wird getrennt.
 
 WEITERE REGELN:
 - JEDE Quellen-Nummer muss in GENAU EINEM Thema vorkommen. Keine weglassen, keine doppelt.

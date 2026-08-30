@@ -3650,10 +3650,24 @@ def _fragment_episoden_inbox():
                       or st.session_state.get("_round_jobs")
                       or st.session_state.get("whisper_running")
                       or st.session_state.get("whisper_queue"))
-    _ib_box, _ib_offen = _lazy_expander(
-        "📡 Episoden-Inbox — neue Folgen aus deinen Feeds", "episoden_inbox")
-    if not (_ib_offen or _ib_arbeit):
+    # 30.08. (2): Erst hielt laufende Arbeit den Block ZWANGSWEISE offen — damit
+    # war er fuer Florian nicht mehr zuklappbar, sein Klick wurde ueberstimmt.
+    # Jetzt entscheidet immer er. Laeuft waehrenddessen etwas, steht dort eine
+    # Zeile mit dem Stand statt der ganzen Liste.
+    _ib_titel = "📡 Episoden-Inbox — neue Folgen aus deinen Feeds"
+    if _ib_arbeit:
+        _ib_titel += "  ·  🔄 Runde läuft"
+    _ib_box, _ib_offen = _lazy_expander(_ib_titel, "episoden_inbox")
+    if not _ib_offen:
         st.session_state.pop("_ibx_sel_seeded", None)
+        if _ib_arbeit:
+            _n_offen = len(st.session_state.get("_round_jobs") or [])
+            _n_whisper = len(st.session_state.get("whisper_queue") or [])
+            _teile = ([f"{_n_offen} Zusammenfassung(en) laufen"] if _n_offen else []) \
+                     + ([f"{_n_whisper} in der Whisper-Schlange"] if _n_whisper else []) \
+                     + (["Apple-Runde aktiv"] if st.session_state.get("apple_round") else [])
+            st.caption("🔄 " + (" · ".join(_teile) if _teile else "Runde läuft")
+                       + " — zum Mitverfolgen oben aufklappen.")
         return
     with _ib_box:
         st.caption("Zeigt NUR neue Folgen im gewählten Zeitfenster — nie den Back-Katalog. Archiviertes bleibt dauerhaft weg. 📄 = Transkript im Feed (null Klicks nötig) · 🍎 = einmal in Apple Podcasts antippen, dann unten abholen. Der Pocket-Casts-Weg übers Einwurf-Feld bleibt wie gehabt.")
