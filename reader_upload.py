@@ -287,7 +287,18 @@ def _do_upload(file_path: str, expect_title: str, timeout_s: int, t0: float) -> 
         except Exception:
             pass
         # Erfolg: Eintrag mit unserem Titel taucht auf (Library oder Reader-Ansicht)
-        page.wait_for_selector(f"text={expect_title}", timeout=timeout_s * 1000)
+        try:
+            page.wait_for_selector(f"text={expect_title}", timeout=timeout_s * 1000)
+        except Exception:
+            # 30.08.: rohe Playwright-Timeout-Meldung durch verstaendlichen Text
+            # ersetzen (Fehler-Tagebuch cdd2f411c5e4) — der Klick auf "Bestaetigen"
+            # war da, nur die Bestaetigung wurde nicht rechtzeitig sichtbar.
+            return {"ok": False,
+                    "error": (f"ElevenReader hat die Bestaetigung fuer '{expect_title}' "
+                              f"nicht innerhalb von {timeout_s} Sekunden angezeigt. "
+                              "Bitte in der App pruefen, ob der Eintrag trotzdem in der "
+                              "Bibliothek erschienen ist."),
+                    "elapsed_seconds": time.time() - t0}
         return {"ok": True, "error": None, "elapsed_seconds": time.time() - t0}
     except Exception as exc:
         return {"ok": False, "error": f"Upload fehlgeschlagen: {str(exc)[:180]}",

@@ -7979,6 +7979,28 @@ if url_preview["rejected"]:
 
 st.markdown("---")
 st.markdown('<div id="nav-meta" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
+# 🔧 Bericht des nächtlichen Wartungslaufs — steht ganz oben, wenn es einen gibt,
+# damit Florian sieht was in seiner Abwesenheit geändert wurde (30.08.).
+try:
+    _wb_pfad = _APP_DIR / "WARTUNGSBERICHT.md"
+    if _wb_pfad.exists():
+        _wb_alter = (datetime.datetime.now()
+                     - datetime.datetime.fromtimestamp(_wb_pfad.stat().st_mtime)).days
+        if _wb_alter <= 14 and not st.session_state.get("_wb_gelesen"):
+            _wb_box, _wb_auf = _lazy_expander(
+                f"🔧 Wartungslauf hat gearbeitet (vor {_wb_alter} Tag(en)) — Bericht lesen",
+                "wartungsbericht")
+            if _wb_auf:
+                with _wb_box:
+                    st.markdown(_wb_pfad.read_text(encoding="utf-8")[:9000])
+                    st.caption("Alles ist als Git-Commit festgehalten. Rücknahme im Terminal: "
+                               "`cd ~/Projects/apps/briefing-app && git revert HEAD`")
+                    if st.button("✅ Gelesen — Hinweis ausblenden", key="wb_gelesen"):
+                        st.session_state["_wb_gelesen"] = True
+                        st.rerun()
+except Exception:
+    pass
+
 # 🐛 Fehler-Tagebuch (30.08.): Stolpersteine verschwanden bisher in Logs, die
 # niemand liest. Hier stehen sie sichtbar — mit einem Knopf, der einen fertigen
 # Bericht zum Kopieren erzeugt. Der naechtliche Wartungslauf liest dieselbe Datei.
