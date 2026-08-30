@@ -182,7 +182,14 @@ def main() -> int:
          f"Wartungslauf {datetime.datetime.now():%d.%m.%Y}: {len(machbar)} Einträge bearbeitet\n\n"
          "Automatisch behoben, Prüfung bestanden. Rücknahme: git revert HEAD\n\n"
          "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>")
+    _stand = _git("rev-parse", "--short", "HEAD").stdout.strip()
     _log("Committet. " + _git("log", "--oneline", "-1").stdout.strip())
+
+    # Bearbeitete Eintraege abhaken — sonst arbeitet der naechste Lauf dieselben
+    # Sachen erneut ab. Kritische bleiben ausdruecklich offen, die gehoeren Florian.
+    for x in machbar:
+        fehlerbuch.erledigen(x["kennung"], f"Wartungslauf {_stand}")
+    _log(f"{len(machbar)} Eintrag/Eintraege abgehakt, {len(kritisch)} bleiben offen.")
     return 0
 
 
