@@ -16,7 +16,8 @@ import os
 import re
 import sys
 import time
-import browser_pfad  # muss VOR jedem Playwright-Import stehen (25.08.)
+import browser_pfad
+import fehlerbuch  # muss VOR jedem Playwright-Import stehen (25.08.)
 import urllib.request
 
 PROFILE_DIR = os.path.expanduser("~/.briefing_pocketcasts_profile")
@@ -170,6 +171,9 @@ def fetch_transcript(podcast_uuid: str, episode_uuid: str, timeout: int = 30, ti
         # "gibt es nicht"; alles andere ist eine Störung und wird gemeldet.
         _code = getattr(_he, "code", 0)
         if _code not in (403, 404):
+            fehlerbuch.eintragen("Podcast-Transkript", f"HTTP {_code} von Pocket Casts",
+                                 {"titel": (title or "")[:90], "episode": episode_uuid},
+                                 "normal")
             return None, (f"Pocket Casts bremst gerade oder ist gestört (HTTP {_code}) — "
                           "später nochmal versuchen. Die Folge bleibt in deiner Liste.")
         pass  # 403/404 = kein generiertes → Feed-Quelle probieren

@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import browser_pfad  # muss VOR jedem Playwright-Import stehen (25.08.)
+import fehlerbuch
 from pathlib import Path
 from typing import Optional
 from briefing_core import (
@@ -3542,11 +3543,19 @@ def _briefing_worker(cfg: dict, status: dict):
         # Vorfalls — der Abschluss sagt jetzt die Wahrheit.
         _fehlend = len(status.get("uncovered_sources") or [])
         if _fehlend:
+            fehlerbuch.eintragen(
+                "Verlorene Quellen", f"{_fehlend} Quelle(n) fielen beim Schreiben aus",
+                {"titel": [str(u.get("title", ""))[:70] for u in (status.get("uncovered_sources") or [])[:5]]},
+                "kritisch")
             _upd(step=f"⚠️ Fertig — aber {_fehlend} Quelle(n) fehlen im Briefing "
                       f"(Limit/Auslastung beim Schreiben).", ratio=1.0, done=True)
         else:
             _upd(step="✅ Fertig.", ratio=1.0, done=True)
     except Exception as exc:
+        import traceback as _tb
+        fehlerbuch.eintragen("Briefing-Lauf", str(exc)[:300],
+                             {"schritt": status.get("step", "")[:120],
+                              "spur": _tb.format_exc()[-900:]}, "kritisch")
         _upd(step=f"❌ Unerwarteter Fehler: {str(exc)[:150]}", done=True, failed=True)
     finally:
         _wachhalter_stop(_wach)
@@ -7970,6 +7979,39 @@ if url_preview["rejected"]:
 
 st.markdown("---")
 st.markdown('<div id="nav-meta" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
+# 🐛 Fehler-Tagebuch (30.08.): Stolpersteine verschwanden bisher in Logs, die
+# niemand liest. Hier stehen sie sichtbar — mit einem Knopf, der einen fertigen
+# Bericht zum Kopieren erzeugt. Der naechtliche Wartungslauf liest dieselbe Datei.
+_fb_offen = fehlerbuch.offene()
+if _fb_offen:
+    _fb_krit = [x for x in _fb_offen if x.get("schwere") == "kritisch"]
+    _fb_titel = (f"🐛 Fehler-Tagebuch — {len(_fb_offen)} offen"
+                 + (f", davon {len(_fb_krit)} kritisch" if _fb_krit else ""))
+    _fb_box, _fb_auf = _lazy_expander(_fb_titel, "fehlerbuch")
+    if _fb_auf:
+        with _fb_box:
+            st.caption("Was der App aufgefallen ist. Der nächtliche Wartungslauf behebt "
+                       "Eindeutiges von selbst; Kritisches legt er dir hier vor.")
+            for _x in _fb_offen[:12]:
+                _sym = {"kritisch": "🔴", "normal": "🟠"}.get(_x.get("schwere"), "🔵")
+                st.markdown(f"{_sym} **{_x.get('bereich')}** — {_x.get('anzahl')}× "
+                            f"(zuletzt {str(_x.get('zuletzt'))[:16].replace('T', ' ')})")
+                st.caption(str(_x.get("meldung"))[:220])
+            _fbc1, _fbc2 = st.columns(2)
+            with _fbc1:
+                if st.button("📋 Bericht zum Kopieren erzeugen", key="fb_bericht",
+                             use_container_width=True):
+                    st.session_state["_fb_bericht"] = fehlerbuch.bericht()
+            with _fbc2:
+                if st.button("✅ Alle als erledigt abhaken", key="fb_clear",
+                             use_container_width=True,
+                             help="Nur drücken, wenn die Sachen wirklich behoben sind."):
+                    for _x in _fb_offen:
+                        fehlerbuch.erledigen(_x["kennung"], "von Hand abgehakt")
+                    st.rerun()
+            if st.session_state.get("_fb_bericht"):
+                st.code(st.session_state["_fb_bericht"], language="text")
+
 with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
     st.caption("Liest die archivierten Tagesbriefings und baut daraus Wochenrückblick, Metaebene und Coach-Blick für die nächste Woche.")
 

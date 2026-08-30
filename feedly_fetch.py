@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import browser_pfad  # muss VOR jedem Playwright-Import stehen (25.08.)
+import fehlerbuch
 import urllib.parse
 
 PROFILE_DIR = os.path.expanduser("~/.briefing_news_profile")
@@ -502,6 +503,9 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
             elif reason:
                 item["problem"] = reason
                 problems.append(item)
+                fehlerbuch.eintragen("Feedly-Volltext", reason,
+                                     {"titel": item.get("title", "")[:90],
+                                      "url": item.get("url", "")[:140]})
             else:
                 ok.append(item)
 
