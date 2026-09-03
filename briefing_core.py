@@ -1000,6 +1000,54 @@ SEPARATOR_LINE_PATTERN = r"^\s*(?:-{2,}|={2,}|artikel ende)\s*$"
 # zerfiel dadurch in drei Bruchstücke, eines meldete die App als "abgeschnittener
 # Paywall-Block". Der Trenner muss jetzt allein stehen (keine Buchstaben daneben).
 SEPARATOR_ANYWHERE_PATTERN = r"(?:-{2,}|={2,}|artikel ende|(?<![A-Za-zÄÖÜäöüß])m{3,}(?![A-Za-zÄÖÜäöüß]))"
+
+# 03.09.: Kopierte Seiten bringen ihre eigenen Trennlinien mit. Eine
+# SWR-Podcastseite enthielt sechs "------"-Linien; der Artikel zerfiel in den
+# echten Text plus fuenf Schnipsel aus Abspann, Podcast-Links und Bildcredits.
+# Die App meldete die Schnipsel als "abgeschnittene Paywall-Bloecke".
+# Zeilen, die typisch fuer Abspann/Seitenmoebel sind - nicht fuer Artikeltext.
+_NACHSPANN_LABEL = re.compile(
+    r"(?im)^\s*(?:moderation|redaktion|mitarbeit|redaktionsschluss|credit|"
+    r"beschreibung|bildunterschrift|bildrechte|schlagworte|quelle|copyright|"
+    r"autor(?:/in|:in|in)?|kamera|schnitt|produktion|musik|sprecher(?:in)?|"
+    r"stand|erstmals publiziert am|zuletzt aktualisiert)\b\s*:?"
+)
+_NACHSPANN_HINWEIS = re.compile(
+    r"(?im)^\s*(?:zum podcast|alle folgen|podcast[- ]tipp|mehr zum thema|"
+    r"weitere informationen|hier geht'?s zu|teilen|liste der share)"
+)
+_NUR_DATUM_ODER_LINK = re.compile(
+    r"(?im)^\s*(?:https?://\S+|\d{1,2}\.\d{1,2}\.\d{2,4}[^A-Za-z]*(?:Uhr)?)\s*$"
+)
+
+
+def ist_nachspann_schnipsel(block: str) -> bool:
+    """Ist der Block Seitenmoebel (Abspann, Link-Tipp, Bildcredit)?
+
+    Nur fuer kurze Bloecke - ein richtiger Artikel wird nie so eingestuft.
+    """
+    text = (block or "").strip()
+    if not text:
+        return True
+    woerter = len(text.split())
+    if woerter >= 60:
+        return False
+
+    zeilen = [z for z in text.splitlines() if z.strip()]
+    if not zeilen:
+        return True
+
+    # Titelzeile + Link und sonst nichts -> Link-Tipp, kein Artikel
+    if woerter < 25 and len(zeilen) <= 3 and re.search(r"https?://", text):
+        return True
+
+    treffer = sum(
+        1 for z in zeilen
+        if _NACHSPANN_LABEL.match(z)
+        or _NACHSPANN_HINWEIS.match(z)
+        or _NUR_DATUM_ODER_LINK.match(z)
+    )
+    return treffer / len(zeilen) >= 0.6
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_KEYS = {
     "fbclid",
@@ -1013,22 +1061,42 @@ TRACKING_QUERY_KEYS = {
 
 def _split_on_manual_separators(text: str) -> List[str]:
     """Teilt manuelle Blöcke anhand erlaubter Trenner."""
+    _mmm = r"(?<![A-Za-zÄÖÜäöüß])m{3,}(?![A-Za-zÄÖÜäöüß])"
+    # 03.09.: Enthaelt der Text mmm-Trenner, sind das die gewollten Grenzen -
+    # die App schreibt sie selbst. Strich- und Gleichheitslinien stammen dann
+    # aus kopierten Seiten (Layout-Trennlinien) und duerfen NICHT trennen.
+    # Vorher zerlegte eine SWR-Podcastseite mit sechs "------" einen Artikel
+    # in sechs Bloecke.
+    hat_mmm = re.search(_mmm, text) is not None
+
+    normalized = text
+    if not hat_mmm:
+        normalized = re.sub(
+            SEPARATOR_LINE_PATTERN,
+            "\n<<<BRIEFING_SPLIT>>>\n",
+            normalized,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
     normalized = re.sub(
-        SEPARATOR_LINE_PATTERN,
-        "\n<<<BRIEFING_SPLIT>>>\n",
-        text,
-        flags=re.MULTILINE | re.IGNORECASE,
-    )
-    normalized = re.sub(
-        r"(?i)\bartikel ende\b|(?<![A-Za-zÄÖÜäöüß])m{3,}(?![A-Za-zÄÖÜäöüß])",
+        r"(?i)\bartikel ende\b|" + _mmm,
         "\n<<<BRIEFING_SPLIT>>>\n",
         normalized,
     )
-    return [
+    roh = [
         chunk.strip()
         for chunk in re.split(r"\n?<<<BRIEFING_SPLIT>>>\n?", normalized)
         if chunk.strip() and len(chunk.strip()) > 30
     ]
+
+    # Abspann, Link-Tipps und Bildcredits gehoeren zum Artikel davor - nicht
+    # als eigener "Artikel" ins Briefing und nicht in die Paywall-Warnung.
+    blocks: List[str] = []
+    for chunk in roh:
+        if blocks and ist_nachspann_schnipsel(chunk):
+            blocks[-1] = blocks[-1] + "\n\n" + chunk
+        else:
+            blocks.append(chunk)
+    return blocks
 
 
 def _canonical_url_for_dedup(url: str) -> str:
@@ -1192,6 +1260,9 @@ def detect_truncated_paywall_blocks(blocks: List[str]) -> List[dict]:
             # Abo-Box (kein Marker!). Verdächtig: sehr kurz und/oder mitten im Satz
             # abgebrochen — fertige Summaries (Endmarker) sind ausgenommen.
             if "Weiter geht's" in block or "Ende der Podcastzusammenfassung" in block:
+                continue
+            # Abspann/Link-Tipp/Bildcredit ist kein abgeschnittener Artikel.
+            if ist_nachspann_schnipsel(block):
                 continue
             _words = len(block.split())
             _tail = block.rstrip()[-1:] if block.rstrip() else ""
