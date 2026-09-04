@@ -122,6 +122,16 @@ def main():
         "podcasts": len(core.split_podcast_summaries(podcast)) if podcast.strip() else 0,
         "specials": len(specials),
     }
+    # 04.09.: Merkliste beim START einfrieren - wie die App. Artikel, die
+    # WAEHREND des Laufs eintreffen, stehen nicht im Briefing und duerfen am
+    # Ende nicht mit entfernt werden.
+    try:
+        import feedly_fetch as _fl_snap
+        feedly_pending = _fl_snap.load_pending()
+    except Exception as _e:
+        _log("Feedly-Schnappschuss nicht lesbar: %s" % _e)
+        feedly_pending = {"entry_ids": [], "user_id": ""}
+
     status = {"active": True, "started": now.isoformat(), "step": "⏰ Terminierter Lauf gestartet…",
               "ratio": 0.0, "done": False, "cancel": False, "results": [], "inputs": inp_counts,
               "scheduled": True}
@@ -210,6 +220,40 @@ def main():
             except Exception as e:
                 entry["upload"] = "fail: " + str(e)[:100]
             _log("Upload: %s" % entry["upload"])
+
+    # 📥 Erledigte Artikel aus der Feedly-Merkliste entfernen. 04.09.: Diesen
+    # Schritt gab es nur im App-Knopf, nicht hier. Nach einem terminierten Lauf
+    # blieb die Merkliste komplett stehen - beim naechsten Abruf waeren alle
+    # Artikel erneut gekommen. Gleiche Sicherung wie in der App: fehlt auch nur
+    # eine Quelle im Briefing, bleibt die Merkliste unangetastet.
+    if status.get("uncovered_sources"):
+        status["feedly_removed"] = 0
+        status["feedly_hinweis"] = (
+            "Merkliste NICHT geleert — %d Quelle(n) fehlen im Briefing. "
+            "Nach einem vollstaendigen Lauf wird aufgeraeumt."
+            % len(status["uncovered_sources"]))
+        _log(status["feedly_hinweis"])
+    elif feedly_pending.get("entry_ids"):
+        try:
+            import feedly_fetch as _fl_done
+            _ids = feedly_pending["entry_ids"]
+            _log("Entferne %d erledigte Artikel aus der Feedly-Merkliste…" % len(_ids))
+            _n_weg = _fl_done.mark_done(_ids, feedly_pending.get("user_id") or "")
+            if _n_weg:
+                _fl_done.remove_pending(_ids)
+            status["feedly_removed"] = _n_weg
+            _log("Merkliste: %d Artikel entfernt." % _n_weg)
+        except Exception as _flex:
+            status["feedly_error"] = str(_flex)[:160]
+            _log("Merkliste aufraeumen fehlgeschlagen: %s" % _flex)
+            try:
+                import fehlerbuch
+                fehlerbuch.eintragen(
+                    "Feedly-Merkliste",
+                    "Aufraeumen nach terminiertem Lauf fehlgeschlagen: %s" % str(_flex)[:200],
+                    {"artikel": len(feedly_pending.get("entry_ids") or [])}, "normal")
+            except Exception:
+                pass
 
     try:
         status["usage_5h_after"] = core._read_real_5h_usage()
