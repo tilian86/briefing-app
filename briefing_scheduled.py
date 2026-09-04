@@ -226,12 +226,16 @@ def main():
     # blieb die Merkliste komplett stehen - beim naechsten Abruf waeren alle
     # Artikel erneut gekommen. Gleiche Sicherung wie in der App: fehlt auch nur
     # eine Quelle im Briefing, bleibt die Merkliste unangetastet.
-    if status.get("uncovered_sources"):
+    # 05.09.: Nur fehlende ARTIKEL sperren das Aufraeumen. Ein ausgefallener
+    # Podcast kommt nicht aus der Feedly-Merkliste (siehe briefing_app.py).
+    _unc_artikel = [u for u in (status.get("uncovered_sources") or [])
+                    if (u.get("kind") or "article") != "podcast"]
+    if _unc_artikel:
         status["feedly_removed"] = 0
         status["feedly_hinweis"] = (
-            "Merkliste NICHT geleert — %d Quelle(n) fehlen im Briefing. "
+            "Merkliste NICHT geleert — %d Artikel fehlen im Briefing. "
             "Nach einem vollstaendigen Lauf wird aufgeraeumt."
-            % len(status["uncovered_sources"]))
+            % len(_unc_artikel))
         _log(status["feedly_hinweis"])
     elif feedly_pending.get("entry_ids"):
         try:

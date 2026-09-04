@@ -3508,10 +3508,16 @@ def _briefing_worker(cfg: dict, status: dict):
         # Merkliste, die nie im Briefing standen, und waren unwiederbringlich weg.
         # Fehlt auch nur eine Quelle, bleibt die Merkliste jetzt unangetastet.
         _unc_jetzt = status.get("uncovered_sources") or []
-        if _unc_jetzt:
+        # 05.09.: Die Sperre galt fuer JEDE fehlende Quelle — auch fuer einen
+        # Podcast. Am 04.09. blockierte eine einzige misslungene Podcast-
+        # Zusammenfassung das Aufraeumen von 63 Artikeln, die alle im Briefing
+        # standen. Podcasts kommen nicht aus der Feedly-Merkliste und haben mit
+        # ihr nichts zu tun. Nur fehlende ARTIKEL sperren jetzt noch.
+        _unc_artikel = [u for u in _unc_jetzt if (u.get("kind") or "article") != "podcast"]
+        if _unc_artikel:
             status["feedly_removed"] = 0
             status["feedly_hinweis"] = (
-                f"Merkliste NICHT geleert — {len(_unc_jetzt)} Quelle(n) fehlen im "
+                f"Merkliste NICHT geleert — {len(_unc_artikel)} Artikel fehlen im "
                 f"Briefing. Nach einem vollständigen Lauf wird aufgeräumt.")
         elif any(_e.get("ok") for _e in results) and not _cancelled():
             try:
