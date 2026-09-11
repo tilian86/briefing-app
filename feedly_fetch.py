@@ -779,6 +779,19 @@ def check_newspaper_logins(headless: bool = True) -> list:
                         eintrag["detail"] = f"NICHT angemeldet — „{aufforderung}“ im Artikel"
                         bester = None
                         break
+                    # 11.09.: Blindtext ist ein BEWEIS, kein Verdacht. Der GEA
+                    # liefert seit seiner Login-Umstellung (09.09.) "Lorem ipsum"
+                    # statt des Artikels, wenn die Sitzung nicht mehr traegt —
+                    # ohne jede Anmelde-Aufforderung. Weil daneben freie Artikel
+                    # als Volltext durchkommen, meldete der Test faelschlich
+                    # "angemeldet", und zehn Briefing-Eintraege entstanden aus
+                    # 110-Wort-Anrissen. Ein einziger Blindtext genuegt jetzt.
+                    if "lorem ipsum dolor sit amet" in unten:
+                        eintrag["ok"] = False
+                        eintrag["detail"] = ("NICHT angemeldet — Blindtext statt Artikel "
+                                             "(freie Artikel kommen trotzdem durch)")
+                        bester = None
+                        break
                     if not _detect_paywall_teaser(text):
                         bester = f"Volltext ({len(text.split())} Wörter, {hrefs.index(href)+1} von 3 geprüft)"
                 if bester:
