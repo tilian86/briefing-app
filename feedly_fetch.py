@@ -99,6 +99,13 @@ def _detect_paywall_teaser(text: str):
         return "leer"
     lower = t.lower()
     words = len(t.split())
+    # 11.09.: Der GEA hat am 09.09. sein Anmeldesystem umgestellt. Seitdem liefert
+    # er statt des Artikeltexts Blindtext ("Lorem ipsum dolor sit amet ...") — 110
+    # Wörter, also zu lang für die Kürze-Regel und ohne Abo-Marker. Vier Artikel
+    # scheiterten deshalb beim Schreiben, zehn weitere wurden aus dem Anriss
+    # geschrieben, als wäre es der Artikel. Blindtext ist IMMER eine Sperre.
+    if "lorem ipsum dolor sit amet" in lower:
+        return "Blindtext statt Artikel — die Anmeldung bei dieser Zeitung trägt nicht mehr"
     if words < VOLLTEXT_AB_WOERTERN:
         for marker in PAYWALL_MARKERS:
             if marker in lower:
