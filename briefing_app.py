@@ -3363,6 +3363,24 @@ def _briefing_worker(cfg: dict, status: dict):
                 _upd(step="♻️ Rohdaten aus dem letzten Lauf wiederverwendet (Fetch + Merge übersprungen)…", ratio=0.02)
         except Exception:
             pass
+        # 11.09.: Erst fragen, ob Claude ueberhaupt antwortet. Ohne diese Pruefung
+        # lief ein Briefing zwanzig Minuten und starb dann an der abgelaufenen
+        # Anmeldung — samt aller Podcast-Zusammenfassungen.
+        _upd(step="🔑 Prüfe die Claude-Anmeldung…", ratio=0.01)
+        try:
+            from briefing_core import pruefe_claude_anmeldung as _pruefe_anm
+            _anm = _pruefe_anm()
+        except Exception:
+            _anm = {"ok": True}
+        if not _anm.get("ok"):
+            _upd(step="❌ %s" % _anm.get("meldung"), done=True, failed=True, results=results)
+            try:
+                import fehlerbuch as _fb_anm
+                _fb_anm.eintragen("Claude-Anmeldung", str(_anm.get("meldung")), None, "kritisch")
+            except Exception:
+                pass
+            return
+
         status["usage_5h_before"] = _read_real_5h_usage()
         _upd(step=("♻️ Start (Rohdaten aus Cache)…" if prepared else "Start — Rohdaten werden geholt…"),
              ratio=0.02, results=results)
