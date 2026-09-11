@@ -14,3 +14,7 @@ __pycache__/
 *.pyc
 .claude/
 .streamlit/
+
+# Arbeitsdaten der Nachhol-Laeufe (Entwuerfe, Artikeltexte, Protokolle)
+.nachholen/
+rettung_*/
