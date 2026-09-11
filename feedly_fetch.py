@@ -549,15 +549,27 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
         # Zehnergruppen sind daraus zwei Aufrufe statt sechzehn.
         removed = 0
         gruppen = [entry_ids[i:i + 10] for i in range(0, len(entry_ids), 10)]
+        # 11.09.: Zwei Aufraeum-Laeufe kurz hintereinander (zwei Briefings aus einem
+        # Artikelberg) — ab dem fuenften Zehnerpaket antwortete Feedly nicht mehr,
+        # 89 Artikel blieben stehen. Deshalb jetzt mit Geduld statt stur durch:
+        # bei Abweisung warten und nochmal, mit wachsender Pause.
         for nr, gruppe in enumerate(gruppen):
             ids = ",".join(urllib.parse.quote(e, safe="") for e in gruppe)
-            try:
-                _api(page, f"/v3/tags/{tag_id}/{ids}", method="DELETE")
-                removed += len(gruppe)
-            except Exception as exc:
-                print(f"  ! Gruppe {nr + 1} nicht entfernt: {exc}", file=sys.stderr)
+            for versuch, pause_ms in enumerate((0, 15000, 45000, 90000)):
+                if pause_ms:
+                    print(f"  … Gruppe {nr + 1}: warte {pause_ms // 1000}s und versuche es nochmal.",
+                          file=sys.stderr)
+                    page.wait_for_timeout(pause_ms)
+                try:
+                    _api(page, f"/v3/tags/{tag_id}/{ids}", method="DELETE")
+                    removed += len(gruppe)
+                    break
+                except Exception as exc:
+                    letzter = str(exc)[:120]
+            else:
+                print(f"  ! Gruppe {nr + 1} bleibt stehen: {letzter}", file=sys.stderr)
             if nr + 1 < len(gruppen):
-                page.wait_for_timeout(2000)   # freundlich zum Server bleiben
+                page.wait_for_timeout(2500)   # freundlich zum Server bleiben
         return removed
     finally:
         try:
