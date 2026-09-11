@@ -258,17 +258,34 @@ def main():
     # Podcast kommt nicht aus der Feedly-Merkliste (siehe briefing_app.py).
     _unc_artikel = [u for u in (status.get("uncovered_sources") or [])
                     if (u.get("kind") or "article") != "podcast"]
+    # 11.09.: Frueher hielten ein paar Ausfaelle die GANZE Merkliste fest — nach dem
+    # Lauf standen 133 laengst erledigte Artikel weiter in Read Later. Jetzt bleiben
+    # nur die Ausgefallenen liegen, der Rest wird abgeraeumt.
+    _ids_frei, _bleiben = (feedly_pending.get("entry_ids") or []), []
     if _unc_artikel:
+        try:
+            _ids_frei, _bleiben = core.feedly_ids_ohne_ausfaelle(
+                paywall, feedly_pending.get("entry_ids") or [], _unc_artikel)
+        except Exception as _zex:
+            _log("Ausfall-Zuordnung fehlgeschlagen: %s" % _zex)
+            _ids_frei, _bleiben = None, []
+
+    if _unc_artikel and _ids_frei is None:
         status["feedly_removed"] = 0
         status["feedly_hinweis"] = (
-            "Merkliste NICHT geleert — %d Artikel fehlen im Briefing. "
-            "Nach einem vollstaendigen Lauf wird aufgeraeumt."
+            "Merkliste NICHT geleert — %d Artikel fehlen im Briefing und liessen sich "
+            "nicht eindeutig zuordnen. Nach einem vollstaendigen Lauf wird aufgeraeumt."
             % len(_unc_artikel))
         _log(status["feedly_hinweis"])
-    elif feedly_pending.get("entry_ids"):
+    elif _ids_frei:
         try:
             import feedly_fetch as _fl_done
-            _ids = feedly_pending["entry_ids"]
+            _ids = _ids_frei
+            if _bleiben:
+                status["feedly_hinweis"] = (
+                    "%d Artikel bleiben in der Merkliste — sie haben es nicht ins "
+                    "Briefing geschafft: %s" % (len(_bleiben), ", ".join(_bleiben[:6])))
+                _log(status["feedly_hinweis"])
             _log("Entferne %d erledigte Artikel aus der Feedly-Merkliste…" % len(_ids))
             _n_weg = _fl_done.mark_done(_ids, feedly_pending.get("user_id") or "")
             if _n_weg:

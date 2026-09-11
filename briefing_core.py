@@ -12426,6 +12426,43 @@ def klartext_cli_fehler(text) -> str:
     return roh
 
 
+def feedly_ids_ohne_ausfaelle(paywall_text: str, entry_ids, uncovered):
+    """Welche gemerkten Artikel stehen WIRKLICH im fertigen Briefing?
+
+    Bisher galt alles-oder-nichts: fiel ein einziger Artikel beim Schreiben aus,
+    blieb die ganze Merkliste stehen — am 11.09. waren das 4 Ausfälle, die 133
+    erledigte Artikel mit festhielten. Jetzt bleiben nur die Ausgefallenen liegen.
+
+    Rückgabe: (ids_zum_aufraeumen, titel_die_bleiben) — oder (None, []), wenn sich
+    die Ausfälle nicht sauber zuordnen lassen. Dann bleibt sicherheitshalber alles
+    stehen: lieber ein zweites Mal aufräumen als einen Artikel verlieren.
+    """
+    ids = list(entry_ids or [])
+    bloecke = split_paywall_articles(paywall_text or "") if (paywall_text or "").strip() else []
+    if not ids or len(bloecke) != len(ids):
+        return None, []
+
+    def _norm(x):
+        return " ".join(str(x or "").split()).lower()
+
+    gesucht = [(_norm(u.get("title")), u.get("label") or "?")
+               for u in (uncovered or [])
+               if (u.get("kind") or "article") != "podcast" and _norm(u.get("title"))]
+    if not gesucht:
+        return ids, []
+
+    norm_bloecke = [_norm(b) for b in bloecke]
+    behalten, titel = set(), []
+    for nadel, label in gesucht:
+        treffer = [i for i, nb in enumerate(norm_bloecke) if nadel in nb]
+        if len(treffer) != 1:
+            # Nicht eindeutig zuzuordnen → gar nichts anfassen.
+            return None, []
+        behalten.add(treffer[0])
+        titel.append(label)
+    return [e for i, e in enumerate(ids) if i not in behalten], titel
+
+
 def pruefe_claude_anmeldung(timeout_seconds: int = 60, cli_path: Optional[str] = None) -> dict:
     """Winziger Testaufruf: Läuft die Claude-Anmeldung noch?
 

@@ -3532,23 +3532,40 @@ def _briefing_worker(cfg: dict, status: dict):
         # standen. Podcasts kommen nicht aus der Feedly-Merkliste und haben mit
         # ihr nichts zu tun. Nur fehlende ARTIKEL sperren jetzt noch.
         _unc_artikel = [u for u in _unc_jetzt if (u.get("kind") or "article") != "podcast"]
+        # 11.09.: Die Sperre war noch zu grob — vier Ausfälle hielten 133 längst
+        # erledigte Artikel in Read Later fest. Jetzt bleiben nur die Ausgefallenen
+        # liegen; lässt sich einer davon nicht eindeutig zuordnen, bleibt wie bisher
+        # alles stehen (lieber zweimal aufräumen als einen Artikel verlieren).
+        _pend = cfg.get("feedly_pending") or {"entry_ids": [], "user_id": ""}
+        _ids_frei, _bleiben = (_pend.get("entry_ids") or []), []
         if _unc_artikel:
+            try:
+                from briefing_core import feedly_ids_ohne_ausfaelle as _ids_ohne
+                _ids_frei, _bleiben = _ids_ohne(
+                    cfg.get("paywall") or "", _pend.get("entry_ids") or [], _unc_artikel)
+            except Exception:
+                _ids_frei, _bleiben = None, []
+
+        if _unc_artikel and _ids_frei is None:
             status["feedly_removed"] = 0
             status["feedly_hinweis"] = (
-                f"Merkliste NICHT geleert — {len(_unc_artikel)} Artikel fehlen im "
-                f"Briefing. Nach einem vollständigen Lauf wird aufgeräumt.")
-        elif any(_e.get("ok") for _e in results) and not _cancelled():
+                f"Merkliste NICHT geleert — {len(_unc_artikel)} Artikel fehlen im Briefing "
+                f"und ließen sich nicht eindeutig zuordnen. Nach einem vollständigen Lauf "
+                f"wird aufgeräumt.")
+        elif _ids_frei and any(_e.get("ok") for _e in results) and not _cancelled():
             try:
                 import feedly_fetch as _feedly_done
                 # Nur den Start-Schnappschuss abräumen — Nachzügler bleiben vorgemerkt.
-                _pend = cfg.get("feedly_pending") or {"entry_ids": [], "user_id": ""}
-                if _pend["entry_ids"]:
-                    _upd(step=f"📥 Entferne {len(_pend['entry_ids'])} erledigte Artikel aus der Feedly-Merkliste…",
-                         ratio=0.985)
-                    _n_weg = _feedly_done.mark_done(_pend["entry_ids"], _pend["user_id"])
-                    if _n_weg:
-                        _feedly_done.remove_pending(_pend["entry_ids"])
-                    status["feedly_removed"] = _n_weg
+                if _bleiben:
+                    status["feedly_hinweis"] = (
+                        f"{len(_bleiben)} Artikel bleiben in der Merkliste — sie haben es "
+                        f"nicht ins Briefing geschafft: {', '.join(_bleiben[:6])}")
+                _upd(step=f"📥 Entferne {len(_ids_frei)} erledigte Artikel aus der Feedly-Merkliste…",
+                     ratio=0.985)
+                _n_weg = _feedly_done.mark_done(_ids_frei, _pend.get("user_id") or "")
+                if _n_weg:
+                    _feedly_done.remove_pending(_ids_frei)
+                status["feedly_removed"] = _n_weg
             except Exception as _flex:
                 status["feedly_error"] = str(_flex)[:160]
 
