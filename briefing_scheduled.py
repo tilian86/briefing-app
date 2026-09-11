@@ -19,7 +19,11 @@ import traceback
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
 
-DRAFT_PATH = os.path.join(APP_DIR, ".briefing_draft.json")
+# 11.09.: Für Nachhol-Läufe (mehrere Teile aus EINEM Artikelberg) lassen sich
+# Entwurf, Titel und das Selbst-Aufräumen per Umgebungsvariable übersteuern.
+DRAFT_PATH = os.environ.get("BRIEFING_ENTWURF") or os.path.join(APP_DIR, ".briefing_draft.json")
+TITEL_OVERRIDE = (os.environ.get("BRIEFING_TITEL") or "").strip()
+MANUELL = bool(os.environ.get("BRIEFING_MANUELL"))
 STATUS_PATH = os.path.join(APP_DIR, ".briefing_job_status.json")
 LOG_PATH = os.path.expanduser("~/Library/Logs/briefing-scheduled.log")
 
@@ -48,6 +52,10 @@ def _write_status(status):
 
 def _cleanup():
     """Weckzeit + launchd-Einmaljob wieder entfernen (Selbstaufräumen)."""
+    if MANUELL:
+        # Ein manuell gestarteter Nachhol-Lauf darf einen ECHT terminierten
+        # Briefing-Termin nicht mit abräumen.
+        return
     try:
         import briefing_schedule
         briefing_schedule.disarm()
@@ -103,7 +111,7 @@ def main():
 
     now = datetime.datetime.now()
     ts = now.strftime("%Y-%m-%d_%H-%M")
-    title_base = "Tagesbriefing %s %s" % (_WD[now.weekday()], now.strftime("%d.%m."))
+    title_base = TITEL_OVERRIDE or ("Tagesbriefing %s %s" % (_WD[now.weekday()], now.strftime("%d.%m.")))
 
     # Archiv wie die App (iCloud, sonst lokaler Fallback)
     archive = os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs/Downloads/Briefings")
@@ -144,6 +152,26 @@ def main():
         except Exception:
             pass
         _write_status(status)
+
+    # 11.09.: Vorabprüfung. Vorher lief ein Briefing zwanzig Minuten und starb dann
+    # an der abgelaufenen Claude-Anmeldung — inklusive aller Podcasts. Jetzt wird das
+    # in fünf Sekunden vorher gemerkt, und der Entwurf bleibt unangetastet.
+    try:
+        _anm = core.pruefe_claude_anmeldung()
+    except Exception as _e:
+        _anm = {"ok": True, "meldung": "Vorabprüfung übersprungen (%s)" % _e}
+    if not _anm.get("ok"):
+        _log("Vorabprüfung fehlgeschlagen: %s" % _anm.get("meldung"))
+        status.update({"active": True, "done": True, "failed": True,
+                       "step": "❌ %s" % _anm.get("meldung")})
+        _write_status(status)
+        try:
+            import fehlerbuch
+            fehlerbuch.eintragen("Claude-Anmeldung", str(_anm.get("meldung")), None, "kritisch")
+        except Exception:
+            pass
+        _cleanup()
+        return
 
     try:
         status["usage_5h_before"] = core._read_real_5h_usage()

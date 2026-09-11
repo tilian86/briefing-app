@@ -4659,10 +4659,14 @@ def _round_jobs_collector():
             _bgs = st.session_state.get("_bg_status") or []
             _bgs.append({"t": (_j.get("title") or "Podcast")[:55], "s": "❌"})
             st.session_state["_bg_status"] = _bgs
+            from briefing_core import klartext_cli_fehler as _bc_klartext
+            # 11.09.: Rohe englische CLI-Fehler ("OAuth session expired ...") standen
+            # ungefiltert in der Runden-Liste. Jetzt steht dort ein Satz mit Handlung.
+            _klar9 = _bc_klartext(_r.get("error", "?"))
             _round_log_write({"titel": (_j.get("title") or "Podcast")[:70],
-                              "status": "fehler", "grund": str(_r.get("error", "?"))[:120]})
+                              "status": "fehler", "grund": _klar9[:160]})
             st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [
-                f"{_j['title'][:40]}: {str(_r.get('error', '?'))[:100]}"]
+                f"{_j['title'][:40]}: {_klar9[:120]}"]
             # 🛟 DATENVERLUST-SCHUTZ: gescheiterte Einwurf-Zusammenfassung (z.B. Limit) →
             # Roh-Transkript SOFORT auf Platte retten + für Anzeige/Wiederherstellung merken.
             _rawtx = _j.get("raw")

@@ -12393,6 +12393,63 @@ def _locate_claude_cli() -> Optional[str]:
     return None
 
 
+# ── Klartext-Fehler + Anmelde-Vorabprüfung ─────────────────────────────────
+# 11.09.: 18 Podcast-Zusammenfassungen starben nacheinander an
+# "Failed to authenticate: OAuth session expired and could not be refreshed".
+# Die Meldung stand roh und englisch in der Runden-Übersicht, und der Lauf
+# probierte trotzdem stur weiter. Beides ist jetzt geheilt: Klartext-Übersetzung
+# unten, Vorabprüfung vor jedem großen Lauf.
+
+_CLI_KLARTEXT = (
+    (("oauth session expired", "failed to authenticate", "please run /login",
+      "not logged in", "invalid api key", "authentication_error", "unauthorized"),
+     "Claude-Anmeldung abgelaufen. Im Terminal `claude` starten, `/login` eingeben "
+     "und dem Browser folgen — danach läuft wieder alles."),
+    (("usage limit", "rate limit", "rate_limit", "quota"),
+     "Claude-Limit erreicht — es geht weiter, sobald das 5-Stunden-Fenster neu startet."),
+    (("credit balance", "insufficient credit"),
+     "Das Guthaben reicht nicht. Der Lauf soll über das Max-Abo gehen, nicht über API-Guthaben."),
+    (("enotfound", "network", "getaddrinfo", "econnrefused"),
+     "Keine Verbindung zu Claude — Internet prüfen und noch einmal starten."),
+)
+
+
+def klartext_cli_fehler(text) -> str:
+    """Übersetzt rohe CLI-Fehler in einen Satz, mit dem Florian etwas anfangen kann."""
+    roh = (str(text or "")).strip()
+    if not roh:
+        return ""
+    klein = roh.lower()
+    for muster, satz in _CLI_KLARTEXT:
+        if any(m in klein for m in muster):
+            return satz
+    return roh
+
+
+def pruefe_claude_anmeldung(timeout_seconds: int = 60, cli_path: Optional[str] = None) -> dict:
+    """Winziger Testaufruf: Läuft die Claude-Anmeldung noch?
+
+    Kostet praktisch nichts (ein Wort Antwort) und erspart Läufe, die erst nach
+    zwanzig Minuten am abgelaufenen Login sterben.
+    Rückgabe: {"ok": bool, "meldung": str}
+    """
+    cli = cli_path or _locate_claude_cli()
+    if not cli:
+        return {"ok": False, "meldung": "Claude CLI nicht gefunden — ist Claude Code installiert?"}
+    try:
+        sr = _run_claude_cli_subprocess_streaming(
+            [cli, "-p", "Antworte nur mit dem Wort OK."], "",
+            timeout_seconds=int(timeout_seconds), parse_stream_json=False,
+            use_caffeinate=False, progress_callback=None,
+        )
+    except Exception as exc:
+        return {"ok": False, "meldung": klartext_cli_fehler(str(exc))}
+    roh = " ".join(x for x in (sr.get("error"), sr.get("stdout"), sr.get("stderr")) if x)
+    if sr.get("returncode") not in (0, None) or "OK" not in (sr.get("stdout") or "").upper():
+        return {"ok": False, "meldung": klartext_cli_fehler(roh) or "Claude antwortet nicht wie erwartet."}
+    return {"ok": True, "meldung": "Claude ist angemeldet."}
+
+
 def _run_claude_cli_subprocess_streaming(
     cmd: List[str],
     stdin_text: str,
