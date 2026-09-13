@@ -766,7 +766,11 @@ def check_newspaper_logins(headless: bool = True) -> list:
                 # neun SWP-Artikeln. Deshalb bis zu drei pruefen: EIN Treffer
                 # mit Anmelde-Aufforderung genuegt fuer "nicht angemeldet".
                 bester = None
-                for href in hrefs[:3]:
+                # 13.09.: drei Proben waren zu wenig. Beim GEA sind Polizei-
+                # meldungen frei, die eigentlichen Berichte kostenpflichtig —
+                # erwischt der Test drei Polizeimeldungen, meldet er "Volltext",
+                # waehrend jeder Plus-Artikel als Blindtext zurueckkommt.
+                for href in hrefs[:6]:
                     eintrag["url"] = href
                     try:
                         text = _fetch_article_text(page, href)
@@ -793,7 +797,7 @@ def check_newspaper_logins(headless: bool = True) -> list:
                         bester = None
                         break
                     if not _detect_paywall_teaser(text):
-                        bester = f"Volltext ({len(text.split())} Wörter, {hrefs.index(href)+1} von 3 geprüft)"
+                        bester = f"Volltext ({len(text.split())} Wörter, {hrefs.index(href)+1} von {len(hrefs[:6])} geprüft)"
                 if bester:
                     eintrag["ok"] = True
                     eintrag["detail"] = bester
