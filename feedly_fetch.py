@@ -29,11 +29,71 @@ import json
 import os
 import re
 import sys
+import time
 import browser_pfad  # muss VOR jedem Playwright-Import stehen (25.08.)
 import fehlerbuch
 import urllib.parse
 
 PROFILE_DIR = os.path.expanduser("~/.briefing_news_profile")
+
+# 13.09.: Der GEA haengt die Anmeldung seit seiner Umstellung (09.09.) an
+# SITZUNGS-Cookies (rfFId, rfFUd, rfFp — ohne Ablaufdatum). Chromium wirft
+# solche Cookies beim Beenden weg, und Playwright startet den Browser bei
+# jedem Abruf neu. Folge: Florian meldete sich dreimal an, und jeder Abruf
+# war trotzdem abgemeldet — Plus-Artikel kamen als Blindtext. Sein normales
+# Chrome ueberlebt das nur, weil es beim Start die letzte Sitzung wieder-
+# herstellt. Genau das bauen wir nach: Sitzungs-Cookies beim Anmelden
+# sichern, beim Start wieder einsetzen. Es ist seine eigene, selbst getippte
+# Anmeldung — der Server kann sie jederzeit fuer ungueltig erklaeren.
+SITZUNG_PATH = os.path.expanduser("~/.briefing_news_sitzung.json")
+_SITZUNG_DOMAINS = ("gea.de", "swp.de", "tagblatt.de", "feedly.com")
+_COOKIE_FELDER = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
+
+
+def _sitzung_sichern(ctx, erzwingen: bool = False) -> int:
+    """Sichert die Sitzungs-Cookies der Zeitungen. Rueckgabe: Anzahl.
+
+    Kopflose Laeufe sichern nur, wenn sie selbst mit einer wiederhergestellten
+    Sitzung gestartet sind — sonst wuerde ein abgemeldeter Lauf die gute
+    Sicherung mit einer anonymen Sitzung ueberschreiben."""
+    if not erzwingen and not getattr(ctx, "_briefing_sitzung", False):
+        return 0
+    try:
+        alle = ctx.cookies()
+    except Exception:
+        return 0
+    behalten = [{k: c.get(k) for k in _COOKIE_FELDER if k in c}
+                for c in alle
+                if float(c.get("expires", -1) or -1) < 0
+                and any(d in (c.get("domain") or "") for d in _SITZUNG_DOMAINS)]
+    if not behalten:
+        return 0
+    tmp = SITZUNG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"stand": time.time(), "cookies": behalten}, f)
+    os.replace(tmp, SITZUNG_PATH)
+    try:
+        os.chmod(SITZUNG_PATH, 0o600)
+    except Exception:
+        pass
+    return len(behalten)
+
+
+def _sitzung_wiederherstellen(ctx) -> int:
+    """Setzt gesicherte Sitzungs-Cookies in den frisch gestarteten Browser ein."""
+    try:
+        with open(SITZUNG_PATH, encoding="utf-8") as f:
+            cookies = (json.load(f) or {}).get("cookies") or []
+    except Exception:
+        return 0
+    if not cookies:
+        return 0
+    try:
+        ctx.add_cookies(cookies)
+    except Exception:
+        return 0
+    ctx._briefing_sitzung = True
+    return len(cookies)
 FEEDLY_URL = "https://feedly.com/i/saved"
 BLOCK_SEPARATOR = "\n\nmmm\n\n"
 
@@ -173,6 +233,7 @@ def _launch(headless: bool = True):
                 "oder Login-Test. Bitte warten, bis der fertig ist, dann erneut versuchen."
             ) from exc
         raise
+    _sitzung_wiederherstellen(ctx)
     return p, ctx
 
 
@@ -522,6 +583,10 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
                 "ohne_zugang": ohne_zugang, "user_id": listing["user_id"]}
     finally:
         try:
+            _sitzung_sichern(ctx)
+        except Exception:
+            pass
+        try:
             ctx.close()
         except Exception:
             pass
@@ -579,6 +644,10 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
                 page.wait_for_timeout(2500)   # freundlich zum Server bleiben
         return removed
     finally:
+        try:
+            _sitzung_sichern(ctx)
+        except Exception:
+            pass
         try:
             ctx.close()
         except Exception:
@@ -677,10 +746,23 @@ def open_login_window() -> None:
             # (minimiert, vergessen), hielt Chromium das Profil dauerhaft belegt
             # und JEDER Feedly-Abruf scheiterte mit "Profil belegt" — bis zum
             # App-Neustart. 30 Minuten sind reichlich fuer eine Anmeldung.
-            page.wait_for_event("close", timeout=30 * 60 * 1000)
+            # Waehrend das Fenster offen ist, alle 3 s die Sitzung sichern —
+            # beim Schliessen ist der Browser weg, dann kommt man nicht mehr dran.
+            frist = time.time() + 30 * 60
+            while time.time() < frist:
+                try:
+                    page.wait_for_event("close", timeout=3000)
+                    break
+                except Exception:
+                    pass
+                _sitzung_sichern(ctx, erzwingen=True)
         except Exception:
             pass
     finally:
+        try:
+            _sitzung_sichern(ctx)
+        except Exception:
+            pass
         try:
             ctx.close()
         except Exception:
@@ -806,6 +888,10 @@ def check_newspaper_logins(headless: bool = True) -> list:
             results.append(eintrag)
     finally:
         try:
+            _sitzung_sichern(ctx)
+        except Exception:
+            pass
+        try:
             ctx.close()
         except Exception:
             pass
@@ -917,10 +1003,23 @@ def _cli_login() -> int:
             # (minimiert, vergessen), hielt Chromium das Profil dauerhaft belegt
             # und JEDER Feedly-Abruf scheiterte mit "Profil belegt" — bis zum
             # App-Neustart. 30 Minuten sind reichlich fuer eine Anmeldung.
-            page.wait_for_event("close", timeout=30 * 60 * 1000)
+            # Waehrend das Fenster offen ist, alle 3 s die Sitzung sichern —
+            # beim Schliessen ist der Browser weg, dann kommt man nicht mehr dran.
+            frist = time.time() + 30 * 60
+            while time.time() < frist:
+                try:
+                    page.wait_for_event("close", timeout=3000)
+                    break
+                except Exception:
+                    pass
+                _sitzung_sichern(ctx, erzwingen=True)
         except Exception:
             pass
     finally:
+        try:
+            _sitzung_sichern(ctx)
+        except Exception:
+            pass
         try:
             ctx.close()
         except Exception:
@@ -949,6 +1048,10 @@ def _cli_status() -> int:
         return 1
     finally:
         try:
+            _sitzung_sichern(ctx)
+        except Exception:
+            pass
+        try:
             ctx.close()
         except Exception:
             pass
@@ -975,6 +1078,10 @@ def _cli_list() -> int:
             print(f"       {item['feed']} · {_domain(item['url'])}")
         return 0
     finally:
+        try:
+            _sitzung_sichern(ctx)
+        except Exception:
+            pass
         try:
             ctx.close()
         except Exception:
