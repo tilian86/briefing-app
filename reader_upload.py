@@ -286,20 +286,31 @@ def _do_upload(file_path: str, expect_title: str, timeout_s: int, t0: float) -> 
                     break
         except Exception:
             pass
-        # Erfolg: Eintrag mit unserem Titel taucht auf (Library oder Reader-Ansicht)
-        try:
-            page.wait_for_selector(f"text={expect_title}", timeout=timeout_s * 1000)
-        except Exception:
-            # 30.08.: rohe Playwright-Timeout-Meldung durch verstaendlichen Text
-            # ersetzen (Fehler-Tagebuch cdd2f411c5e4) — der Klick auf "Bestaetigen"
-            # war da, nur die Bestaetigung wurde nicht rechtzeitig sichtbar.
-            return {"ok": False,
-                    "error": (f"ElevenReader hat die Bestaetigung fuer '{expect_title}' "
-                              f"nicht innerhalb von {timeout_s} Sekunden angezeigt. "
-                              "Bitte in der App pruefen, ob der Eintrag trotzdem in der "
-                              "Bibliothek erschienen ist."),
-                    "elapsed_seconds": time.time() - t0}
-        return {"ok": True, "error": None, "elapsed_seconds": time.time() - t0}
+        # Erfolg heisst: der Eintrag steht in der BIBLIOTHEK. Nicht irgendwo
+        # auf der Seite — 13.09.: der alte Test suchte den Titel per
+        # wait_for_selector im gerade offenen Hochlade-Dialog, und DER zeigt
+        # den Dateinamen selbst an. Ergebnis: "Upload: ok" im Protokoll,
+        # waehrend Teil 1 des Nachhol-Briefings vom 11.09. nie ankam und
+        # Florian zwei Tage lang ein halbes Briefing hatte. Deshalb jetzt:
+        # Bibliothek frisch laden und dort nachsehen, mehrfach.
+        frist = time.time() + max(60, timeout_s)
+        letzter_fehler = ""
+        while time.time() < frist:
+            page.wait_for_timeout(4000)
+            try:
+                page.goto(READER_LIBRARY_URL, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(2500)
+                _dismiss_overlays(page)
+                if expect_title in (page.inner_text("body") or ""):
+                    return {"ok": True, "error": None, "elapsed_seconds": time.time() - t0}
+            except Exception as exc:
+                letzter_fehler = exc.__class__.__name__
+        return {"ok": False,
+                "error": (f"'{expect_title}' ist nach {int(time.time() - t0)} Sekunden "
+                          "nicht in der ElevenReader-Bibliothek aufgetaucht — der Import "
+                          "hat nicht geklappt."
+                          + (f" ({letzter_fehler})" if letzter_fehler else "")),
+                "elapsed_seconds": time.time() - t0}
     except Exception as exc:
         return {"ok": False, "error": f"Upload fehlgeschlagen: {str(exc)[:180]}",
                 "elapsed_seconds": time.time() - t0}
