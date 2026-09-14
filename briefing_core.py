@@ -12607,6 +12607,17 @@ def _run_claude_cli_subprocess_streaming(
             i += 1
         cmd.extend(["--output-format", "stream-json", "--include-partial-messages", "--verbose"])
 
+    # Schlank aufrufen: Ohne diese Flags hängt die CLI an JEDEN Aufruf alle
+    # Werkzeug-Schemata und sämtliche claude.ai-Connectoren (Gmail, Cloudflare,
+    # Todoist …) an — gemessen 33k–127k Tokens Ballast pro Aufruf im Max-
+    # Kontingent, bei ~20 Aufrufen je Briefing. Kein Briefing-Aufruf braucht
+    # Werkzeuge oder Connectoren: Prompt rein, Text raus. Wer doch welche
+    # will, setzt --tools/--allowedTools/--mcp-config selbst — dann bleibt
+    # der cmd unangetastet.
+    cmd = list(cmd)
+    if not any(f in cmd for f in ("--tools", "--allowedTools", "--mcp-config")):
+        cmd += ["--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
+
     # Mac vor Sleep schützen: caffeinate als Parent-Wrapper. Wenn der Mac über Nacht
     # in Sleep geht, würde der Anthropic-Stream sterben und der Subprocess endlos
     # auf Daten warten. caffeinate -i hält das System wach (Display darf schlafen).
