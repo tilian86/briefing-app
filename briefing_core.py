@@ -12499,6 +12499,36 @@ def feedly_ids_ohne_ausfaelle(paywall_text: str, entry_ids, uncovered):
     return [e for i, e in enumerate(ids) if i not in behalten], titel
 
 
+def _read_real_5h_usage():
+    """Echte 5-Stunden-Auslastung (0-100) aus dem Claude-Konto — gleicher Weg wie
+    der Limit-Waechter (Keychain-Token + /api/oauth/usage). Nur lesen, kein
+    Fenster-Start, kein Token-Renew (→ kein macOS-Dialog). int % oder None.
+
+    14.09.: Stand bisher nur in briefing_app.py, wurde von briefing_scheduled.py
+    aber als core._read_real_5h_usage() aufgerufen — in einem try/except, das den
+    AttributeError schluckte. Jeder terminierte Lauf verlor damit still seine
+    Auslastungszahlen. Seit alle Laeufe automatisch sind, faellt das ins Gewicht.
+    """
+    try:
+        import subprocess as _sp, urllib.request as _ur, json as _js
+        _raw = _sp.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                       capture_output=True, text=True, timeout=8).stdout
+        _tok = _js.loads(_raw).get("claudeAiOauth", {}).get("accessToken", "")
+        if not _tok:
+            return None
+        _req = _ur.Request("https://api.anthropic.com/api/oauth/usage",
+                           headers={"authorization": f"Bearer {_tok}",
+                                    "anthropic-version": "2023-06-01",
+                                    "anthropic-beta": "oauth-2025-04-20"})
+        _d = _js.loads(_ur.urlopen(_req, timeout=15).read())
+        for _lim in _d.get("limits", []):
+            if _lim.get("kind") == "session":
+                return int(_lim.get("percent", 0) or 0)
+    except Exception:
+        return None
+    return None
+
+
 def pruefe_claude_anmeldung(timeout_seconds: int = 60, cli_path: Optional[str] = None) -> dict:
     """Winziger Testaufruf: Läuft die Claude-Anmeldung noch?
 

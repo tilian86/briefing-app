@@ -215,6 +215,101 @@ def _quellen_raeumen(status):
         _log("Entwurf aufgeraeumt (Sicherung liegt im Spiegel).")
 
 
+# ---------------------------------------------------------------- Automatik
+# Damit die App den launchd-Job an- und abschalten kann, ohne dass Florian ins
+# Terminal muss.
+LAUNCHD_LABEL = "de.florian.briefing-taeglich"
+LAUNCHD_PLIST = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LAUNCHD_LABEL)
+WECKZEIT = "04:40:00"
+
+
+def _launchctl(*args):
+    import subprocess
+    return subprocess.run(["launchctl"] + list(args), capture_output=True, timeout=15)
+
+
+def automatik_laeuft() -> bool:
+    """Ist der taegliche Job geladen?"""
+    if not os.path.exists(LAUNCHD_PLIST):
+        return False
+    return _launchctl("print", "gui/%d/%s" % (os.getuid(), LAUNCHD_LABEL)).returncode == 0
+
+
+def automatik_startzeit():
+    """(Stunde, Minute) aus der plist — oder None."""
+    try:
+        import plistlib
+        with open(LAUNCHD_PLIST, "rb") as f:
+            d = plistlib.load(f)
+        k = d.get("StartCalendarInterval") or {}
+        return int(k.get("Hour", 4)), int(k.get("Minute", 45))
+    except Exception:
+        return None
+
+
+def automatik_setzen(an: bool, stunde: int = 4, minute: int = 45) -> dict:
+    """Automatik ein-/ausschalten (und dabei die Weckzeit mitziehen)."""
+    import plistlib
+    import subprocess
+    dom = "gui/%d" % os.getuid()
+    _launchctl("bootout", "%s/%s" % (dom, LAUNCHD_LABEL))
+    if not an:
+        try:
+            subprocess.run(["sudo", "-n", "/usr/bin/pmset", "repeat", "cancel"],
+                           capture_output=True, timeout=15)
+        except Exception:
+            pass
+        return {"an": False, "geladen": False}
+
+    plist = {
+        "Label": LAUNCHD_LABEL,
+        "ProgramArguments": ["/usr/bin/caffeinate", "-i", "/usr/bin/python3",
+                             os.path.join(APP_DIR, "briefing_taeglich.py")],
+        "StartCalendarInterval": {"Hour": int(stunde), "Minute": int(minute)},
+        "WorkingDirectory": APP_DIR,
+        "StandardOutPath": os.path.join(APP_DIR, ".briefing_taeglich_launchd.log"),
+        "StandardErrorPath": os.path.join(APP_DIR, ".briefing_taeglich_launchd.log"),
+        "RunAtLoad": False,
+        "ProcessType": "Background",
+    }
+    os.makedirs(os.path.dirname(LAUNCHD_PLIST), exist_ok=True)
+    with open(LAUNCHD_PLIST, "wb") as f:
+        plistlib.dump(plist, f)
+    geladen = _launchctl("bootstrap", dom, LAUNCHD_PLIST).returncode == 0
+
+    # Weckzeit fuenf Minuten vorher — sonst schlaeft der Mac den Termin weg.
+    weck = "%02d:%02d:00" % ((int(stunde) * 60 + int(minute) - 5) // 60 % 24,
+                             (int(stunde) * 60 + int(minute) - 5) % 60)
+    geweckt = False
+    try:
+        geweckt = subprocess.run(
+            ["sudo", "-n", "/usr/bin/pmset", "repeat", "wakeorpoweron", "MTWRFSU", weck],
+            capture_output=True, timeout=15).returncode == 0
+    except Exception:
+        pass
+    return {"an": True, "geladen": geladen, "weckzeit": weck if geweckt else None}
+
+
+def _wochenbriefing_wenn_vorgemerkt():
+    """Haekchen „direkt nach dem naechsten Tagesbriefing" auch hier einloesen.
+
+    Die Vormerkung wertete bisher nur die App aus. Baut nachts der Automat,
+    stand in der Oberflaeche weiter „ist vorgemerkt" — und es kam nie eins."""
+    entwurf = _entwurf_lesen()
+    if not entwurf.get("weekly_after_daily"):
+        return
+    _log("Wochenbriefing war vorgemerkt — wird jetzt gebaut.")
+    entwurf["weekly_after_daily"] = False
+    _entwurf_schreiben(entwurf)
+    try:
+        os.environ["BRIEFING_WOCHE_ERZWINGEN"] = "1"
+        import wochenbriefing_lauf
+        wochenbriefing_lauf.main()
+    except Exception as e:
+        _log("Wochenbriefing nach Tagesbriefing fehlgeschlagen: %s" % e)
+        _fehlerbuch("Wochenbriefing", "Vorgemerkter Lauf gescheitert: %s" % str(e)[:200])
+
+
 def main():
     _log("=== Taeglicher Lauf gestartet ===")
     if not ERZWINGEN and _schon_heute_gebaut():
@@ -272,6 +367,7 @@ def main():
     if status.get("done") and not status.get("failed"):
         _log("Gebaut: %s" % (status.get("step") or "fertig"))
         _quellen_raeumen(status)
+        _wochenbriefing_wenn_vorgemerkt()
     else:
         _log("Nicht gebaut: %s" % (status.get("step") or "unbekannt"))
         _fehlerbuch("Tagesbriefing automatisch",

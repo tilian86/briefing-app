@@ -3147,26 +3147,13 @@ _QUOTA_CAL_USD_PER_WINDOW = 120.0  # Startschätzung: „$-Äquivalent" pro 5h-F
 
 
 def _read_real_5h_usage():
-    """Liest die ECHTE 5-Std-Auslastung (0-100) aus dem Claude-Konto — gleicher Weg wie
-    der Limit-Wächter (Keychain-Token + /api/oauth/usage). Nur lesen, kein Fenster-Start,
-    kein Token-Renew (→ kein macOS-Dialog). Returns int % oder None."""
+    """Echte 5-Std-Auslastung (0-100). Wohnt seit 14.09. in briefing_core, damit
+    die terminierten Laeufe dieselbe Zahl bekommen — hier nur noch der Verweis."""
     try:
-        import subprocess as _sp, urllib.request as _ur, json as _js
-        _raw = _sp.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-                       capture_output=True, text=True, timeout=8).stdout
-        _tok = _js.loads(_raw).get("claudeAiOauth", {}).get("accessToken", "")
-        if not _tok:
-            return None
-        _req = _ur.Request("https://api.anthropic.com/api/oauth/usage",
-                           headers={"authorization": f"Bearer {_tok}", "anthropic-version": "2023-06-01",
-                                    "anthropic-beta": "oauth-2025-04-20"})
-        _d = _js.loads(_ur.urlopen(_req, timeout=15).read())
-        for _lim in _d.get("limits", []):
-            if _lim.get("kind") == "session":
-                return int(_lim.get("percent", 0) or 0)
+        from briefing_core import _read_real_5h_usage as _core_usage
+        return _core_usage()
     except Exception:
         return None
-    return None
 
 
 def _read_limits_full() -> dict:
@@ -6853,8 +6840,50 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             _threading.Thread(target=_briefing_worker, args=(_cfg, _status), daemon=True).start()
             st.rerun()
 
-    # ⏰ Optionale Terminierung — einmaliger Zeitplan, baut aus dem AKTUELLEN Entwurf.
-    with st.expander("⏰ Briefing terminieren (optional)", expanded=False):
+    # ⏰ Terminierung: taegliche Automatik oben, Einmal-Termin darunter.
+    with st.expander("⏰ Wann das Briefing gebaut wird", expanded=False):
+        # ── Taegliche Automatik ──
+        # 14.09.: Bis hierher gab es NUR den Einmal-Termin unten. Besuchte
+        # Florian die App ein paar Tage nicht, kam auch kein Briefing — zwischen
+        # dem 11. und dem 14.09. lagen drei leere Tage, und im Wochenrueckblick
+        # standen am Ende zwei Tagestexte vom selben Tag. Jetzt holt ein
+        # launchd-Job nachts von allein Feedly-Artikel und baut daraus.
+        try:
+            import briefing_taeglich as _tgl
+            _auto_an = _tgl.automatik_laeuft()
+            _auto_zeit = _tgl.automatik_startzeit() or (4, 45)
+            _neu_an = st.checkbox(
+                "🔁 **Jeden Tag von allein bauen** um %02d:%02d Uhr" % _auto_zeit,
+                value=_auto_an, key="tgl_automatik",
+                help="Holt nachts die Feedly-Merkliste, prüft vorher die Zeitungs-"
+                     "Anmeldungen und lädt das fertige Briefing in den ElevenReader. "
+                     "Der Mac wird dafür fünf Minuten vorher geweckt. Ist ein eigener "
+                     "Termin (unten) für denselben Tag gestellt, hat der Vorrang.")
+            if _neu_an != _auto_an:
+                _r = _tgl.automatik_setzen(_neu_an, *_auto_zeit)
+                if _neu_an and not _r.get("geladen"):
+                    st.error("Automatik liess sich nicht laden (launchctl).")
+                st.rerun()
+            if _auto_an:
+                _c1, _c2 = st.columns([3, 1])
+                _nz = _c1.time_input("Uhrzeit", value=datetime.time(*_auto_zeit),
+                                     key="tgl_zeit", label_visibility="collapsed")
+                if _c2.button("übernehmen", key="tgl_zeit_btn") and (_nz.hour, _nz.minute) != _auto_zeit:
+                    _tgl.automatik_setzen(True, _nz.hour, _nz.minute)
+                    st.rerun()
+                _st_pfad = _APP_DIR / ".briefing_job_status.json"
+                try:
+                    _js = json.loads(_st_pfad.read_text(encoding="utf-8"))
+                    _wann = datetime.datetime.fromtimestamp(_st_pfad.stat().st_mtime)
+                    st.caption("Letzter Lauf %s: %s" % (_wann.strftime("%d.%m. %H:%M"),
+                                                        _js.get("step", "?")))
+                except Exception:
+                    st.caption("Noch kein Lauf verzeichnet.")
+            st.divider()
+        except Exception as _tex:
+            st.caption(f"Tages-Automatik nicht prüfbar: {_tex}")
+
+        st.markdown("**Einmal-Termin** — baut aus den Quellen, die JETZT in den Feldern stehen.")
         try:
             import briefing_schedule as _sched
             _sched_cur = _sched.current()
