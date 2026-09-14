@@ -734,13 +734,36 @@ def login_check_verwerfen() -> None:
         pass
 
 
-def open_login_window() -> None:
+LOGIN_ZIELE = {
+    "feedly": FEEDLY_URL,
+    "gea": "https://www.gea.de/login.html",
+    "swp": "https://www.swp.de/mein-konto",
+}
+
+
+def open_login_window(ziel: str = "feedly") -> None:
     """Oeffnet das sichtbare Anmeldefenster und wartet, bis Florian es schliesst.
-    Passwoerter tippt er selbst — die App speichert und sieht keine Zugangsdaten."""
+    Passwoerter tippt er selbst — die App speichert und sieht keine Zugangsdaten.
+
+    `ziel`: "feedly" | "gea" | "swp" oder eine komplette URL.
+    """
+    start = LOGIN_ZIELE.get((ziel or "").lower(), ziel if "://" in str(ziel) else FEEDLY_URL)
     p, ctx = _launch(headless=False)
     try:
         page = _page(ctx)
-        page.goto(FEEDLY_URL, wait_until="domcontentloaded", timeout=60000)
+        # 14.09.: Florian haengt unterwegs am iPhone-Hotspot. Faellt der genau
+        # beim Oeffnen kurz aus, stand bisher die Chromium-Dino-Seite da und
+        # das Fenster war nutzlos — er hat dreimal vergeblich probiert.
+        # Deshalb: mehrfach versuchen, mit Pausen.
+        for versuch in range(6):
+            try:
+                page.goto(start, wait_until="domcontentloaded", timeout=30000)
+                if "ERR_" not in (page.title() or ""):
+                    break
+            except Exception:
+                pass
+            if versuch < 5:
+                page.wait_for_timeout(4000)
         try:
             # 30.08.: timeout=0 hiess "ewig warten". Blieb das Fenster offen
             # (minimiert, vergessen), hielt Chromium das Profil dauerhaft belegt
