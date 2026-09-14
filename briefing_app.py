@@ -6840,50 +6840,8 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             _threading.Thread(target=_briefing_worker, args=(_cfg, _status), daemon=True).start()
             st.rerun()
 
-    # ⏰ Terminierung: taegliche Automatik oben, Einmal-Termin darunter.
-    with st.expander("⏰ Wann das Briefing gebaut wird", expanded=False):
-        # ── Taegliche Automatik ──
-        # 14.09.: Bis hierher gab es NUR den Einmal-Termin unten. Besuchte
-        # Florian die App ein paar Tage nicht, kam auch kein Briefing — zwischen
-        # dem 11. und dem 14.09. lagen drei leere Tage, und im Wochenrueckblick
-        # standen am Ende zwei Tagestexte vom selben Tag. Jetzt holt ein
-        # launchd-Job nachts von allein Feedly-Artikel und baut daraus.
-        try:
-            import briefing_taeglich as _tgl
-            _auto_an = _tgl.automatik_laeuft()
-            _auto_zeit = _tgl.automatik_startzeit() or (4, 45)
-            _neu_an = st.checkbox(
-                "🔁 **Jeden Tag von allein bauen** um %02d:%02d Uhr" % _auto_zeit,
-                value=_auto_an, key="tgl_automatik",
-                help="Holt nachts die Feedly-Merkliste, prüft vorher die Zeitungs-"
-                     "Anmeldungen und lädt das fertige Briefing in den ElevenReader. "
-                     "Der Mac wird dafür fünf Minuten vorher geweckt. Ist ein eigener "
-                     "Termin (unten) für denselben Tag gestellt, hat der Vorrang.")
-            if _neu_an != _auto_an:
-                _r = _tgl.automatik_setzen(_neu_an, *_auto_zeit)
-                if _neu_an and not _r.get("geladen"):
-                    st.error("Automatik liess sich nicht laden (launchctl).")
-                st.rerun()
-            if _auto_an:
-                _c1, _c2 = st.columns([3, 1])
-                _nz = _c1.time_input("Uhrzeit", value=datetime.time(*_auto_zeit),
-                                     key="tgl_zeit", label_visibility="collapsed")
-                if _c2.button("übernehmen", key="tgl_zeit_btn") and (_nz.hour, _nz.minute) != _auto_zeit:
-                    _tgl.automatik_setzen(True, _nz.hour, _nz.minute)
-                    st.rerun()
-                _st_pfad = _APP_DIR / ".briefing_job_status.json"
-                try:
-                    _js = json.loads(_st_pfad.read_text(encoding="utf-8"))
-                    _wann = datetime.datetime.fromtimestamp(_st_pfad.stat().st_mtime)
-                    st.caption("Letzter Lauf %s: %s" % (_wann.strftime("%d.%m. %H:%M"),
-                                                        _js.get("step", "?")))
-                except Exception:
-                    st.caption("Noch kein Lauf verzeichnet.")
-            st.divider()
-        except Exception as _tex:
-            st.caption(f"Tages-Automatik nicht prüfbar: {_tex}")
-
-        st.markdown("**Einmal-Termin** — baut aus den Quellen, die JETZT in den Feldern stehen.")
+    # ⏰ Optionale Terminierung — einmaliger Zeitplan, baut aus dem AKTUELLEN Entwurf.
+    with st.expander("⏰ Briefing terminieren (optional)", expanded=False):
         try:
             import briefing_schedule as _sched
             _sched_cur = _sched.current()
