@@ -249,6 +249,7 @@ _DRAFT_DEFAULTS = {
     "reader_cleanup_days": 14,
     "whatsapp_pdf_additional": True,
     "last_meta_created_iso": "",
+    "meta_web_recherche": True,    # Wochenbriefing recherchiert selbst nach (14.09.)
     "weekly_auto_7d": True,        # alle 7 Tage automatisch nach einem Tagesbriefing
     "weekly_after_daily": False,   # Einmal-Häkchen: direkt nach dem nächsten Tagesbriefing
     # Einwurf-Feld (rohe Podcast-Transkripte) MUSS persistiert werden: lebte vorher
@@ -2468,7 +2469,8 @@ def _wochen_erinnerung():
                           "model": st.session_state.get("meta_cli_model", "opus"),
                           "cli_path": _wcli,
                           "upload": bool(st.session_state.get("auto_reader_upload", True)),
-                          "title": f"Wochenbriefing bis {datetime.datetime.now().strftime('%d.%m.')}"}
+                          "title": f"Wochenbriefing bis {datetime.datetime.now().strftime('%d.%m.')}",
+                          "web_recherche": bool(st.session_state.get("meta_web_recherche", True))}
                 _ws2 = {"started": datetime.datetime.now().isoformat(),
                         "step": "Wird gestartet…", "ratio": 0.0, "done": False}
                 st.session_state["_meta_job"] = _ws2
@@ -3625,7 +3627,8 @@ def _meta_worker(cfg, status):
             status["ratio"] = max(0.0, min(float(prog), 1.0))
         r = run_meta_briefing_via_claude_cli(
             archive_dir=cfg["archive_dir"], days=cfg["days"], model=cfg["model"],
-            progress_callback=_cb, cli_path=cfg["cli_path"])
+            progress_callback=_cb, cli_path=cfg["cli_path"],
+            web_recherche=bool(cfg.get("web_recherche")))
         if not r or r.get("ok") is False:
             _u(done=True, failed=True, step=f"❌ {(r or {}).get('error', 'keine Briefings gefunden')}")
             return
@@ -7104,6 +7107,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                     "cli_path": _w_cli_path,
                     "upload": bool(st.session_state.get("auto_reader_upload", True)),
                     "title": f"Wochenbriefing bis {datetime.datetime.now().strftime('%d.%m.')}",
+                    "web_recherche": bool(st.session_state.get("meta_web_recherche", True)),
                 }
                 _wstatus = {"started": datetime.datetime.now().isoformat(), "step": "Wird gestartet…", "ratio": 0.0, "done": False}
                 st.session_state["_meta_job"] = _wstatus
@@ -8118,6 +8122,18 @@ with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
             "Aufwachen nach." + _wb_stand)
     st.caption("Der Knopf unten baut jederzeit eins von Hand — z. B. für einen "
                "anderen Zeitraum als sieben Tage.")
+    # 14.09.: Florians Wunsch. Beim Tagesbriefing fuellt die Websuche
+    # Verstaendnisluecken; hier beantwortet sie die Frage, die einen Rueckblick
+    # ueberhaupt erst lohnend macht — was ist aus der Sache inzwischen geworden.
+    st.checkbox(
+        "🔎 Selbst nachrecherchieren (empfohlen)",
+        key="meta_web_recherche",
+        help="Claude schlägt zu den wichtigsten Themen der Woche selbst nach, was "
+             "daraus geworden ist — Entscheidung gefallen? Zahl bestätigt? — und "
+             "kennzeichnet jede Ergänzung mit Quelle. Dafür gibt es einen eigenen "
+             "Abschnitt „Was daraus geworden ist“. Dauert länger (10-20 statt 4-6 "
+             "Minuten), kostet aber nichts extra: läuft übers Max-Abo.",
+    )
     st.checkbox(
         "⬇️ Direkt nach dem nächsten Tagesbriefing erstellen (einmalig)",
         key="weekly_after_daily",
@@ -8214,7 +8230,8 @@ with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
             import threading as _mth
             _mcfg = {"archive_dir": str(_meta_archive_dir), "days": int(meta_days), "model": meta_cli_model,
                      "cli_path": _meta_cli_path, "upload": bool(st.session_state.get("auto_reader_upload", True)),
-                     "title": f"Wochenbriefing bis {datetime.datetime.now().strftime('%d.%m.')}"}
+                     "title": f"Wochenbriefing bis {datetime.datetime.now().strftime('%d.%m.')}",
+                     "web_recherche": bool(st.session_state.get("meta_web_recherche", True))}
             _mstatus = {"started": datetime.datetime.now().isoformat(), "step": "Wird gestartet…", "ratio": 0.0, "done": False}
             st.session_state["_meta_job"] = _mstatus
             st.session_state.pop("_meta_job_shown", None)

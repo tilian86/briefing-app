@@ -449,6 +449,42 @@ Ende des Wochen-Briefings.
 
 Gib NUR das Wochen-Briefing aus. Keine Vorrede, keine Erklärungen, kein JSON."""
 
+
+# 14.09.: Florians Wunsch — das Wochenbriefing soll sich wichtige Sachen selbst
+# anschauen. Das ist beim WOCHENrueckblick etwas anderes als beim Tagesbriefing:
+# dort fuellt die Websuche Verstaendnisluecken, hier beantwortet sie die Frage,
+# die ein Rueckblick ueberhaupt erst wertvoll macht — was ist aus der Sache
+# geworden? Ein Tagesbriefing ist eine Momentaufnahme; eine Woche spaeter ist die
+# Entscheidung oft gefallen. Der Block hebt den QUELLTREUE-Absatz gezielt auf,
+# sonst stehen sich zwei Anweisungen im Weg und das Modell haelt sich an die
+# strengere.
+_META_WEB_RECHERCHE = """
+
+EIGENE RECHERCHE (aktiviert) — dieser Abschnitt hat VORRANG vor QUELLTREUE, soweit er externe Fakten verbietet. Alles Uebrige daran gilt unveraendert weiter.
+
+Die Tagesbriefings sind Momentaufnahmen. Die wertvollste Frage eines Wochenrueckblicks lautet: Was ist daraus GEWORDEN? Nutze dafuer gezielt das WebSearch-Tool.
+
+WOFUER recherchieren, in dieser Reihenfolge:
+1. FORTGANG — Ist die Entscheidung gefallen, die Zahl bestaetigt, der Streit beigelegt, der Vermisste gefunden? Was ist seit dem Tagesbriefing passiert? Das ist der wichtigste Teil.
+2. EINORDNUNG — Die eine Zahl, die das Ausmass greifbar macht. Die Vorgeschichte, ohne die das Thema in der Luft haengt.
+3. GROESSERES BILD — Steht ein lokales Thema in einem ueberregionalen Zusammenhang, den die Tagesquellen nicht sehen konnten?
+
+WIE VIEL: Hoechstens 2-3 Suchen je Thema, hoechstens 12 insgesamt. Recherchiere NUR zu den Themen, die es ohnehin in den Rueckblick schaffen — nie zu dem, was du wegfilterst.
+
+REGELN:
+- NUR serioese Quellen: Nachrichtenagenturen (dpa, Reuters, AP), oeffentlich-rechtliche Medien, etablierte Leitmedien, offizielle Stellen, Primaerquellen.
+- JEDE recherchierte Information kennzeichnen, mit Quelle und moeglichst Zeitpunkt: „Inzwischen ist das entschieden — laut dpa vom Donnerstag …", „Stand heute, nach Angaben des Ministeriums: …".
+- Der Kern bleiben die gelieferten Tagesbriefings. Recherche ergaenzt, ersetzt nicht — und oeffnet KEINE Themen, die in der Woche gar nicht vorkamen.
+- Widerspricht ein Fund den Briefings: Widerspruch offen benennen. Der neuere, belegte Stand gilt, aber sag dazu, dass sich etwas geaendert hat.
+- Findest du nichts Belastbares, schreib den Punkt ohne Ergaenzung. NIEMALS aus eigenem Wissen ergaenzen, niemals vage, niemals „vermutlich".
+- Meinung bleibt Meinung: Einordnung ja, erfundene Fakten nie.
+
+ZUSAETZLICHER ABSCHNITT — direkt nach „#### Unterschaetzte Signale" einfuegen:
+
+#### Was daraus geworden ist
+[3-6 Punkte zu Themen der Woche, bei denen die Recherche einen neueren Stand ergeben hat. Je Punkt: worum ging es, was ist inzwischen passiert, mit Quelle. Hat die Recherche nichts Neues gebracht, schreib genau einen ehrlichen Satz darueber — und erfinde nichts dazu.]
+"""
+
 GENIUS_SUMMARY_PROMPT_STANDARD = """Du erstellst aus einem fertigen Audio-Briefing eine ausführliche, aber kompakte Hörfassung (Standard-Variante).
 ZIEL Diese Standardfassung soll beim Hören Spaß machen, gut kuratiert wirken und den ganzen Tag in einer stimmigen Erzähllogik zusammenhalten. Sie ist klar kürzer als das komplette Briefing, aber deutlich ausführlicher als eine reine Kurzfassung. Für Hörer gedacht, die die Einzelartikel nicht kennen und trotzdem alles gut einordnen wollen. Es darf kein Beitrag fehlen.
 ABDECKUNG Jeder vorhandene Beitrag muss genau 1 Mal vorkommen. Nichts weglassen, nichts doppeln.
@@ -18904,8 +18940,13 @@ def run_meta_briefing_via_claude_cli(
     progress_callback: Optional[Callable[[str, float], None]] = None,
     cli_path: Optional[str] = None,
     read_dir: Optional[str] = None,
+    web_recherche: bool = False,
 ) -> Optional[dict]:
     """Wochen-Meta-Briefing via Claude CLI (Max-Abo, kostenlos).
+
+    `web_recherche=True` laesst Claude zu den ausgewaehlten Themen selbst
+    nachschlagen, was seit dem Tagesbriefing daraus geworden ist (siehe
+    _META_WEB_RECHERCHE). Kostet Zeit — deshalb steigt dann auch die Frist.
 
     Identisches Verhalten wie generate_meta_briefing(), aber via subprocess
     statt API-Call. Liest die archivierten Tages-TXT-Dateien, fasst sie zu
@@ -18940,7 +18981,8 @@ def run_meta_briefing_via_claude_cli(
 
     combined, input_meta = _build_meta_briefing_input(daily_briefings)
 
-    _report(f"Wochen-Meta-Briefing wird an Claude {model} geschickt…", 0.20)
+    _report(("Claude recherchiert nach und schreibt das Wochen-Briefing…"
+             if web_recherche else f"Wochen-Meta-Briefing wird an Claude {model} geschickt…"), 0.20)
 
     # WICHTIG: KEIN --system-prompt verwenden. Im launchd-Hintergrundkontext lässt
     # `claude --print --system-prompt <gross>` den Aufruf hängen/leer zurückkommen
@@ -18949,9 +18991,15 @@ def run_meta_briefing_via_claude_cli(
     # machen wir hier auch: META_BRIEFING_PROMPT wandert in den Input.
     meta_input = (
         META_BRIEFING_PROMPT
+        + (_META_WEB_RECHERCHE if web_recherche else "")
         + "\n\n=== HIER DIE TAGESBRIEFINGS DER WOCHE ===\n\n"
         + combined
     )
+    if web_recherche:
+        # Ein Dutzend Websuchen plus Schreiben passen nicht in 15 Minuten. Die
+        # Frist wird nur angehoben, nie gesenkt — ein Aufrufer, der laenger
+        # erlaubt hat, behaelt seinen Wert.
+        timeout_seconds = max(timeout_seconds, 2700)
     cmd = [
         cli,
         "--print",
@@ -18970,7 +19018,8 @@ def run_meta_briefing_via_claude_cli(
         sr = _run_claude_cli_subprocess_streaming(
             cmd, meta_input, cwd=archive_dir or os.getcwd(),
             timeout_seconds=timeout_seconds, progress_callback=progress_callback,
-            base_progress=att_base, max_progress=att_max, expected_duration_s=180.0,
+            base_progress=att_base, max_progress=att_max,
+            expected_duration_s=(600.0 if web_recherche else 180.0),
             label=label,
         )
         if not sr.get("ok") or sr.get("returncode") != 0:

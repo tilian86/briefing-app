@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>de.florian.briefing-taeglich</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>/usr/bin/python3</string>
+    <string>/Users/florian/Projects/apps/briefing-app/briefing_taeglich.py</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>45</integer>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/Users/florian/Projects/apps/briefing-app</string>
+  <key>StandardOutPath</key>
+  <string>/Users/florian/Projects/apps/briefing-app/.briefing_taeglich_launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/florian/Projects/apps/briefing-app/.briefing_taeglich_launchd.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

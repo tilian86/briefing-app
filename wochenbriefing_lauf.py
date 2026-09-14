@@ -33,6 +33,9 @@ LOG_PATH = os.path.expanduser("~/Library/Logs/wochenbriefing.log")
 ARCHIVE = os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs/Downloads/Briefings")
 SPIEGEL = os.path.expanduser("~/.briefing_meta_mirror")
 ERZWINGEN = bool(os.environ.get("BRIEFING_WOCHE_ERZWINGEN"))
+# Standard: Claude schaut zu den wichtigsten Themen selbst nach, was daraus
+# geworden ist. Abschaltbar, falls ein Lauf mal schnell durch soll.
+RECHERCHE = not os.environ.get("BRIEFING_WOCHE_OHNE_RECHERCHE")
 
 _DATEI_DATUM = re.compile(r"(\d{4})-(\d{2})-(\d{2}).*wochenbriefing", re.I)
 
@@ -170,6 +173,27 @@ def main():
         return
 
     modell = _entwurf_lesen().get("meta_cli_model") or "opus"
+
+    # Wie weit zurueck? Normalerweise sieben Tage. Hat Florian aber ein paar
+    # Tage kein Briefing gebaut, findet ein Sieben-Tage-Fenster womoeglich nur
+    # ein oder zwei Texte — und aus zwei Tagen laesst sich keine Woche deuten.
+    # Genau das ist am 14.09. passiert: zwei Briefings, beide vom 11.09. Dann
+    # ist es ehrlicher, das Fenster zu weiten, als einen duennen Rueckblick als
+    # Wochenschau auszugeben.
+    tage, gefunden = 7, 0
+    try:
+        for _t in (7, 10, 14):
+            _n = len(core._discover_weekly_briefing_texts(str(core._LOCAL_META_MIRROR_DIR), days=_t))
+            tage, gefunden = _t, _n
+            if _n >= 4:
+                break
+        if tage != 7:
+            _log("Nur %d Tagesbriefings in 7 Tagen — Fenster auf %d Tage geweitet (%d Texte)."
+                 % (len(core._discover_weekly_briefing_texts(str(core._LOCAL_META_MIRROR_DIR), days=7)),
+                    tage, gefunden))
+    except Exception as e:
+        _log("Fensterwahl fehlgeschlagen (%s) — bleibe bei 7 Tagen." % e)
+        tage = 7
     _status_schreiben(gebaut=False, laeuft=True, schritt="Wird gestartet…", grund=grund)
 
     def _cb(schritt, anteil):
@@ -186,7 +210,8 @@ def main():
 
     try:
         r = core.run_meta_briefing_via_claude_cli(
-            archive_dir=ARCHIVE, days=7, model=modell, cli_path=cli, progress_callback=_cb)
+            archive_dir=ARCHIVE, days=tage, model=modell, cli_path=cli,
+            web_recherche=RECHERCHE, progress_callback=_cb)
     except Exception as e:
         _log("Bau-Ausnahme:\n" + traceback.format_exc())
         _status_schreiben(gebaut=False, fehler=str(e)[:200])
@@ -194,11 +219,11 @@ def main():
         return
 
     if r is None:
-        _log("Keine Tagesbriefing-Texte der letzten 7 Tage gefunden.")
-        _status_schreiben(gebaut=False, fehler="keine Tagesbriefings der letzten 7 Tage")
+        _log("Keine Tagesbriefing-Texte der letzten %d Tage gefunden." % tage)
+        _status_schreiben(gebaut=False, fehler="keine Tagesbriefings der letzten %d Tage" % tage)
         _fehlerbuch("Wochenbriefing",
                     "Kein Wochenbriefing moeglich: im lokalen Spiegel liegt kein "
-                    "einziger Tagestext der letzten 7 Tage.", "normal")
+                    "einziger Tagestext der letzten %d Tage." % tage, "normal")
         return
     if not r.get("ok"):
         _log("Bau fehlgeschlagen: %s" % r.get("error"))
@@ -239,7 +264,8 @@ def main():
     jetzt = datetime.datetime.now()
     _entwurf_datum_merken(jetzt)
     stats = r.get("stats") or {}
-    _status_schreiben(gebaut=True, titel=titel, grund=grund,
+    _status_schreiben(gebaut=True, titel=titel, grund=grund, fenster=tage,
+                      recherche=RECHERCHE,
                       tage=stats.get("days"), briefings=stats.get("briefings"),
                       sekunden=int(r.get("elapsed_seconds") or 0),
                       txt=txtp, pdf=r.get("pdf_path"), upload=hochgeladen)
