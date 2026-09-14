@@ -477,7 +477,12 @@ def cleanup_old_briefings(days: int, today=None) -> dict:
         if not _looks_logged_in(page):
             return {"ok": False, "deleted": [], "errors": ["Nicht angemeldet."], "checked": 0}
         body = page.inner_text("body")
-        titles = sorted(set(re.findall(r"Tagesbriefing [^\n]{0,60}?\d{2}\.\d{2}\.[^\n]{0,20}", body)))
+        # 14.09.: Nur "Tagesbriefing …" war zu eng. Die Nachhol-Briefings vom
+        # 11.09. hiessen "Briefing Aktuell 11.09." bzw. "Briefing Rueckblick
+        # 04.09.–08.09." — die waeren nie wieder aus der Bibliothek verschwunden.
+        # "Wochenbriefing" bleibt ausgenommen: kleines b, also kein Treffer.
+        titles = sorted(set(re.findall(
+            r"\b(?:Tagesbriefing|Briefing) [^\n]{0,60}?\d{2}\.\d{2}\.[^\n]{0,20}", body)))
     finally:
         try:
             ctx.close()
@@ -529,6 +534,10 @@ def delete_briefing_by_title(title: str, timeout_s: int = 60) -> dict:
         menu_found = False
         for idx in range(triggers.count() - 1, -1, -1):
             try:
+                try:
+                    triggers.nth(idx).scroll_into_view_if_needed(timeout=3000)
+                except Exception:
+                    pass
                 triggers.nth(idx).click(timeout=5000)
                 page.wait_for_timeout(500)
                 if page.get_by_role("menuitem", name="Delete").count() > 0:
@@ -541,13 +550,61 @@ def delete_briefing_by_title(title: str, timeout_s: int = 60) -> dict:
         if not menu_found:
             return {"ok": False, "error": "Eintrags-Menü mit Delete nicht gefunden.",
                     "elapsed_seconds": time.time() - t0}
-        page.get_by_role("menuitem", name="Delete").first.click(timeout=8000)
-        page.wait_for_timeout(600)
-        # Bestätigen — bevorzugt als echter Button, sonst Text-Fallback
+        # 14.09.: Das Menue klappt bei langen Bibliotheken ausserhalb des
+        # Sichtbereichs auf — der Klick lief in einen Timeout ("element is
+        # outside of the viewport"). Erst hinscrollen, notfalls erzwingen.
+        _del = page.get_by_role("menuitem", name="Delete").first
         try:
-            page.get_by_role("button", name="Delete item").first.click(timeout=6000)
+            _del.scroll_into_view_if_needed(timeout=4000)
         except Exception:
-            page.locator("text=Delete item").first.click(timeout=6000)
+            pass
+        try:
+            _del.click(timeout=8000)
+        except Exception:
+            # Die Bibliothek ist eine virtualisierte Liste: das Menue haengt
+            # teils 100.000 Pixel ausserhalb des Bildes, da hilft auch
+            # force=True nicht (echte Maus braucht den Sichtbereich).
+            # dispatch_event schickt das Klick-Ereignis direkt ans Element.
+            try:
+                _del.click(timeout=4000, force=True)
+            except Exception:
+                _del.dispatch_event("click")
+        # Auf den Bestaetigungs-Dialog warten, statt blind zu klicken.
+        try:
+            page.wait_for_selector('[role=dialog]', timeout=8000)
+        except Exception:
+            pass
+        page.wait_for_timeout(900)
+        # Im Dialog den Knopf nehmen, der loescht — NICHT die Ueberschrift
+        # <h4>Delete item</h4> (darauf lief der alte Text-Fallback) und nicht
+        # "Cancel". Rolle allein reicht nicht: der Knopf traegt je nach
+        # Oberflaechen-Version einen anderen zugaenglichen Namen.
+        bestaetigt = False
+        for _versuch in range(3):
+            dlg = page.locator('[role=dialog]')
+            bereich = dlg.last if dlg.count() else page
+            kn = bereich.locator("button")
+            for j in range(kn.count()):
+                try:
+                    b = kn.nth(j)
+                    txt = " ".join((b.inner_text() or "").split()).lower()
+                    if not txt or "cancel" in txt or "abbrech" in txt:
+                        continue
+                    if "delete" in txt or "loesch" in txt or "lösch" in txt or "entfern" in txt:
+                        try:
+                            b.click(timeout=5000)
+                        except Exception:
+                            b.dispatch_event("click")
+                        bestaetigt = True
+                        break
+                except Exception:
+                    continue
+            if bestaetigt:
+                break
+            page.wait_for_timeout(1200)
+        if not bestaetigt:
+            return {"ok": False, "error": "Bestaetigungsknopf im Loesch-Dialog nicht gefunden.",
+                    "elapsed_seconds": time.time() - t0}
         # ERFOLG NUR VERIFIZIERT: zurück zur Bibliothek und prüfen, dass der
         # Titel wirklich verschwunden ist (Schein-Erfolge gab es schon…).
         page.wait_for_timeout(2500)
