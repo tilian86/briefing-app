@@ -462,9 +462,19 @@ def build_briefing_epub(text: str, title: str, out_path: str) -> str:
     return out_path
 
 
-def cleanup_old_briefings(days: int, today=None) -> dict:
-    """Löscht Bibliotheks-Einträge 'Tagesbriefing … dd.mm.…', die älter als `days`
-    Tage sind. Fasst NUR Tagesbriefing-Titel an (Bücher/Wochenbriefings bleiben).
+# 14.09.: Nur "Tagesbriefing …" war zu eng. Die Nachhol-Briefings vom 11.09.
+# hiessen "Briefing Aktuell 11.09." bzw. "Briefing Rueckblick 04.09.–08.09." —
+# die waeren nie wieder aus der Bibliothek verschwunden.
+_TITEL_TAGESBRIEFING = r"\b(?:Tagesbriefing|Briefing) [^\n]{0,60}?\d{2}\.\d{2}\.[^\n]{0,20}"
+# Wochenbriefings brauchen ein EIGENES Muster, nicht das obige: seit dem
+# Sonntags-Automatismus (wochenbriefing_lauf.py) kommt jede Woche eins dazu,
+# und ohne Aufraeumen waeren das nach einem Quartal dreizehn Eintraege.
+_TITEL_WOCHENBRIEFING = r"\bWochenbriefing [^\n]{0,40}?\d{2}\.\d{2}\.[^\n]{0,20}"
+
+
+def _bibliothek_aufraeumen(muster: str, days: int, today=None) -> dict:
+    """Loescht Bibliotheks-Eintraege, deren Titel auf `muster` passt und deren
+    Datum aelter als `days` Tage ist. Buecher bleiben immer unberuehrt.
 
     Returns: {"ok", "deleted": [titel…], "errors": [...], "checked": int}
     """
@@ -472,17 +482,41 @@ def cleanup_old_briefings(days: int, today=None) -> dict:
     today = today or _dt.date.today()
     p, ctx = _launch(headless=True)
     titles = []
+    gelesen = False
     try:
         page = _page(ctx)
         if not _looks_logged_in(page):
             return {"ok": False, "deleted": [], "errors": ["Nicht angemeldet."], "checked": 0}
-        body = page.inner_text("body")
-        # 14.09.: Nur "Tagesbriefing …" war zu eng. Die Nachhol-Briefings vom
-        # 11.09. hiessen "Briefing Aktuell 11.09." bzw. "Briefing Rueckblick
-        # 04.09.–08.09." — die waeren nie wieder aus der Bibliothek verschwunden.
-        # "Wochenbriefing" bleibt ausgenommen: kleines b, also kein Treffer.
-        titles = sorted(set(re.findall(
-            r"\b(?:Tagesbriefing|Briefing) [^\n]{0,60}?\d{2}\.\d{2}\.[^\n]{0,20}", body)))
+        # 14.09.: Hier stand frueher ein einzelnes inner_text("body") direkt nach
+        # dem Oeffnen. Beim Test lief genau das ins Leere — die Bibliothek rendert
+        # asynchron nach, das Muster fand NICHTS, und die Funktion meldete
+        # zufrieden "ok, nichts zu loeschen". Das ist dieselbe Luege wie beim
+        # Upload, der den Dateinamen im eigenen Dialog wiedererkannte: ein
+        # Nicht-Sehen als Nichts-Da ausgeben. Jetzt wird gewartet, bis entweder
+        # ein Treffer da ist oder die Seite zwei Messungen lang unveraendert
+        # steht — und wenn sie gar nicht auftaucht, sagt die Funktion das.
+        frist = time.time() + 40
+        letzte_laenge, stabil = -1, 0
+        while time.time() < frist:
+            body = page.inner_text("body") or ""
+            treffer = sorted(set(re.findall(muster, body)))
+            if treffer:
+                titles, gelesen = treffer, True
+                break
+            if len(body) > 1500 and len(body) == letzte_laenge:
+                stabil += 1
+                if stabil >= 2:      # Liste steht, es gibt nur nichts zu finden
+                    gelesen = True
+                    break
+            else:
+                stabil, letzte_laenge = 0, len(body)
+            page.wait_for_timeout(2500)
+            _dismiss_overlays(page)
+        if not gelesen:
+            return {"ok": False, "deleted": [],
+                    "errors": ["Bibliothek war nach 40 Sekunden nicht lesbar — "
+                               "nichts geloescht (lieber nichts als blind)."],
+                    "checked": 0}
     finally:
         try:
             ctx.close()
@@ -509,6 +543,18 @@ def cleanup_old_briefings(days: int, today=None) -> dict:
         r = delete_briefing_by_title(t)
         (deleted if r.get("ok") else errors).append(t if r.get("ok") else f"{t}: {r.get('error')}")
     return {"ok": True, "deleted": deleted, "errors": errors, "checked": len(titles)}
+
+
+def cleanup_old_briefings(days: int, today=None) -> dict:
+    """Loescht alte TAGES-Briefings aus der Bibliothek (Buecher und
+    Wochenbriefings bleiben — deren Titel passt nicht auf das Muster)."""
+    return _bibliothek_aufraeumen(_TITEL_TAGESBRIEFING, days, today)
+
+
+def cleanup_old_wochenbriefings(days: int = 21, today=None) -> dict:
+    """Loescht alte WOCHEN-Briefings. 21 Tage heisst: die letzten drei bleiben
+    liegen — genug Luft, um eins nachzuhoeren, ohne dass die Liste zuwaechst."""
+    return _bibliothek_aufraeumen(_TITEL_WOCHENBRIEFING, days, today)
 
 
 def delete_briefing_by_title(title: str, timeout_s: int = 60) -> dict:

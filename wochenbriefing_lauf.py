@@ -220,6 +220,21 @@ def main():
         if str(hochgeladen).startswith("fail"):
             _fehlerbuch("Wochenbriefing",
                         "Gebaut, aber nicht im ElevenReader gelandet: %s" % hochgeladen[6:], "normal")
+        else:
+            # Aufraeumen erst NACH einem geglueckten Upload — sonst loescht ein
+            # Lauf die alten Wochenbriefings weg und schiebt kein neues nach.
+            # Ohne diesen Schritt waeren es nach einem Quartal dreizehn Eintraege:
+            # das automatische Tages-Aufraeumen fasst Wochenbriefings mit Absicht
+            # nicht an, sonst haette es sie schon frueher mitgerissen.
+            try:
+                from reader_upload import cleanup_old_wochenbriefings
+                cl = cleanup_old_wochenbriefings(21)
+                if cl.get("deleted"):
+                    _log("Aufgeraeumt: %s" % ", ".join(cl["deleted"]))
+                if cl.get("errors"):
+                    _log("Aufraeumen unvollstaendig: %s" % cl["errors"])
+            except Exception as e:
+                _log("Aufraeumen fehlgeschlagen: %s" % e)
 
     jetzt = datetime.datetime.now()
     _entwurf_datum_merken(jetzt)
