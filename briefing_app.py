@@ -324,13 +324,18 @@ def _write_archive_bytes(file_name: str, data: bytes, subdir: Optional[str] = No
     return None, last_error
 
 
-_CLEANUP_RETENTION_DAYS = 21
+_CLEANUP_RETENTION_DAYS = 365
 _CLEANUP_EXTENSIONS = (".pdf", ".txt", ".epub")
 # 05.08. nach Dateityp gestaffelt: PDFs verschickt Florian per Broadcast weiter,
 # eine lange Liste heisst nur laestiges Scrollen — die duerfen frueh weg. Die
 # Texte sind die Arbeitsgrundlage (Wochen-/Monats-/Jahresbriefing, Dubletten-
 # Abgleich "war das schon drin?") und bleiben deutlich laenger.
-_CLEANUP_RETENTION_BY_EXT = {".pdf": 7, ".epub": 7, ".txt": 21}
+# 14.09.: Texte von 21 auf 365 Tage. Florians Rechnung stimmt — ein Tagestext
+# wiegt rund 130 KB, ein volles Jahr also etwa 48 MB. Dafuer laesst sich aus dem
+# iCloud-Ordner heraus jederzeit eine Monats- oder Jahresuebersicht bauen, statt
+# nur drei Wochen zurueckblicken zu koennen. Die PDFs bleiben bei sieben Tagen:
+# die sind gross, und der Text ist ohnehin die Grundlage.
+_CLEANUP_RETENTION_BY_EXT = {".pdf": 7, ".epub": 7, ".txt": 365}
 # Der lokale Textspiegel ist klein (~100 KB je Briefing) und meine einzige
 # verlaessliche Quelle — der wird ein volles Jahr gehalten (366 = Schaltjahr-Puffer).
 _MIRROR_RETENTION_DAYS = 366
@@ -1381,7 +1386,8 @@ if "_draft_snapshot" not in st.session_state:
     }
 _saved_exports, _saved_check, _saved_sections = _load_last_briefing()
 
-# Auto-Aufräumen: Briefings älter als 21 Tage einmal pro Session löschen
+# Auto-Aufräumen: alte Briefing-Dateien einmal pro Sitzung löschen
+# (PDFs nach 7 Tagen, Texte nach 365 — siehe _CLEANUP_RETENTION_BY_EXT)
 if not st.session_state.get("_cleanup_done"):
     try:
         _cleanup_result = _cleanup_old_briefings()
@@ -1396,7 +1402,7 @@ if not st.session_state.get("_cleanup_done"):
 if st.session_state.get("_cleanup_count", 0) and not st.session_state.get("_cleanup_shown"):
     st.session_state["_cleanup_shown"] = True
     try:
-        st.toast(f"🧹 {st.session_state['_cleanup_count']} alte Briefing-Dateien (>21 Tage) aufgeräumt.")
+        st.toast(f"🧹 {st.session_state['_cleanup_count']} alte Briefing-Dateien aufgeräumt (PDFs >7 Tage, Texte >365 Tage).")
     except Exception:
         pass
 # Pflicht-Einstellungen: hier gewinnt IMMER der Code-Default, nie der gespeicherte
@@ -2403,16 +2409,21 @@ if st.session_state.get("_focus_end"):
 # ── 🗓️ Wochenbriefing-Erinnerung ───────────────────────────────────────────
 # Florians Wunsch (05.08.): alle 7 Tage, am liebsten sonntags, GEFRAGT werden —
 # nicht automatisch loslaufen. Ein Klick baut es und laedt es in den Reader.
+# 14.09.: Seitdem baut wochenbriefing_lauf.py es sonntags von allein (launchd
+# de.florian.wochenbriefing). Diese Frage ist deshalb kein Regelfall mehr,
+# sondern das Sicherheitsnetz: sie meldet sich erst, wenn der Sonntagslauf
+# ausgefallen ist. Ganz abschalten waere falsch — dann waere ein stiller
+# Ausfall wieder unsichtbar, und genau das war zwei Wochen lang das Problem.
 def _wochen_erinnerung():
     _lm = st.session_state.get("last_meta_created_iso") or ""
     try:
         _alter = (datetime.datetime.now() - datetime.datetime.fromisoformat(_lm)).days if _lm else 999
     except Exception:
         _alter = 999
-    _ist_sonntag = datetime.datetime.now().weekday() == 6
-    # Sonntags schon ab 6 Tagen fragen, sonst ab 7 — so landet die Frage im
-    # Regelfall auf dem Sonntag, ohne bei Verschiebungen ganz auszufallen.
-    _faellig = _alter >= (6 if _ist_sonntag else 7)
+    # 9 Tage: der Sonntagslauf bekommt seinen Termin plus einen Nachhol-Tag,
+    # bevor hier jemand gefragt wird. Meldet sich die Frage trotzdem, ist der
+    # automatische Lauf nicht durchgekommen.
+    _faellig = _alter >= 9
     _heute = datetime.datetime.now().strftime("%Y-%m-%d")
     if not _faellig or st.session_state.get("_wochen_frage_weg") == _heute:
         return
@@ -2428,9 +2439,10 @@ def _wochen_erinnerung():
             _save_draft()
             st.rerun()
         return
-    st.warning(f"🗓️ **Wochenbriefing fällig** — das letzte war {_wtxt}. "
-               "Möchtest du eins erstellen? Es fasst die Briefings der letzten 7 Tage "
-               "zusammen und landet direkt in deinem ElevenReader.")
+    st.warning(f"🗓️ **Wochenbriefing überfällig** — das letzte war {_wtxt}, "
+               "obwohl es sonntags automatisch gebaut werden sollte. "
+               "Der Sonntagslauf ist also ausgefallen (Mac aus? Claude-Anmeldung?) — "
+               "im Fehler-Tagebuch steht meist der Grund. Jetzt von Hand nachholen:")
     _wc0, _wc1, _wc2 = st.columns([1.4, 1, 0.8])
     with _wc0:
         # Der sinnvolle Regelfall: erst das heutige Briefing, dann die Woche —
@@ -8082,12 +8094,30 @@ if _fb_offen:
 with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
     st.caption("Liest die archivierten Tagesbriefings und baut daraus Wochenrückblick, Metaebene und Coach-Blick für die nächste Woche.")
 
-    # ── Automatik: kein manuelles Anstoßen mehr nötig ──
-    st.checkbox(
-        "🔄 Automatisch alle 7 Tage erstellen (nach einem Tagesbriefing)",
-        key="weekly_auto_7d",
-        help="Sobald dein letztes Wochenbriefing 7+ Tage her ist, wird es beim nächsten fertigen Tagesbriefing automatisch mitgebaut und in den ElevenReader gepusht. Kostenlos übers Max-Abo.",
-    )
+    # ── Automatik ──
+    # 14.09.: Dieses Haekchen behauptete "automatisch alle 7 Tage", war aber seit
+    # dem 05.08. wirkungslos (_want_auto = False) — und `briefing_scheduled.py`
+    # kannte das Wochenbriefing ohnehin nicht. Deshalb lag Florians letztes zwei
+    # Wochen zurueck, ohne dass die Oberflaeche das zugegeben haette. Jetzt steht
+    # hier, was wirklich passiert: der launchd-Job de.florian.wochenbriefing
+    # startet wochenbriefing_lauf.py sonntags um 19:10.
+    _wb_stand = ""
+    try:
+        _wb_s = json.loads((_APP_DIR / ".wochenbriefing_status.json").read_text(encoding="utf-8"))
+        if _wb_s.get("laeuft"):
+            _wb_stand = f"  ·  läuft gerade: {_wb_s.get('schritt', '…')}"
+        elif _wb_s.get("gebaut"):
+            _wb_stand = f"  ·  zuletzt: {_wb_s.get('titel', '?')} ({_wb_s.get('briefings', '?')} Tagesbriefings)"
+        elif _wb_s.get("fehler"):
+            _wb_stand = f"  ·  ⚠️ letzter Lauf: {_wb_s['fehler']}"
+    except Exception:
+        pass
+    st.info("🔄 **Läuft sonntags von allein** um 19:10 — aus den Tagestexten der "
+            "letzten 7 Tage, direkt in den ElevenReader. Kostenlos übers Max-Abo. "
+            "Fällt der Sonntag aus (Mac aus), holt der Mac es beim nächsten "
+            "Aufwachen nach." + _wb_stand)
+    st.caption("Der Knopf unten baut jederzeit eins von Hand — z. B. für einen "
+               "anderen Zeitraum als sieben Tage.")
     st.checkbox(
         "⬇️ Direkt nach dem nächsten Tagesbriefing erstellen (einmalig)",
         key="weekly_after_daily",
@@ -8126,8 +8156,15 @@ with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
             disabled=not _meta_cli_available,
         )
     with meta_col3:
-        meta_days = st.number_input("Tage", min_value=2, max_value=21, value=7, key="meta_days", label_visibility="collapsed")
-        st.caption("Zeitraum")
+        # 14.09.: Der Deckel lag bei 21 Tagen — genau so lange wurden Texte
+        # aufbewahrt. Jetzt bleiben sie ein Jahr, also darf hier auch ein ganzer
+        # Monat gewaehlt werden. Bei 31 Tagen ist Schluss, und zwar aus einem
+        # handfesten Grund: das Meta-Fenster fasst rund 180.000 Zeichen, ein
+        # Tagesbriefing bringt ~130.000 mit. Ab etwa einem Monat bekommt jeder
+        # Tag nur noch 6.000 Zeichen — unter 5 % seines Inhalts. Eine echte
+        # Jahresschau muesste stufig bauen (Wochen → Monat → Jahr).
+        meta_days = st.number_input("Tage", min_value=2, max_value=31, value=7, key="meta_days", label_visibility="collapsed")
+        st.caption("Zeitraum · 7 = Woche, 30 = Monat")
 
     _meta_archive_dir = _resolve_archive_dir()  # für Output-PDF (iCloud, Handy-Sync)
     # WICHTIG: Discovery liest aus dem lokalen Spiegel, nicht aus iCloud — der

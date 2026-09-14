@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>de.florian.wochenbriefing</string>
+  <!-- caffeinate -i haelt den Mac waehrend des Laufs wach; ohne das schlaeft er
+       mitten in der Claude-Antwort ein und das Wochenbriefing bleibt halb. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>/usr/bin/python3</string>
+    <string>/Users/florian/Projects/apps/briefing-app/wochenbriefing_lauf.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/florian/Projects/apps/briefing-app</string>
+  <!-- Weekday 0 = Sonntag. Abends, damit das Tagesbriefing vom Sonntag noch mit
+       drin ist. Verschlaeft der Mac den Termin, startet launchd den Lauf beim
+       naechsten Aufwachen nach — die Wochenregel im Skript faengt das ab. -->
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>10</integer><key>Weekday</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/Users/florian/Projects/apps/briefing-app/.wochenbriefing_launchd.log</string>
+  <key>StandardErrorPath</key><string>/Users/florian/Projects/apps/briefing-app/.wochenbriefing_launchd.log</string>
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>

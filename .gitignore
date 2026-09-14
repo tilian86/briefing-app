@@ -17,3 +17,7 @@ __pycache__/
 
 # Arbeitsdaten der Nachhol-Laeufe (Entwuerfe, Artikeltexte, Protokolle)
 .nachholen/
+
+# Protokolle & Status der Hintergrundlaeufe
+*_launchd.log
+.wochenbriefing_status.json
