@@ -12610,13 +12610,20 @@ def _run_claude_cli_subprocess_streaming(
     # Schlank aufrufen: Ohne diese Flags hängt die CLI an JEDEN Aufruf alle
     # Werkzeug-Schemata und sämtliche claude.ai-Connectoren (Gmail, Cloudflare,
     # Todoist …) an — gemessen 33k–127k Tokens Ballast pro Aufruf im Max-
-    # Kontingent, bei ~20 Aufrufen je Briefing. Kein Briefing-Aufruf braucht
-    # Werkzeuge oder Connectoren: Prompt rein, Text raus. Wer doch welche
-    # will, setzt --tools/--allowedTools/--mcp-config selbst — dann bleibt
-    # der cmd unangetastet.
+    # Kontingent, bei ~20 Aufrufen je Briefing. Fast kein Briefing-Aufruf
+    # braucht Werkzeuge: Prompt rein, Text raus. Die zwei Ausnahmen sind die
+    # Web-Ergänzung in der Synthese (_SYNTH_WEB_ENRICH) und die eigene
+    # Recherche im Wochenbriefing (_META_WEB_RECHERCHE) — beide verlangen im
+    # Prompt ausdrücklich das WebSearch-Tool, also bleibt genau dort die
+    # Websuche an (14.09.: mit --tools "" hätte die CLI dort still ohne Suche
+    # geschrieben). Wer anderes will, setzt --tools/--allowedTools/--mcp-config
+    # selbst — dann bleibt der cmd unangetastet.
     cmd = list(cmd)
     if not any(f in cmd for f in ("--tools", "--allowedTools", "--mcp-config")):
-        cmd += ["--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
+        braucht_web = ("WebSearch" in (stdin_text or "")
+                       or any("WebSearch" in str(a) for a in cmd))
+        cmd += ["--tools", "WebSearch,WebFetch" if braucht_web else "",
+                "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
 
     # Mac vor Sleep schützen: caffeinate als Parent-Wrapper. Wenn der Mac über Nacht
     # in Sleep geht, würde der Anthropic-Stream sterben und der Subprocess endlos
