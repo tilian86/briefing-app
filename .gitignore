@@ -21,3 +21,4 @@ __pycache__/
 # Protokolle & Status der Hintergrundlaeufe
 *_launchd.log
 .wochenbriefing_status.json
+.briefing_job_status.json
