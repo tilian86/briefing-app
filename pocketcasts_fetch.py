@@ -553,6 +553,68 @@ def preview_new_releases(progress=None):
 _API_ARCHIVE_URL = "https://api.pocketcasts.com/sync/update_episodes_archive"
 
 
+BEHALTEN_PATH = os.path.expanduser("~/.briefing_podcasts_behalten.json")
+
+
+def load_behalten() -> list:
+    """Podcasts, die NIE zum Archivieren vorgeschlagen werden.
+
+    22.09.: Florian will nicht jedes Mal neu klicken — manche Podcasts hoert er
+    grundsaetzlich selbst ganz (Baywatch Berlin, Lanz + Precht), der Rest kann
+    nach der Zusammenfassung weg. Diese Liste haelt das fest.
+    """
+    try:
+        d = json.loads(open(BEHALTEN_PATH, encoding="utf-8").read())
+        return sorted({str(x).strip() for x in (d.get("podcasts") or []) if str(x).strip()})
+    except Exception:
+        return []
+
+
+def save_behalten(namen) -> list:
+    """Behalten-Liste sichern. Gibt die gespeicherte Liste zurueck."""
+    sauber = sorted({str(x).strip() for x in (namen or []) if str(x).strip()})
+    try:
+        with open(BEHALTEN_PATH, "w", encoding="utf-8") as fh:
+            json.dump({"podcasts": sauber}, fh, ensure_ascii=False)
+    except Exception as exc:
+        print(f"Pocket Casts: Behalten-Liste nicht speicherbar: {exc}", file=sys.stderr)
+    return sauber
+
+
+def _behalten_schluessel(text: str) -> str:
+    return "".join(c for c in (text or "").lower() if c.isalnum())
+
+
+def podcast_aus_titel(titel: str) -> str:
+    """Holt den Podcast-Namen aus einem Eintrag 'Podcast: Episode'.
+
+    Die Archiv-Frage speichert nur diesen zusammengesetzten Titel — ohne
+    Doppelpunkt gibt es keinen Podcast-Namen, dann bleibt der Eintrag leer
+    (und faellt damit NIE unter die Behalten-Liste, wird also normal gefragt).
+    """
+    t = (titel or "")
+    return t.split(":", 1)[0].strip() if ":" in t else ""
+
+
+def auf_behalten_liste(podcast_oder_titel: str, liste=None) -> bool:
+    """True, wenn dieser Podcast auf der Behalten-Liste steht.
+
+    Nimmt entweder den reinen Podcast-Namen oder einen 'Podcast: Episode'-Titel.
+    Vergleicht ohne Gross-/Kleinschreibung und ohne Sonderzeichen, damit
+    'Lanz + Precht' auch 'Lanz+Precht' trifft.
+    """
+    liste = load_behalten() if liste is None else liste
+    if not liste:
+        return False
+    kand = {_behalten_schluessel(podcast_oder_titel),
+            _behalten_schluessel(podcast_aus_titel(podcast_oder_titel))}
+    kand.discard("")
+    if not kand:
+        return False
+    merk = {_behalten_schluessel(n) for n in liste}
+    return bool(kand & merk)
+
+
 def archive_episodes(eps, token: str = None) -> int:
     """Archiviert Folgen in Pocket Casts (= aus der Liste nehmen, wie am Handy).
 

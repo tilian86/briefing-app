@@ -4813,9 +4813,16 @@ def _fragment_pc_archive_frage():
                      expanded=(_noch_offen == 0)):
         st.caption("Haken = wird in Pocket Casts archiviert (aus deiner Liste genommen). "
                    "Haken weg bei Folgen, die du noch selbst hören willst.")
+        # 22.09.: Florian musste jedes Mal dieselben Podcasts von Hand abwaehlen
+        # ("die die ich noch anhoeren moechte auswaehlen ... sonst kann das meiste weg").
+        # Was auf der Behalten-Liste steht, kommt jetzt von vornherein OHNE Haken.
+        import pocketcasts_fetch as _pcf_keep
+        _behalten_liste = _pcf_keep.load_behalten()
         _ausgewaehlt = []
         for _i, _e in enumerate(_fertige):
-            if st.checkbox(_e["titel"], value=True, key=f"pcarch_{_i}"):
+            _bleibt = _pcf_keep.auf_behalten_liste(_e.get("titel", ""), _behalten_liste)
+            if st.checkbox(_e["titel"] + ("\u3000🔒" if _bleibt else ""),
+                           value=not _bleibt, key=f"pcarch_{_i}"):
                 _ausgewaehlt.append(_e)
         _c1, _c2 = st.columns([2, 1])
         with _c1:
@@ -4838,6 +4845,26 @@ def _fragment_pc_archive_frage():
             if st.button("Alle behalten", key="pcarch_keep", use_container_width=True):
                 _pc_archive_frage_schreiben([e for e in _kand if not e.get("fertig")])
                 st.rerun(scope="app")
+
+        # 🔒 Dauerhafte Behalten-Liste. Bewusst KEIN verschachtelter Expander —
+        # Streamlit erlaubt das innerhalb eines Expanders nicht.
+        st.divider()
+        st.caption("🔒 **Behalten-Liste** — diese Podcasts hörst du immer selbst ganz. "
+                   "Sie kommen künftig ohne Haken hierher.")
+        _moegliche = sorted(({_pcf_keep.podcast_aus_titel(_x.get("titel", "")) for _x in _kand}
+                             | set(_behalten_liste)) - {""})
+        _vorbelegt = [n for n in _behalten_liste if n in _moegliche]
+        _neu_liste = st.multiselect("Nie zum Entfernen vorschlagen", options=_moegliche,
+                                    default=_vorbelegt, key="pcarch_behalten_sel",
+                                    label_visibility="collapsed")
+        if st.button("🔒 Behalten-Liste sichern", key="pcarch_behalten_save",
+                     use_container_width=True):
+            # Podcasts, die gerade nicht zur Auswahl stehen, bleiben erhalten.
+            _rest = [n for n in _behalten_liste if n not in _moegliche]
+            _gesichert = _pcf_keep.save_behalten(list(_neu_liste) + _rest)
+            st.session_state["_podcast_inbox_last_msg"] = (
+                f"🔒 Behalten-Liste gesichert ({len(_gesichert)} Podcast(s)).")
+            st.rerun(scope="app")
 
 
 _fragment_pc_archive_frage()
