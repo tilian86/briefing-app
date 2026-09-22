@@ -12539,18 +12539,31 @@ def pruefe_claude_anmeldung(timeout_seconds: int = 60, cli_path: Optional[str] =
     cli = cli_path or _locate_claude_cli()
     if not cli:
         return {"ok": False, "meldung": "Claude CLI nicht gefunden — ist Claude Code installiert?"}
-    try:
-        sr = _run_claude_cli_subprocess_streaming(
-            [cli, "-p", "Antworte nur mit dem Wort OK."], "",
-            timeout_seconds=int(timeout_seconds), parse_stream_json=False,
-            use_caffeinate=False, progress_callback=None,
-        )
-    except Exception as exc:
-        return {"ok": False, "meldung": klartext_cli_fehler(str(exc))}
-    roh = " ".join(x for x in (sr.get("error"), sr.get("stdout"), sr.get("stderr")) if x)
-    if sr.get("returncode") not in (0, None) or "OK" not in (sr.get("stdout") or "").upper():
-        return {"ok": False, "meldung": klartext_cli_fehler(roh) or "Claude antwortet nicht wie erwartet."}
-    return {"ok": True, "meldung": "Claude ist angemeldet."}
+    # 22.09.: Ein einzelner Aussetzer darf keinen ganzen Lauf killen. Direkt nach
+    # 24 Podcast-Zusammenfassungen brauchte die CLI fuer diesen Mini-Aufruf laenger
+    # als 60s — die Vorabpruefung schlug an und warf 165 Artikel + 24 Podcasts weg,
+    # obwohl die Anmeldung voellig in Ordnung war (5s beim naechsten Versuch).
+    # Ein Timeout sagt nichts ueber den Login, also: zweiter Versuch mit Luft.
+    roh = ""
+    for versuch, frist in ((1, int(timeout_seconds)), (2, max(int(timeout_seconds) * 2, 120))):
+        if versuch > 1:
+            time.sleep(5.0)
+        try:
+            sr = _run_claude_cli_subprocess_streaming(
+                [cli, "-p", "Antworte nur mit dem Wort OK."], "",
+                timeout_seconds=frist, parse_stream_json=False,
+                use_caffeinate=False, progress_callback=None,
+            )
+        except Exception as exc:
+            return {"ok": False, "meldung": klartext_cli_fehler(str(exc))}
+        roh = " ".join(x for x in (sr.get("error"), sr.get("stdout"), sr.get("stderr")) if x)
+        if sr.get("returncode") in (0, None) and "OK" in (sr.get("stdout") or "").upper():
+            return {"ok": True, "meldung": "Claude ist angemeldet."}
+        # Nur bei Zeitueberschreitung nochmal probieren. Ein echter Login-Fehler
+        # ("Invalid API key", "Please run /login") wird beim zweiten Mal auch nicht besser.
+        if "Timeout nach" not in (sr.get("error") or ""):
+            break
+    return {"ok": False, "meldung": klartext_cli_fehler(roh) or "Claude antwortet nicht wie erwartet."}
 
 
 def _run_claude_cli_subprocess_streaming(
