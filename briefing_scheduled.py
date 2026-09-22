@@ -98,6 +98,27 @@ def main():
         _cleanup()
         return
 
+    # 22.09.: Die App erzwingt Florians Standardschalter bei JEDEM Sitzungsstart
+    # (_ERZWUNGENE_DEFAULTS in briefing_app.py) — in der Oberfläche sehen sie darum
+    # immer angehakt aus. Dieser Lauf hier las aber die ROHE Entwurfsdatei. Stand
+    # dort ein alter Stand mit ausgeschalteten Schaltern (nachweislich am 14.08. und
+    # am 22.09. passiert), baute der terminierte Lauf still ohne Themenbündelung,
+    # ohne Qualitätsprüfung und — am schlimmsten — ohne Reader-Upload, während in
+    # der App alles richtig aussah. Dieselbe Liste, derselbe Schutz.
+    _ERZWUNGEN = {
+        "topic_synthesis_mode": True,
+        "synthesis_narrative_style": True,
+        "synthesis_web_enrich": True,
+        "quality_check_enabled": True,
+        "auto_reader_upload": True,
+        "podcast_synth_mode": "Länger erhalten",
+        "briefing_depth_multi": ["Intelligent"],
+    }
+    for _k, _v in _ERZWUNGEN.items():
+        if draft.get(_k) != _v:
+            _log("Entwurf-Schalter korrigiert: %s = %r -> %r" % (_k, draft.get(_k), _v))
+            draft[_k] = _v
+
     depths = draft.get("briefing_depth_multi") or ["Intelligent"]
     depth = depths[0] if depths else "Intelligent"
     synth = bool(draft.get("topic_synthesis_mode", True))
@@ -172,6 +193,29 @@ def main():
             pass
         _cleanup()
         return
+
+    # 22.09.: Zweite Vorabprüfung. Die Claude-Anmeldung wurde geprüft, die des
+    # ElevenReaders nicht — ein abgelaufener Reader-Login fiel erst NACH dem
+    # kompletten Bau auf (Florian war am 22.09. stillschweigend ausgeloggt).
+    # Das Briefing ist dann gebaut, liegt aber nirgends zum Hören.
+    if upload:
+        try:
+            from reader_upload import is_logged_in as _reader_ok
+            if not _reader_ok():
+                _log("ElevenReader nicht angemeldet — Lauf gestoppt, bevor Arbeit verfällt.")
+                status.update({"active": True, "done": True, "failed": True,
+                               "step": "❌ ElevenReader ist abgemeldet — bitte in der App neu anmelden."})
+                _write_status(status)
+                try:
+                    import fehlerbuch
+                    fehlerbuch.eintragen("ElevenReader-Anmeldung",
+                                         "Reader abgemeldet — Briefing nicht gebaut.", None, "kritisch")
+                except Exception:
+                    pass
+                _cleanup()
+                return
+        except Exception as _e:
+            _log("Reader-Vorabprüfung übersprungen (%s)" % _e)
 
     try:
         status["usage_5h_before"] = core._read_real_5h_usage()
