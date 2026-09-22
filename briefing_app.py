@@ -2276,12 +2276,13 @@ if st.session_state.get("urls_text_pending_value") is not None:
 
 # 📰 Newsletter (Hotel Matze & Co.) kommen von selbst dazu — Florians Wunsch vom
 # 22.09.: „immer direkt in mein Briefing automatisch". Quelle ist der offene Feed,
-# nicht das Postfach, deshalb braucht das keinen Login. Abgehakt wird eine Ausgabe
-# erst, wenn sie wirklich im fertigen Briefing steht (siehe unten).
+# nicht das Postfach, deshalb braucht das keinen Login. Eine Ausgabe gilt als
+# eingespeist, sobald ihr Link im URL-Feld steht (das Feld liegt im Entwurf):
+# loescht Florian die Zeile oder leert das Feld, kommt sie NICHT noch einmal.
 @st.cache_data(ttl=1800, show_spinner=False)
 def _newsletter_neue_ausgaben():
     import newsletter_fetch as _nlf
-    return _nlf.neue_ausgaben()
+    return _nlf.neue_ausgaben(timeout=10)  # laeuft beim Seitenaufbau — kurz halten
 
 # Nicht nur einmal je Sitzung: Florian laesst die App tagelang offen stehen, sonst
 # wuerde die Freitagsausgabe erst beim naechsten Neuladen auftauchen.
@@ -2289,21 +2290,28 @@ _nl_jetzt = datetime.datetime.now().timestamp()
 if (_nl_jetzt - float(st.session_state.get("_newsletter_geprueft") or 0)) > 1800:
     st.session_state["_newsletter_geprueft"] = _nl_jetzt
     try:
-        _nl_res = _newsletter_neue_ausgaben()
-        _nl_offen = [a for a in (_nl_res.get("neu") or [])
-                     if a["link"] not in (st.session_state.get("urls_text") or "")]
+        import newsletter_fetch as _nlf_app
+        _nl_neu = _newsletter_neue_ausgaben().get("neu") or []
+        _nl_feld = st.session_state.get("urls_text") or ""
+        _nl_offen = [a for a in _nl_neu if a["link"] not in _nl_feld]
         if _nl_offen:
-            import newsletter_fetch as _nlf_ins
-            _vorher = (st.session_state.get("urls_text") or "").rstrip()
+            _nl_feld = _nl_feld.rstrip()
             st.session_state["urls_text"] = (
-                (_vorher + "\n" if _vorher else "") + _nlf_ins.als_urls(_nl_offen))
+                (_nl_feld + "\n" if _nl_feld else "") + _nlf_app.als_urls(_nl_offen))
             st.session_state["_newsletter_offen"] = _nl_offen
             _save_draft()
+        if _nl_neu:
+            # Alles, was jetzt im Feld steht, ist eingespeist — auch Links, die
+            # schon drinstanden (Neustart, bevor gemerkt werden konnte).
+            _nlf_app.merke_gesehen(_nl_neu)
+            _newsletter_neue_ausgaben.clear()
     except Exception as _nlex:
         st.session_state["_newsletter_fehler"] = str(_nlex)[:140]
 
-if st.session_state.get("_newsletter_offen"):
-    _nl_o = st.session_state["_newsletter_offen"]
+# Hinweis nur fuer Ausgaben, die noch im Feld stehen.
+_nl_o = [a for a in (st.session_state.get("_newsletter_offen") or [])
+         if a["link"] in (st.session_state.get("urls_text") or "")]
+if _nl_o:
     st.info("📰 %d neue Newsletter-Ausgabe(n) automatisch eingefügt: %s"
             % (len(_nl_o), " · ".join("%s (%s)" % (a["titel"], a["datum"]) for a in _nl_o)))
 if st.session_state.get("_newsletter_fehler"):
@@ -4546,10 +4554,13 @@ def _fragment_pc_archive_frage():
         import pocketcasts_fetch as _pcf_keep
         _behalten_liste = _pcf_keep.load_behalten()
         _ausgewaehlt = []
-        for _i, _e in enumerate(_fertige):
+        for _e in _fertige:
             _bleibt = _pcf_keep.auf_behalten_liste(_e.get("titel", ""), _behalten_liste)
+            # Schluessel = Folgen-UUID: ein Listenplatz-Schluessel haette einen alten
+            # Haken auf eine ANDERE Folge uebertragen, sobald sich die Liste verschiebt.
             if st.checkbox(_e["titel"] + ("\u3000🔒" if _bleibt else ""),
-                           value=not _bleibt, key=f"pcarch_{_i}"):
+                           value=not _bleibt,
+                           key=f"pcarch_{_e.get('episode') or _e.get('titel')}"):
                 _ausgewaehlt.append(_e)
         _c1, _c2 = st.columns([2, 1])
         with _c1:
@@ -5279,20 +5290,10 @@ def _run_briefing_generation(selected_urls=None, prefetched_payloads=None):
         check["compact_mode"] = compact_mode
         check["narrative_mode"] = False
         check["_run_duration_s"] = (datetime.datetime.now() - _run_t0).total_seconds()
-        # 📰 Newsletter-Ausgaben erst jetzt abhaken — sie stehen im Briefing.
-        # Bewusst am URL-Feld festgemacht, nicht an der Sitzung: geht die verloren
-        # (neuer Tab, Neustart), waere die Ausgabe sonst ein zweites Mal gekommen.
+        # 📰 Newsletter-Hinweis abraeumen. Gemerkt wird eine Ausgabe schon beim
+        # Einlegen ins URL-Feld (siehe _newsletter_neue_ausgaben), nicht erst hier.
         try:
-            import newsletter_fetch as _nlf_done
-            _nl_kand = [a for a in (_newsletter_neue_ausgaben().get("neu") or [])
-                        if a["link"] in (urls_text or "")]
-            if _nl_kand:
-                _fehlt = " ".join((u.get("title") or "") + " " + (u.get("label") or "")
-                                  for u in ((check or {}).get("uncovered_sources") or [])).lower()
-                _drin = [a for a in _nl_kand if a["titel"][:40].lower() not in _fehlt]
-                _nlf_done.merke_gesehen(_drin)
-                _newsletter_neue_ausgaben.clear()
-                st.session_state["_newsletter_offen"] = []
+            st.session_state["_newsletter_offen"] = []
         except Exception:
             pass
         # Im neuen Naming-Schema ist „kompakt" kein Dateinamen-Suffix mehr.

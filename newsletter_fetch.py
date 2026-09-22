@@ -15,7 +15,9 @@ bleibt, in Gmail einen Filter anlegen:
   Aktion: „Posteingang ueberspringen (archivieren)" + Label „Newsletter".
 
 Jede Ausgabe wird genau EINMAL eingespeist — gemerkt wird das in
-~/.briefing_newsletter_gesehen.json.
+~/.briefing_newsletter_gesehen.json. Die App merkt sie sich, sobald der Link
+im URL-Feld steht (das Feld liegt gesichert im Entwurf); der headless-Lauf
+erst nach dem erfolgreichen Bau, weil er nichts zwischenspeichert.
 """
 
 import json
@@ -134,7 +136,7 @@ def feed_lesen(url: str, timeout: int = 25) -> list:
 
 # ── Was ist neu? ────────────────────────────────────────────────────────────
 def neue_ausgaben(max_alter_tage: int = 21, pro_newsletter: int = 3,
-                  progress=None) -> dict:
+                  progress=None, timeout: int = 25) -> dict:
     """Noch nicht eingespeiste Ausgaben aller aktiven Newsletter.
 
     Gibt {"neu": [...], "fehler": [...]} zurueck. Ein Feed, der nicht
@@ -150,7 +152,7 @@ def neue_ausgaben(max_alter_tage: int = 21, pro_newsletter: int = 3,
         try:
             if progress:
                 progress(f"📰 {name} …")
-            beitraege = feed_lesen(nl["feed"])
+            beitraege = feed_lesen(nl["feed"], timeout=timeout)
         except Exception as exc:
             fehler.append({"name": name, "grund": str(exc)[:140]})
             continue
@@ -174,18 +176,6 @@ def neue_ausgaben(max_alter_tage: int = 21, pro_newsletter: int = 3,
 def als_urls(ausgaben) -> str:
     """Zeilenweise Links — genau das Format des Feldes „eigene Artikel-URLs"."""
     return "\n".join(a["link"] for a in (ausgaben or []) if a.get("link"))
-
-
-# ── Erstbefuellung: alles Alte als „gesehen" markieren ─────────────────────
-def altbestand_stumm_schalten() -> int:
-    """Beim ersten Einrichten: vorhandene Ausgaben NICHT nachtraeglich einspeisen."""
-    alle = []
-    for nl in load_config():
-        try:
-            alle += feed_lesen(nl["feed"])
-        except Exception:
-            pass
-    return merke_gesehen(alle)
 
 
 if __name__ == "__main__":

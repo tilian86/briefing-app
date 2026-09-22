@@ -105,7 +105,10 @@ def main():
             _log("Newsletter: %d neue Ausgabe(n) — %s"
                  % (len(_nl_neu), ", ".join("%s (%s)" % (a["titel"][:40], a["datum"])
                                             for a in _nl_neu)))
-            urls = (urls.rstrip() + "\n" + _nlf.als_urls(_nl_neu)).strip()
+            # Was schon im Feld steht (von der App eingelegt oder von Hand), nicht doppeln.
+            _nl_fehlend = [a for a in _nl_neu if a["link"] not in urls]
+            if _nl_fehlend:
+                urls = (urls.rstrip() + "\n" + _nlf.als_urls(_nl_fehlend)).strip()
     except Exception as _nlex:
         _log("Newsletter-Abruf uebersprungen (%s)" % _nlex)
     if not (urls.strip() or paywall.strip() or podcast.strip()):
@@ -321,19 +324,15 @@ def main():
     _unc_artikel = [u for u in (status.get("uncovered_sources") or [])
                     if (u.get("kind") or "article") != "podcast"]
 
-    # Newsletter erst abhaken, wenn die Ausgabe wirklich im Briefing steht.
-    # Faellt eine aus, kommt sie beim naechsten Lauf wieder mit.
+    # Newsletter abhaken — bis hierher ist der Bau gelungen, die Ausgaben standen
+    # im Material. Jede Ausgabe kommt genau einmal; kein Nachschieben, weil ein
+    # Wochen-Newsletter Tage spaeter nichts mehr im Tagesbriefing verloren hat.
     if _nl_neu:
         try:
             import newsletter_fetch as _nlf_done
-            _fehlt = " ".join((u.get("title") or "") + " " + (u.get("label") or "")
-                              for u in _unc_artikel).lower()
-            _drin = [a for a in _nl_neu if a["titel"][:40].lower() not in _fehlt]
-            _n_nl = _nlf_done.merke_gesehen(_drin)
+            _n_nl = _nlf_done.merke_gesehen(_nl_neu)
             status["newsletter_uebernommen"] = _n_nl
-            _log("Newsletter: %d Ausgabe(n) abgehakt%s."
-                 % (_n_nl, ", %d kommen erneut" % (len(_nl_neu) - len(_drin))
-                    if len(_drin) < len(_nl_neu) else ""))
+            _log("Newsletter: %d Ausgabe(n) abgehakt." % _n_nl)
         except Exception as _nlex2:
             _log("Newsletter-Merkliste nicht aktualisiert: %s" % _nlex2)
     # 11.09.: Frueher hielten ein paar Ausfaelle die GANZE Merkliste fest — nach dem
