@@ -90,6 +90,24 @@ def main():
     urls = draft.get("urls_text", "") or ""
     paywall = draft.get("paywall_text", "") or ""
     podcast = draft.get("podcast_text", "") or ""
+
+    # 22.09.: Newsletter (Hotel Matze & Co.) kommen von selbst dazu — Florians
+    # Wunsch „immer direkt in mein Briefing automatisch". Quelle ist der offene
+    # Feed, nicht das Postfach: kein App-Passwort, kein Login, der ausfallen kann.
+    _nl_neu = []
+    try:
+        import newsletter_fetch as _nlf
+        _nl_res = _nlf.neue_ausgaben()
+        _nl_neu = _nl_res.get("neu") or []
+        for _f in (_nl_res.get("fehler") or []):
+            _log("Newsletter %s nicht erreichbar: %s" % (_f.get("name"), _f.get("grund")))
+        if _nl_neu:
+            _log("Newsletter: %d neue Ausgabe(n) — %s"
+                 % (len(_nl_neu), ", ".join("%s (%s)" % (a["titel"][:40], a["datum"])
+                                            for a in _nl_neu)))
+            urls = (urls.rstrip() + "\n" + _nlf.als_urls(_nl_neu)).strip()
+    except Exception as _nlex:
+        _log("Newsletter-Abruf uebersprungen (%s)" % _nlex)
     if not (urls.strip() or paywall.strip() or podcast.strip()):
         _log("Entwurf leer (keine Quellen) — Abbruch.")
         _write_status({"active": True, "started": _dt.datetime.now().isoformat(),
@@ -302,6 +320,22 @@ def main():
     # Podcast kommt nicht aus der Feedly-Merkliste (siehe briefing_app.py).
     _unc_artikel = [u for u in (status.get("uncovered_sources") or [])
                     if (u.get("kind") or "article") != "podcast"]
+
+    # Newsletter erst abhaken, wenn die Ausgabe wirklich im Briefing steht.
+    # Faellt eine aus, kommt sie beim naechsten Lauf wieder mit.
+    if _nl_neu:
+        try:
+            import newsletter_fetch as _nlf_done
+            _fehlt = " ".join((u.get("title") or "") + " " + (u.get("label") or "")
+                              for u in _unc_artikel).lower()
+            _drin = [a for a in _nl_neu if a["titel"][:40].lower() not in _fehlt]
+            _n_nl = _nlf_done.merke_gesehen(_drin)
+            status["newsletter_uebernommen"] = _n_nl
+            _log("Newsletter: %d Ausgabe(n) abgehakt%s."
+                 % (_n_nl, ", %d kommen erneut" % (len(_nl_neu) - len(_drin))
+                    if len(_drin) < len(_nl_neu) else ""))
+        except Exception as _nlex2:
+            _log("Newsletter-Merkliste nicht aktualisiert: %s" % _nlex2)
     # 11.09.: Frueher hielten ein paar Ausfaelle die GANZE Merkliste fest — nach dem
     # Lauf standen 133 laengst erledigte Artikel weiter in Read Later. Jetzt bleiben
     # nur die Ausgefallenen liegen, der Rest wird abgeraeumt.

@@ -2274,6 +2274,39 @@ if st.session_state.get("urls_text_pending_value") is not None:
     st.session_state["urls_text_pending_value"] = None
     _save_draft()
 
+# 📰 Newsletter (Hotel Matze & Co.) kommen von selbst dazu — Florians Wunsch vom
+# 22.09.: „immer direkt in mein Briefing automatisch". Quelle ist der offene Feed,
+# nicht das Postfach, deshalb braucht das keinen Login. Abgehakt wird eine Ausgabe
+# erst, wenn sie wirklich im fertigen Briefing steht (siehe unten).
+@st.cache_data(ttl=1800, show_spinner=False)
+def _newsletter_neue_ausgaben():
+    import newsletter_fetch as _nlf
+    return _nlf.neue_ausgaben()
+
+if not st.session_state.get("_newsletter_eingelegt"):
+    st.session_state["_newsletter_eingelegt"] = True
+    try:
+        _nl_res = _newsletter_neue_ausgaben()
+        _nl_offen = [a for a in (_nl_res.get("neu") or [])
+                     if a["link"] not in (st.session_state.get("urls_text") or "")]
+        if _nl_offen:
+            import newsletter_fetch as _nlf_ins
+            _vorher = (st.session_state.get("urls_text") or "").rstrip()
+            st.session_state["urls_text"] = (
+                (_vorher + "\n" if _vorher else "") + _nlf_ins.als_urls(_nl_offen))
+            st.session_state["_newsletter_offen"] = _nl_offen
+            _save_draft()
+    except Exception as _nlex:
+        st.session_state["_newsletter_fehler"] = str(_nlex)[:140]
+
+if st.session_state.get("_newsletter_offen"):
+    _nl_o = st.session_state["_newsletter_offen"]
+    st.info("📰 %d neue Newsletter-Ausgabe(n) automatisch eingefügt: %s"
+            % (len(_nl_o), " · ".join("%s (%s)" % (a["titel"], a["datum"]) for a in _nl_o)))
+if st.session_state.get("_newsletter_fehler"):
+    st.caption("📰 Newsletter-Abruf übersprungen: %s"
+               % st.session_state.pop("_newsletter_fehler"))
+
 # Paywall
 if st.session_state.get("paywall_text_pending_value") is not None:
     st.session_state["paywall_text"] = st.session_state.get("paywall_text_pending_value") or ""
@@ -4489,6 +4522,78 @@ _pc_job_active = bool(_pcj_now) and not _pcj_now.get("done")
 # Seite bleibt bedienbar (und ein Klick woanders bricht nichts mehr ab).
 st.fragment(_fragment_pocket_casts, run_every=(2 if _pc_job_active else None))()
 
+# ── 🗂 Nach der Runde: welche Folgen sollen aus Pocket Casts raus? ──────────
+# Florians Wunsch (10.08.): Manche Folgen will er trotz Zusammenfassung noch
+# selbst hoeren — deshalb FRAGEN statt automatisch archivieren. Haken = raus.
+@st.fragment
+def _fragment_pc_archive_frage():
+    _kand = _pc_archive_frage_lesen()
+    _fertige = [e for e in _kand if e.get("fertig")]
+    if not _fertige:
+        return
+    _noch_offen = len(_kand) - len(_fertige)
+    with st.expander(f"🗂 {len(_fertige)} zusammengefasste Folge(n) aus Pocket Casts entfernen?"
+                     + (f" ({_noch_offen} laufen noch)" if _noch_offen else ""),
+                     expanded=(_noch_offen == 0)):
+        st.caption("Haken = wird in Pocket Casts archiviert (aus deiner Liste genommen). "
+                   "Haken weg bei Folgen, die du noch selbst hören willst.")
+        # 22.09.: Florian musste jedes Mal dieselben Podcasts von Hand abwaehlen
+        # ("die die ich noch anhoeren moechte auswaehlen ... sonst kann das meiste weg").
+        # Was auf der Behalten-Liste steht, kommt jetzt von vornherein OHNE Haken.
+        import pocketcasts_fetch as _pcf_keep
+        _behalten_liste = _pcf_keep.load_behalten()
+        _ausgewaehlt = []
+        for _i, _e in enumerate(_fertige):
+            _bleibt = _pcf_keep.auf_behalten_liste(_e.get("titel", ""), _behalten_liste)
+            if st.checkbox(_e["titel"] + ("\u3000🔒" if _bleibt else ""),
+                           value=not _bleibt, key=f"pcarch_{_i}"):
+                _ausgewaehlt.append(_e)
+        _c1, _c2 = st.columns([2, 1])
+        with _c1:
+            if st.button(f"🗂 {len(_ausgewaehlt)} Folge(n) aus Pocket Casts entfernen",
+                         key="pcarch_go", type="primary", use_container_width=True,
+                         disabled=not _ausgewaehlt):
+                try:
+                    import pocketcasts_fetch as _pcf_arch
+                    _n = _pcf_arch.archive_episodes(_ausgewaehlt)
+                    _behalten = [e for e in _kand if e not in _ausgewaehlt and not e.get("fertig")]
+                    _pc_archive_frage_schreiben(_behalten)
+                    st.session_state["_podcast_inbox_last_msg"] = (
+                        f"🗂 {_n} Folge(n) in Pocket Casts archiviert"
+                        + (f", {len(_fertige) - len(_ausgewaehlt)} behalten." if len(_fertige) > len(_ausgewaehlt) else "."))
+                    st.rerun(scope="app")
+                except Exception as _aex:
+                    st.error(f"Archivieren fehlgeschlagen: {str(_aex)[:120]} — "
+                             "deine Liste ist unverändert.")
+        with _c2:
+            if st.button("Alle behalten", key="pcarch_keep", use_container_width=True):
+                _pc_archive_frage_schreiben([e for e in _kand if not e.get("fertig")])
+                st.rerun(scope="app")
+
+        # 🔒 Dauerhafte Behalten-Liste. Bewusst KEIN verschachtelter Expander —
+        # Streamlit erlaubt das innerhalb eines Expanders nicht.
+        st.divider()
+        st.caption("🔒 **Behalten-Liste** — diese Podcasts hörst du immer selbst ganz. "
+                   "Sie kommen künftig ohne Haken hierher.")
+        _moegliche = sorted(({_pcf_keep.podcast_aus_titel(_x.get("titel", "")) for _x in _kand}
+                             | set(_behalten_liste)) - {""})
+        _vorbelegt = [n for n in _behalten_liste if n in _moegliche]
+        _neu_liste = st.multiselect("Nie zum Entfernen vorschlagen", options=_moegliche,
+                                    default=_vorbelegt, key="pcarch_behalten_sel",
+                                    label_visibility="collapsed")
+        if st.button("🔒 Behalten-Liste sichern", key="pcarch_behalten_save",
+                     use_container_width=True):
+            # Podcasts, die gerade nicht zur Auswahl stehen, bleiben erhalten.
+            _rest = [n for n in _behalten_liste if n not in _moegliche]
+            _gesichert = _pcf_keep.save_behalten(list(_neu_liste) + _rest)
+            st.session_state["_podcast_inbox_last_msg"] = (
+                f"🔒 Behalten-Liste gesichert ({len(_gesichert)} Podcast(s)).")
+            st.rerun(scope="app")
+
+
+_fragment_pc_archive_frage()
+
+
 with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)", expanded=False):
     st.caption("Transkript aus Pocket Casts hier reinkopieren (auch mehrere, mit mmm getrennt) → Knopf drücken → die fertige Zusammenfassung landet automatisch unten im Podcast-Feld. Der Riesen-Text verschwindet danach — das Feld unten bleibt schlank. Läuft über Opus/Max-Abo, 0 €. Dauer: ~2-4 Min pro Stunde Podcast, zwei laufen parallel.")
     _raw_inbox = st.text_area(
@@ -4797,77 +4902,6 @@ if _rl.get("eintraege"):
                 st.caption(f"❌ {_e9['titel']}　— {str(_e9.get('grund', '?'))[:70]}")
             for _e9 in _kt9:
                 st.caption(f"⏭️ {_e9['titel']}　— kein Transkript verfügbar")
-
-# ── 🗂 Nach der Runde: welche Folgen sollen aus Pocket Casts raus? ──────────
-# Florians Wunsch (10.08.): Manche Folgen will er trotz Zusammenfassung noch
-# selbst hoeren — deshalb FRAGEN statt automatisch archivieren. Haken = raus.
-@st.fragment
-def _fragment_pc_archive_frage():
-    _kand = _pc_archive_frage_lesen()
-    _fertige = [e for e in _kand if e.get("fertig")]
-    if not _fertige:
-        return
-    _noch_offen = len(_kand) - len(_fertige)
-    with st.expander(f"🗂 {len(_fertige)} zusammengefasste Folge(n) aus Pocket Casts entfernen?"
-                     + (f" ({_noch_offen} laufen noch)" if _noch_offen else ""),
-                     expanded=(_noch_offen == 0)):
-        st.caption("Haken = wird in Pocket Casts archiviert (aus deiner Liste genommen). "
-                   "Haken weg bei Folgen, die du noch selbst hören willst.")
-        # 22.09.: Florian musste jedes Mal dieselben Podcasts von Hand abwaehlen
-        # ("die die ich noch anhoeren moechte auswaehlen ... sonst kann das meiste weg").
-        # Was auf der Behalten-Liste steht, kommt jetzt von vornherein OHNE Haken.
-        import pocketcasts_fetch as _pcf_keep
-        _behalten_liste = _pcf_keep.load_behalten()
-        _ausgewaehlt = []
-        for _i, _e in enumerate(_fertige):
-            _bleibt = _pcf_keep.auf_behalten_liste(_e.get("titel", ""), _behalten_liste)
-            if st.checkbox(_e["titel"] + ("\u3000🔒" if _bleibt else ""),
-                           value=not _bleibt, key=f"pcarch_{_i}"):
-                _ausgewaehlt.append(_e)
-        _c1, _c2 = st.columns([2, 1])
-        with _c1:
-            if st.button(f"🗂 {len(_ausgewaehlt)} Folge(n) aus Pocket Casts entfernen",
-                         key="pcarch_go", type="primary", use_container_width=True,
-                         disabled=not _ausgewaehlt):
-                try:
-                    import pocketcasts_fetch as _pcf_arch
-                    _n = _pcf_arch.archive_episodes(_ausgewaehlt)
-                    _behalten = [e for e in _kand if e not in _ausgewaehlt and not e.get("fertig")]
-                    _pc_archive_frage_schreiben(_behalten)
-                    st.session_state["_podcast_inbox_last_msg"] = (
-                        f"🗂 {_n} Folge(n) in Pocket Casts archiviert"
-                        + (f", {len(_fertige) - len(_ausgewaehlt)} behalten." if len(_fertige) > len(_ausgewaehlt) else "."))
-                    st.rerun(scope="app")
-                except Exception as _aex:
-                    st.error(f"Archivieren fehlgeschlagen: {str(_aex)[:120]} — "
-                             "deine Liste ist unverändert.")
-        with _c2:
-            if st.button("Alle behalten", key="pcarch_keep", use_container_width=True):
-                _pc_archive_frage_schreiben([e for e in _kand if not e.get("fertig")])
-                st.rerun(scope="app")
-
-        # 🔒 Dauerhafte Behalten-Liste. Bewusst KEIN verschachtelter Expander —
-        # Streamlit erlaubt das innerhalb eines Expanders nicht.
-        st.divider()
-        st.caption("🔒 **Behalten-Liste** — diese Podcasts hörst du immer selbst ganz. "
-                   "Sie kommen künftig ohne Haken hierher.")
-        _moegliche = sorted(({_pcf_keep.podcast_aus_titel(_x.get("titel", "")) for _x in _kand}
-                             | set(_behalten_liste)) - {""})
-        _vorbelegt = [n for n in _behalten_liste if n in _moegliche]
-        _neu_liste = st.multiselect("Nie zum Entfernen vorschlagen", options=_moegliche,
-                                    default=_vorbelegt, key="pcarch_behalten_sel",
-                                    label_visibility="collapsed")
-        if st.button("🔒 Behalten-Liste sichern", key="pcarch_behalten_save",
-                     use_container_width=True):
-            # Podcasts, die gerade nicht zur Auswahl stehen, bleiben erhalten.
-            _rest = [n for n in _behalten_liste if n not in _moegliche]
-            _gesichert = _pcf_keep.save_behalten(list(_neu_liste) + _rest)
-            st.session_state["_podcast_inbox_last_msg"] = (
-                f"🔒 Behalten-Liste gesichert ({len(_gesichert)} Podcast(s)).")
-            st.rerun(scope="app")
-
-
-_fragment_pc_archive_frage()
 
 if st.session_state.get("_podcast_inbox_last_msg"):
     st.success(st.session_state.pop("_podcast_inbox_last_msg"))
@@ -5242,6 +5276,19 @@ def _run_briefing_generation(selected_urls=None, prefetched_payloads=None):
         check["compact_mode"] = compact_mode
         check["narrative_mode"] = False
         check["_run_duration_s"] = (datetime.datetime.now() - _run_t0).total_seconds()
+        # 📰 Newsletter-Ausgaben erst jetzt abhaken — sie stehen im Briefing.
+        if st.session_state.get("_newsletter_offen"):
+            try:
+                import newsletter_fetch as _nlf_done
+                _fehlt = " ".join((u.get("title") or "") + " " + (u.get("label") or "")
+                                  for u in ((check or {}).get("uncovered_sources") or [])).lower()
+                _drin = [a for a in st.session_state["_newsletter_offen"]
+                         if a["titel"][:40].lower() not in _fehlt]
+                _nlf_done.merke_gesehen(_drin)
+                st.session_state["_newsletter_offen"] = [
+                    a for a in st.session_state["_newsletter_offen"] if a not in _drin]
+            except Exception:
+                pass
         # Im neuen Naming-Schema ist „kompakt" kein Dateinamen-Suffix mehr.
         compact_suffix = ""
         check["archive"] = _save_exports_to_archive(exports, check, suffix=compact_suffix)
