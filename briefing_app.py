@@ -2283,8 +2283,11 @@ def _newsletter_neue_ausgaben():
     import newsletter_fetch as _nlf
     return _nlf.neue_ausgaben()
 
-if not st.session_state.get("_newsletter_eingelegt"):
-    st.session_state["_newsletter_eingelegt"] = True
+# Nicht nur einmal je Sitzung: Florian laesst die App tagelang offen stehen, sonst
+# wuerde die Freitagsausgabe erst beim naechsten Neuladen auftauchen.
+_nl_jetzt = datetime.datetime.now().timestamp()
+if (_nl_jetzt - float(st.session_state.get("_newsletter_geprueft") or 0)) > 1800:
+    st.session_state["_newsletter_geprueft"] = _nl_jetzt
     try:
         _nl_res = _newsletter_neue_ausgaben()
         _nl_offen = [a for a in (_nl_res.get("neu") or [])
@@ -5277,18 +5280,21 @@ def _run_briefing_generation(selected_urls=None, prefetched_payloads=None):
         check["narrative_mode"] = False
         check["_run_duration_s"] = (datetime.datetime.now() - _run_t0).total_seconds()
         # 📰 Newsletter-Ausgaben erst jetzt abhaken — sie stehen im Briefing.
-        if st.session_state.get("_newsletter_offen"):
-            try:
-                import newsletter_fetch as _nlf_done
+        # Bewusst am URL-Feld festgemacht, nicht an der Sitzung: geht die verloren
+        # (neuer Tab, Neustart), waere die Ausgabe sonst ein zweites Mal gekommen.
+        try:
+            import newsletter_fetch as _nlf_done
+            _nl_kand = [a for a in (_newsletter_neue_ausgaben().get("neu") or [])
+                        if a["link"] in (urls_text or "")]
+            if _nl_kand:
                 _fehlt = " ".join((u.get("title") or "") + " " + (u.get("label") or "")
                                   for u in ((check or {}).get("uncovered_sources") or [])).lower()
-                _drin = [a for a in st.session_state["_newsletter_offen"]
-                         if a["titel"][:40].lower() not in _fehlt]
+                _drin = [a for a in _nl_kand if a["titel"][:40].lower() not in _fehlt]
                 _nlf_done.merke_gesehen(_drin)
-                st.session_state["_newsletter_offen"] = [
-                    a for a in st.session_state["_newsletter_offen"] if a not in _drin]
-            except Exception:
-                pass
+                _newsletter_neue_ausgaben.clear()
+                st.session_state["_newsletter_offen"] = []
+        except Exception:
+            pass
         # Im neuen Naming-Schema ist „kompakt" kein Dateinamen-Suffix mehr.
         compact_suffix = ""
         check["archive"] = _save_exports_to_archive(exports, check, suffix=compact_suffix)
