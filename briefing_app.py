@@ -2782,18 +2782,38 @@ _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
 PC_ARCHIVE_FRAGE = _APP_DIR / ".briefing_pc_archive_frage.json"
 
 
+_PC_ARCHIVE_FRAGE_TAGE = 30
+
+
 def _pc_archive_frage_lesen() -> list:
+    """Offene Aufraeum-Kandidaten. Was laenger als 30 Tage liegt, faellt still
+    raus — die Folge ist dann laengst gehoert oder vom Handy verschwunden."""
     try:
-        return json.loads(PC_ARCHIVE_FRAGE.read_text(encoding="utf-8"))
+        eintraege = json.loads(PC_ARCHIVE_FRAGE.read_text(encoding="utf-8"))
     except Exception:
         return []
+    grenze = (datetime.datetime.now()
+              - datetime.timedelta(days=_PC_ARCHIVE_FRAGE_TAGE)).isoformat()
+    return [e for e in eintraege
+            if isinstance(e, dict) and (e.get("seit") or grenze) >= grenze]
 
 
 def _pc_archive_frage_schreiben(eintraege) -> None:
+    jetzt = datetime.datetime.now().isoformat(timespec="minutes")
+    for e in eintraege:
+        e.setdefault("seit", jetzt)
     try:
         PC_ARCHIVE_FRAGE.write_text(json.dumps(eintraege, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
+
+
+def _pc_archive_frage_ergaenzen(neue) -> None:
+    """Neue Runde DAZULEGEN. 22.09.: Bisher ersetzte jede Runde die Liste — eine
+    unbeantwortete Frage verschwand, sobald die naechste Runde startete."""
+    ids = {e.get("episode") for e in neue}
+    alte = [e for e in _pc_archive_frage_lesen() if e.get("episode") not in ids]
+    _pc_archive_frage_schreiben(alte + list(neue))
 
 
 PODCAST_ROUND_LOG = _APP_DIR / ".briefing_podcast_round.json"
@@ -4343,6 +4363,13 @@ def _fragment_pocket_casts():
         if st.session_state.get("_sum_pool") is None:
             from concurrent.futures import ThreadPoolExecutor as _PcPool
             st.session_state["_sum_pool"] = _PcPool(max_workers=2)
+        # 🗂 Jede eingereichte Folge wird Aufraeum-Kandidat („aus Pocket Casts
+        # entfernen?") — egal ob ueber Vorschau oder „alle direkt holen".
+        _pc_archive_frage_ergaenzen([
+            {"titel": (f"{_t.get('podcast_title')}: {_t['title']}"
+                       if _t.get("podcast_title") else _t["title"])[:80],
+             "episode": _t.get("episode"), "podcast": _t.get("podcast"), "fertig": False}
+            for _t in _items if _t.get("episode") and _t.get("podcast")])
         _jobs = st.session_state.get("_round_jobs") or []
         for _t in _items:
             _pt = _t.get("podcast_title") or ""
@@ -4515,14 +4542,6 @@ def _fragment_pocket_casts():
                 # Neue Runde: Protokoll frisch anlegen, alle Beteiligten eintragen —
                 # so ist hinterher lueckenlos sichtbar, was aus jeder Folge wurde.
                 _round_log_reset()
-                # 🗂 Kandidaten fuer die spaetere Frage "aus Pocket Casts entfernen?"
-                _pc_archive_frage_schreiben([
-                    {"titel": (f"{_t9.get('podcast_title')}: {_t9['title']}"
-                               if _t9.get("podcast_title") else _t9["title"])[:80],
-                     "episode": _t9.get("episode"), "podcast": _t9.get("podcast"),
-                     "fertig": False}
-                    for _t9 in _chosen if _t9.get("episode") and _t9.get("podcast")
-                ])
                 for _t9 in _chosen:
                     _n9 = (f"{_t9.get('podcast_title')}: {_t9['title']}"
                            if _t9.get("podcast_title") else _t9["title"])[:70]
@@ -4552,68 +4571,61 @@ _pc_job_active = bool(_pcj_now) and not _pcj_now.get("done")
 # Seite bleibt bedienbar (und ein Klick woanders bricht nichts mehr ab).
 st.fragment(_fragment_pocket_casts, run_every=(2 if _pc_job_active else None))()
 
-# ── 🗂 Nach der Runde: welche Folgen sollen aus Pocket Casts raus? ──────────
+# ── 🗂 Pocket Casts aufraeumen: welche zusammengefassten Folgen sollen raus? ──
 # Florians Wunsch (10.08.): Manche Folgen will er trotz Zusammenfassung noch
-# selbst hoeren — deshalb FRAGEN statt automatisch archivieren.
-# 22.09. vereinfacht („einfacher loeschen, nur ab und zu ein paar behalten"):
-# ein Knopf statt 24 Haken. Die Behalten-Liste (🔒) bleibt von selbst draussen,
-# Ausnahmen fuer heute waehlt er in einem Feld — alles andere kommt raus.
+# selbst hoeren — deshalb FRAGEN statt automatisch archivieren. Haken = raus.
+# 22.09.: Der Block ist DAUERHAFT da und sammelt ueber Runden hinweg („nie
+# gesehen … sollte dauerhaft offen bleiben und nicht immer verschwinden"):
+# kein Aufklapper, keine Ueberschreibung durch die naechste Runde. Ein Eintrag
+# geht erst, wenn Florian ihn entfernt oder behaelt — oder nach 30 Tagen.
 @st.fragment
 def _fragment_pc_archive_frage():
     _kand = _pc_archive_frage_lesen()
     _fertige = [e for e in _kand if e.get("fertig")]
+    _laufend = len(_kand) - len(_fertige)
+    _laufend_txt = f" ({_laufend} werden gerade zusammengefasst.)" if _laufend else ""
+    st.markdown("**🗂 Pocket Casts aufräumen**")
     if not _fertige:
+        st.caption("Nichts offen — zusammengefasste Folgen sammeln sich hier, bis du sie "
+                   "aus Pocket Casts nimmst oder behältst." + _laufend_txt)
         return
-    _noch_offen = len(_kand) - len(_fertige)
     import pocketcasts_fetch as _pcf_keep
     _behalten_liste = _pcf_keep.load_behalten()
-    _gesperrt = [e for e in _fertige
-                 if _pcf_keep.auf_behalten_liste(e.get("titel", ""), _behalten_liste)]
-    _frei = [e for e in _fertige if e not in _gesperrt]
-    # Anzeigename je Folge; gleiche Titel bekommen eine Nummer, damit das
-    # Auswahlfeld sie auseinanderhalten kann.
-    _namen, _zaehler = {}, {}
-    for _e in _frei:
-        _t = _e.get("titel") or "?"
-        _zaehler[_t] = _zaehler.get(_t, 0) + 1
-        _namen[_t if _zaehler[_t] == 1 else f"{_t} ({_zaehler[_t]})"] = _e
-    with st.expander(f"🗂 {len(_fertige)} zusammengefasste Folge(n) aus Pocket Casts entfernen?"
-                     + (f" ({_noch_offen} laufen noch)" if _noch_offen else ""),
-                     expanded=(_noch_offen == 0)):
-        if _gesperrt:
-            st.caption("🔒 Bleiben von selbst (Behalten-Liste): "
-                       + " · ".join((e.get("titel") or "?")[:45] for e in _gesperrt))
-        _extra = st.multiselect("Heute zusätzlich behalten (noch selbst hören) — leer lassen, "
-                                "wenn alles weg kann", options=list(_namen), default=[],
-                                key="pcarch_extra") if _namen else []
-        _weg = [e for n, e in _namen.items() if n not in set(_extra)]
-        if _weg:
-            st.caption("Kommen raus: " + " · ".join((e.get("titel") or "?")[:45] for e in _weg))
-        _c1, _c2 = st.columns([2, 1])
-        with _c1:
-            if st.button(f"🗂 {len(_weg)} Folge(n) aus Pocket Casts entfernen",
-                         key="pcarch_go", type="primary", use_container_width=True,
-                         disabled=not _weg):
-                try:
-                    _n = _pcf_keep.archive_episodes(_weg)
-                    _pc_archive_frage_schreiben([e for e in _kand if not e.get("fertig")])
-                    st.session_state["_podcast_inbox_last_msg"] = (
-                        f"🗂 {_n} Folge(n) in Pocket Casts archiviert"
-                        + (f", {len(_fertige) - _n} behalten." if len(_fertige) > _n else "."))
-                    st.rerun(scope="app")
-                except Exception as _aex:
-                    st.error(f"Archivieren fehlgeschlagen: {str(_aex)[:120]} — "
-                             "deine Liste ist unverändert.")
-        with _c2:
-            if st.button("Alle behalten", key="pcarch_keep", use_container_width=True):
+    st.caption("Haken = kommt aus deiner Pocket-Casts-Liste. Haken weg = bleibt drin und "
+               "verschwindet hier. 🔒 Behalten-Liste kommt von selbst ohne Haken." + _laufend_txt)
+    _ausgewaehlt = []
+    for _e in _fertige:
+        _bleibt = _pcf_keep.auf_behalten_liste(_e.get("titel", ""), _behalten_liste)
+        # Schluessel = Folgen-UUID: ein Listenplatz-Schluessel haette einen alten
+        # Haken auf eine ANDERE Folge uebertragen, sobald sich die Liste verschiebt.
+        if st.checkbox((_e.get("titel") or "?") + ("\u3000🔒" if _bleibt else ""),
+                       value=not _bleibt,
+                       key=f"pcarch_{_e.get('episode') or _e.get('titel')}"):
+            _ausgewaehlt.append(_e)
+    _c1, _c2 = st.columns([2, 1])
+    with _c1:
+        if st.button(f"🗂 {len(_ausgewaehlt)} Folge(n) aus Pocket Casts entfernen",
+                     key="pcarch_go", type="primary", use_container_width=True,
+                     disabled=not _ausgewaehlt):
+            try:
+                _n = _pcf_keep.archive_episodes(_ausgewaehlt)
+                # Entfernte UND behaltene sind beantwortet — nur Laufende bleiben.
                 _pc_archive_frage_schreiben([e for e in _kand if not e.get("fertig")])
+                st.session_state["_podcast_inbox_last_msg"] = (
+                    f"🗂 {_n} Folge(n) in Pocket Casts archiviert"
+                    + (f", {len(_fertige) - _n} behalten." if len(_fertige) > _n else "."))
                 st.rerun(scope="app")
+            except Exception as _aex:
+                st.error(f"Archivieren fehlgeschlagen: {str(_aex)[:120]} — "
+                         "deine Liste ist unverändert.")
+    with _c2:
+        if st.button("Alle behalten", key="pcarch_keep", use_container_width=True):
+            _pc_archive_frage_schreiben([e for e in _kand if not e.get("fertig")])
+            st.rerun(scope="app")
 
-        # 🔒 Dauerhafte Behalten-Liste. Bewusst KEIN verschachtelter Expander —
-        # Streamlit erlaubt das innerhalb eines Expanders nicht.
-        st.divider()
-        st.caption("🔒 **Behalten-Liste** — diese Podcasts hörst du immer selbst ganz. "
-                   "Sie kommen künftig ohne Haken hierher.")
+    # 🔒 Dauerhafte Behalten-Liste — eingeklappt, damit die Folgen vorne stehen.
+    with st.expander("🔒 Behalten-Liste bearbeiten", expanded=False):
+        st.caption("Diese Podcasts hörst du immer selbst ganz — sie kommen hier ohne Haken.")
         _moegliche = sorted(({_pcf_keep.podcast_aus_titel(_x.get("titel", "")) for _x in _kand}
                              | set(_behalten_liste)) - {""})
         _vorbelegt = [n for n in _behalten_liste if n in _moegliche]
@@ -4837,6 +4849,11 @@ def _round_jobs_collector():
                         _e["fertig"] = True
                 _pc_archive_frage_schreiben(_fr9)
         else:
+            # 🗂 Gescheitert → kein Aufraeum-Kandidat, sonst stuende die Folge
+            # ewig als „wird gerade zusammengefasst" im Block.
+            if _j.get("episode"):
+                _pc_archive_frage_schreiben([e for e in _pc_archive_frage_lesen()
+                                             if e.get("episode") != _j["episode"]])
             _bgs = st.session_state.get("_bg_status") or []
             _bgs.append({"t": (_j.get("title") or "Podcast")[:55], "s": "❌"})
             st.session_state["_bg_status"] = _bgs
