@@ -677,6 +677,7 @@ OPENAI_PRICING_USD_PER_MTOKEN = {
 }
 
 ANTHROPIC_PRICING_USD_PER_MTOKEN = {
+    "claude-opus-5-5": {"input": 4.0, "cache_write": 5.0, "cache_read": 0.20, "output": 20.0},
     "claude-opus-5": {"input": 5.0, "cache_write": 6.25, "cache_read": 0.50, "output": 25.0},
     "claude-opus-4-8": {"input": 5.0, "cache_write": 6.25, "cache_read": 0.50, "output": 25.0},
     "claude-sonnet-5": {"input": 3.0, "cache_write": 3.75, "cache_read": 0.30, "output": 15.0},
@@ -773,7 +774,7 @@ def cli_effort(task: str) -> str:
 # wird, ohne den Code anzufassen.
 
 CLAUDE_MODEL_FALLBACKS = {
-    "opus": "claude-opus-5",
+    "opus": "claude-opus-5-5",
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5",
 }
