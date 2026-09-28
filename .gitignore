@@ -22,3 +22,12 @@ __pycache__/
 *_launchd.log
 .wochenbriefing_status.json
 .briefing_job_status.json
+
+# Laufzeit-Zustand, Caches und Berichte (nie ins Repo)
+.briefing_*.json
+.headless_running.json
+.pocketcasts_fetched.json
+.wartung.log
+WARTUNGSBERICHT.md
+.start_*.sh
+fonts/.legacy-root-copy/
