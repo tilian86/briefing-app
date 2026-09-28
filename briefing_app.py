@@ -4344,7 +4344,7 @@ def _fragment_pocket_casts():
         elif _pcjob.get("error"):
             st.session_state["_podcast_inbox_last_msg"] = f"🎧 Abruf fehlgeschlagen: {str(_pcjob['error'])[:120]}"
         else:
-            st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login (oder keine offenen Folgen)."
+            st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login (oder keine offenen Folgen) — anmelden unter „🔐 Pocket-Casts-Anmeldung“."
         st.rerun(scope="app")
 
     st.markdown("### 🎧 Pocket Casts — meine kuratierten Folgen")
@@ -4445,6 +4445,37 @@ def _fragment_pocket_casts():
         # frisch Erschienenes; die Auswahl findet auch aeltere Folgen, die
         # Pocket Casts serverseitig nicht mehr als "neu" ausliefert.
         import pocketcasts_fetch as _pcf0
+        if not hasattr(_pcf0, "api_login"):
+            # Laufende App mit altem Modulstand: neue Anmeldung ohne Neustart laden.
+            import importlib as _pc_il
+            _pcf0 = _pc_il.reload(_pcf0)
+        # 28.09.2026: Pocket Casts blockt den unsichtbaren Browser. Anmeldung jetzt
+        # über die offizielle Schnittstelle — Florian tippt E-Mail und Passwort
+        # selbst ein; gespeichert werden nur die Schlüssel, nie das Passwort.
+        _pc_login = _pcf0.api_status()
+        with st.expander("🔐 Pocket-Casts-Anmeldung" + (f" — 🟢 {_pc_login['email']}" if _pc_login["angemeldet"]
+                                                       else " — ⚪ nicht angemeldet"),
+                         expanded=not _pc_login["angemeldet"]):
+            if _pc_login["angemeldet"]:
+                st.caption("Angemeldet — der Zugang erneuert sich von selbst. Neu anmelden nur, "
+                           "wenn Pocket Casts nichts mehr liefert.")
+            else:
+                st.caption(f"{_pc_login['hinweis']}. Einmal anmelden reicht — das Passwort geht "
+                           "nur an Pocket Casts und wird nicht gespeichert.")
+            with st.form("pc_login_form", clear_on_submit=True):
+                _pc_mail = st.text_input("E-Mail", value=_pc_login.get("email") or "")
+                _pc_pw = st.text_input("Passwort", type="password")
+                _pc_go = st.form_submit_button("Anmelden", use_container_width=True)
+            if _pc_go:
+                try:
+                    _pc_r = _pcf0.api_login(_pc_mail, _pc_pw)
+                    st.session_state["_podcast_inbox_last_msg"] = f"🎧 Pocket Casts: angemeldet als {_pc_r['email']}."
+                    st.rerun(scope="app")
+                except RuntimeError as _pc_exc:
+                    st.error(str(_pc_exc))
+            if _pc_login["angemeldet"] and st.button("Abmelden", key="pc_logout_btn"):
+                _pcf0.api_abmelden()
+                st.rerun(scope="app")
         _deep_saved = _pcf0.load_deep_podcasts()
         with st.expander(f"⭐ Rückkatalog durchsuchen für… ({len(_deep_saved)} Podcast(s))", expanded=False):
             st.caption("Pocket Casts rechnet seine Filter auf dem Handy aus — von außen ist nur die "

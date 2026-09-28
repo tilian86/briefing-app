@@ -10,6 +10,11 @@ Zweiteiliger Weg (am 21.07.2026 live verifiziert):
 
 Kein Cmd+A-Crap: das VTT enthält nur den gesprochenen Text, keine UI/Menüs.
 Python 3.9-kompatibel.
+
+28.09.2026: Pocket Casts blockt den unsichtbaren Browser (CloudFront „Request
+blocked"). Abos, Filter und Archivieren laufen deshalb über die offizielle
+Schnittstelle mit Einmal-Anmeldung (`python3 pocketcasts_fetch.py --login` oder
+das Formular in der App) — siehe `api_login`.
 """
 import json
 import os
@@ -18,6 +23,7 @@ import sys
 import time
 import browser_pfad
 import fehlerbuch  # muss VOR jedem Playwright-Import stehen (25.08.)
+import urllib.error
 import urllib.request
 
 PROFILE_DIR = os.path.expanduser("~/.briefing_pocketcasts_profile")
@@ -279,6 +285,8 @@ def _page(ctx):
 def is_logged_in() -> bool:
     """True, wenn das Profil eine gültige Pocket-Casts-Sitzung hat (New Releases
     rendert Episoden statt Login-Seite)."""
+    if _token_lesen():
+        return bool(list_subscriptions())
     p, ctx = _launch(headless=True)
     try:
         page = _page(ctx)
@@ -651,17 +659,200 @@ def summarize_selection_mark(episode_uuids):
 PODCASTS_ALL_URL = "https://pocketcasts.com/podcasts/all"
 
 
+# ── Offizielle Anmeldung (28.09.2026) ───────────────────────────────────────
+# Seit Ende September blockt Pocket Casts den unsichtbaren Browser (CloudFront
+# „403 Request blocked"), der Schlüssel liess sich nicht mehr aus der Web-App
+# mitlesen. Die Schnittstelle, über die auch die Handy-App läuft, antwortet
+# normal. Florian meldet sich EINMAL selbst an; gespeichert werden nur die zwei
+# Schlüssel aus der Antwort, NIE das Passwort. Den kurzlebigen erneuert der
+# langlebige von selbst. Die Datei liegt bewusst ausserhalb des (öffentlichen)
+# Repos und ist nur für Florian lesbar.
+_TOKEN_PATH = os.path.expanduser("~/.briefing_pocketcasts_token.json")
+_API_LOGIN_URL = "https://api.pocketcasts.com/user/login_pocket_casts"
+_API_REFRESH_URL = "https://api.pocketcasts.com/user/token"
+_API_SUBS_URL = "https://api.pocketcasts.com/user/podcast/list"
+_API_SCOPE = "webplayer"
+
+
+def _token_lesen() -> dict:
+    try:
+        with open(_TOKEN_PATH, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _token_schreiben(d: dict) -> None:
+    tmp = _TOKEN_PATH + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, _TOKEN_PATH)
+
+
+def _api_post(url: str, body: dict, token: str = None, timeout: int = 25):
+    """POST an die Pocket-Casts-Schnittstelle → (HTTP-Status, JSON-Objekt).
+    Status 0 heisst: keine Verbindung."""
+    headers = {"Content-Type": "application/json", "User-Agent": _UA}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                 method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status, raw = resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, (exc.read() or b"")
+    except Exception:
+        return 0, {}
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+    return status, (data if isinstance(data, dict) else {})
+
+
+def _token_aus_antwort(data: dict, alt: dict) -> dict:
+    """Speicherbarer Eintrag aus einer Anmelde- oder Erneuerungs-Antwort."""
+    zugang = data.get("accessToken") or data.get("token")
+    if not zugang:
+        return {}
+    try:
+        dauer = int(data.get("expiresIn") or 0)
+    except (TypeError, ValueError):
+        dauer = 0
+    jetzt = time.strftime("%Y-%m-%dT%H:%M:%S")
+    return {
+        "access_token": zugang,
+        "refresh_token": data.get("refreshToken") or alt.get("refresh_token") or "",
+        "expires_at": (time.time() + dauer) if dauer > 0 else 0,
+        "email": data.get("email") or alt.get("email") or "",
+        "scope": alt.get("scope") or _API_SCOPE,
+        "seit": alt.get("seit") or jetzt,
+        "erneuert": jetzt,
+    }
+
+
+def api_login(email: str, password: str) -> dict:
+    """Einmal-Anmeldung über die offizielle Schnittstelle.
+
+    Gibt {"email": …} zurück oder wirft RuntimeError mit einer Meldung, die man
+    so anzeigen kann. Das Passwort geht nur an Pocket Casts und wird nirgends
+    abgelegt."""
+    email = (email or "").strip()
+    if not email or not password:
+        raise RuntimeError("Bitte E-Mail und Passwort eingeben.")
+    status, data = _api_post(_API_LOGIN_URL, {"email": email, "password": password,
+                                              "scope": _API_SCOPE})
+    if status == 0:
+        raise RuntimeError("Pocket Casts ist gerade nicht erreichbar — Internet prüfen.")
+    tok = _token_aus_antwort(data, {"email": email}) if status == 200 else {}
+    if not tok:
+        kennung = str(data.get("errorMessageId") or "")
+        if "email" in kennung:
+            grund = "Diese E-Mail-Adresse kennt Pocket Casts nicht."
+        elif "password" in kennung:
+            grund = "Das Passwort stimmt nicht."
+        else:
+            grund = data.get("errorMessage") or data.get("error_description") or f"HTTP {status}"
+        raise RuntimeError(f"Anmeldung abgelehnt: {grund}")
+    _token_schreiben(tok)
+    return {"email": tok["email"]}
+
+
+def api_abmelden() -> None:
+    try:
+        os.remove(_TOKEN_PATH)
+    except FileNotFoundError:
+        pass
+
+
+def api_status() -> dict:
+    """Anmeldestand nur aus der Datei (ohne Netz): {angemeldet, email, hinweis}."""
+    d = _token_lesen()
+    if not d.get("access_token"):
+        return {"angemeldet": False, "email": "", "hinweis": "Noch nicht angemeldet"}
+    if d.get("verfallen"):
+        return {"angemeldet": False, "email": d.get("email") or "",
+                "hinweis": "Anmeldung abgelaufen — bitte neu anmelden"}
+    return {"angemeldet": True, "email": d.get("email") or "", "hinweis": ""}
+
+
+def _api_token() -> str:
+    """Gültiger Zugangsschlüssel aus der Einmal-Anmeldung, bei Bedarf erneuert.
+    Leer, wenn nicht angemeldet oder die Anmeldung verfallen ist."""
+    d = _token_lesen()
+    if not d.get("access_token") or d.get("verfallen"):
+        return ""
+    ablauf = float(d.get("expires_at") or 0)
+    if not ablauf or ablauf - 120 > time.time():
+        return d["access_token"]
+    import fcntl
+    # Sperre: App und Nachtlauf könnten gleichzeitig erneuern — ein bereits
+    # eingelöster Erneuerungs-Schlüssel gilt danach womöglich nicht mehr.
+    with open(_TOKEN_PATH + ".lock", "w") as sperre:
+        fcntl.flock(sperre, fcntl.LOCK_EX)
+        d = _token_lesen()
+        ablauf = float(d.get("expires_at") or 0)
+        if d.get("access_token") and not d.get("verfallen") and ablauf - 120 > time.time():
+            return d["access_token"]  # ein anderer Lauf hat schon erneuert
+        if not d.get("refresh_token"):
+            d["verfallen"] = "abgelaufen, kein Erneuerungs-Schlüssel"
+            _token_schreiben(d)
+            return ""
+        status, data = _api_post(_API_REFRESH_URL, {
+            "grant_type": "refresh_token", "refresh_token": d["refresh_token"],
+            "scope": d.get("scope") or _API_SCOPE})
+        neu = _token_aus_antwort(data, d) if status == 200 else {}
+        if neu:
+            _token_schreiben(neu)
+            return neu["access_token"]
+        if status in (400, 401, 403):
+            d["verfallen"] = data.get("error_description") or data.get("error") or f"HTTP {status}"
+            _token_schreiben(d)
+            return ""
+        return ""  # Netzaussetzer: nächster Aufruf versucht es erneut
+
+
+def _abos_aus_antwort(data) -> list:
+    pods = data.get("podcasts") if isinstance(data, dict) else None
+    if not isinstance(pods, list):
+        return []
+    out = []
+    for entry in pods:
+        if not isinstance(entry, dict):
+            continue
+        uuid = (entry.get("uuid") or "").strip()
+        title = (entry.get("title") or "").strip()
+        if uuid and title:
+            out.append({
+                "uuid": uuid,
+                "title": title,
+                "author": (entry.get("author") or "").strip(),
+                "site": (entry.get("url") or "").strip(),
+            })
+    return out
+
+
 def list_subscriptions(timeout_s: int = 45) -> list:
     """Die abonnierten Podcasts direkt aus dem eingeloggten Konto.
 
-    Wir rufen die API nicht selbst auf — sie verlangt einen JWT, den sich die
-    Web-App erst über /user/token holt. Stattdessen laden wir die Abo-Seite und
-    fangen die Antwort ab, die die App ohnehin lädt. Das ist unabhängig davon,
-    wie Pocket Casts seine Anmeldung intern regelt.
+    Erste Wahl ist die offizielle Schnittstelle mit der Einmal-Anmeldung. Nur
+    ohne sie fällt die Funktion auf den alten Weg zurück: Abo-Seite im
+    unsichtbaren Browser laden und die Antwort abfangen, die die Web-App ohnehin
+    lädt (seit 28.09.2026 von Pocket Casts geblockt).
 
     Rückgabe: Liste aus {uuid, title, author, site}. Leere Liste heisst
     „nicht ermittelbar" (nicht angemeldet, offline) — NIE „keine Abos".
     """
+    if _token_lesen():
+        tok = _api_token()
+        if not tok:
+            return []
+        status, data = _api_post(_API_SUBS_URL, {"v": 1}, token=tok, timeout=timeout_s)
+        return _abos_aus_antwort(data) if status == 200 else []
+
     box = {}
 
     def _on_resp(resp):
@@ -688,24 +879,7 @@ def list_subscriptions(timeout_s: int = 45) -> list:
             pass
         p.stop()
 
-    data = box.get("data") or {}
-    pods = data.get("podcasts") if isinstance(data, dict) else None
-    if not isinstance(pods, list):
-        return []
-    out = []
-    for entry in pods:
-        if not isinstance(entry, dict):
-            continue
-        uuid = (entry.get("uuid") or "").strip()
-        title = (entry.get("title") or "").strip()
-        if uuid and title:
-            out.append({
-                "uuid": uuid,
-                "title": title,
-                "author": (entry.get("author") or "").strip(),
-                "site": (entry.get("url") or "").strip(),
-            })
-    return out
+    return _abos_aus_antwort(box.get("data") or {})
 
 
 _API_EPISODES_URL = "https://api.pocketcasts.com/user/podcast/episodes/bookmarks"
@@ -719,7 +893,12 @@ def get_api_token(timeout_s: int = 45):
     aus dem Authorization-Header eines Aufrufs mit, den sie ohnehin macht. Damit
     lassen sich die Statusabfragen danach direkt und parallel stellen, statt für
     jeden der ~160 Podcasts eine Seite zu laden (Sekunden statt 20 Minuten).
+
+    28.09.2026: Zuerst die Einmal-Anmeldung. Gibt es sie, aber sie ist
+    verfallen, gar nicht erst den (geblockten) Browser starten.
     """
+    if _token_lesen():
+        return _api_token() or None
     box = {}
 
     def _cap(req):
@@ -1054,9 +1233,36 @@ if __name__ == "__main__":
             print(s["uuid"], "|", s["title"][:45], "|", s["author"][:30])
         sys.exit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "--login":
+        # 28.09.2026: Einmal-Anmeldung über die offizielle Schnittstelle. Das
+        # Passwort wird beim Tippen nicht angezeigt und nicht gespeichert.
+        import getpass
+        print("\n🎧 Pocket-Casts-Anmeldung für die Briefing-App")
+        print("   (Passwort erscheint beim Tippen nicht und wird nicht gespeichert.)\n")
+        try:
+            _mail = input("E-Mail: ").strip()
+            _r = api_login(_mail, getpass.getpass("Passwort: "))
+        except (KeyboardInterrupt, EOFError):
+            print("\nAbgebrochen.")
+            sys.exit(1)
+        except RuntimeError as exc:
+            print(f"\n❌ {exc}")
+            sys.exit(1)
+        _abos = list_subscriptions()
+        _filter = [f.get("title") for f in list_filters()]
+        print(f"\n✅ Angemeldet als {_r['email']} — {len(_abos)} Abos gefunden.")
+        if IOS_FILTER_TITLE in _filter:
+            print(f"   Deine Liste „{IOS_FILTER_TITLE.strip()}“ ist da. Du kannst das Fenster schließen.")
+        else:
+            print("   Listen im Konto: " + ", ".join(f"„{t.strip()}“" for t in _filter))
+        sys.exit(0)
+    if len(sys.argv) >= 2 and sys.argv[1] == "--login-browser":
         ok = login_interactive()
         print("LOGIN_OK" if ok else "LOGIN_ABGEBROCHEN")
         sys.exit(0 if ok else 1)
+    if len(sys.argv) >= 2 and sys.argv[1] == "--logout":
+        api_abmelden()
+        print("Abgemeldet.")
+        sys.exit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "--status":
         print("ANGEMELDET" if is_logged_in() else "NICHT_ANGEMELDET")
         sys.exit(0)
