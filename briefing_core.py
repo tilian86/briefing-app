@@ -663,6 +663,10 @@ WETTER_TIMEZONE = "Europe/Berlin"
 
 
 OPENAI_PRICING_USD_PER_MTOKEN = {
+    # GPT-6 seit 29.09.2026: Luna = klein, Sol = Mitte, Astra = Spitze
+    "gpt-6-luna": {"input": 0.10, "cached_input": 0.01, "output": 0.50},
+    "gpt-6-sol": {"input": 2.00, "cached_input": 0.20, "output": 10.0},
+    "gpt-6-astra": {"input": 10.00, "cached_input": 1.00, "output": 50.0},
     "gpt-5.5": {"input": 5.00, "cached_input": 0.50, "output": 30.0},
     "gpt-5.5-pro": {"input": 30.00, "cached_input": 0.0, "output": 180.0},
     "gpt-5.4": {"input": 2.50, "cached_input": 0.25, "output": 15.0},
@@ -2052,7 +2056,7 @@ def _topic_similarity_groups(items: List[dict], edges: List[tuple], bucket: str)
 def _best_model_for_provider(model: str) -> str:
     """Gibt das stärkste Modell für den gleichen Provider zurück."""
     if model.startswith("gpt-"):
-        return "gpt-5.5"
+        return "gpt-6-astra"
     return latest_claude_model("opus")
 
 
@@ -2703,8 +2707,8 @@ def fetch_article(url: str) -> Optional[str]:
 # ============================================================
 
 def _is_reasoning_model(model: str) -> bool:
-    """Prüft, ob ein OpenAI-Modell ein Reasoning-Modell ist (GPT-5.x, nicht Instant)."""
-    if not model.startswith("gpt-5"):
+    """Prüft, ob ein OpenAI-Modell ein Reasoning-Modell ist (GPT-5.x/6, nicht Instant)."""
+    if not model.startswith(("gpt-5", "gpt-6")):
         return False
     # "chat-latest" / "instant" Varianten sind NICHT Reasoning
     return "chat" not in model and "instant" not in model
@@ -2757,13 +2761,15 @@ def _call_openai(client, model: str, prompt: str, text: str,
     if timeout_seconds is None:
         timeout_seconds = DEFAULT_MODEL_TIMEOUT_SECONDS
 
-    # --- Versuch 1: Responses API (empfohlen für GPT-5.x) ---
-    if model.startswith("gpt-5") and hasattr(client, "responses"):
+    # --- Versuch 1: Responses API (empfohlen für GPT-5.x/6) ---
+    if model.startswith(("gpt-5", "gpt-6")) and hasattr(client, "responses"):
         try:
             kwargs = {
                 "model": model,
                 "instructions": prompt,
-                "input": f"Hier ist der Text:\n\n{text}",
+                # json_object verlangt das Wort "json" im input (instructions zählen nicht)
+                "input": (f"Hier ist der Text (Antwort als json):\n\n{text}" if json_mode
+                          else f"Hier ist der Text:\n\n{text}"),
                 "max_output_tokens": max_tokens,
                 "timeout": timeout_seconds,
             }
@@ -2773,7 +2779,8 @@ def _call_openai(client, model: str, prompt: str, text: str,
                     "verbosity": "low",
                 }
             if _is_reasoning_model(model):
-                kwargs["reasoning"] = {"effort": "none"}
+                # GPT-6 Astra lehnt "none" ab — dort ist "low" das Minimum
+                kwargs["reasoning"] = {"effort": "low" if model == "gpt-6-astra" else "none"}
             response = client.responses.create(**kwargs)
             tracker = getattr(client, "_briefing_cost_tracker", None)
             if tracker:
@@ -4583,7 +4590,7 @@ def _content_check_models(main_model: str) -> List[str]:
     """Wählt Prüfmodelle: Hauptmodell bevorzugt, günstigeres als Fallback."""
     candidates: List[str]
     if main_model.startswith("gpt-"):
-        candidates = [main_model, "gpt-5.4-mini", "gpt-4.1-mini"]
+        candidates = [main_model, "gpt-6-luna", "gpt-5.4-mini"]
     else:
         candidates = [main_model, "claude-haiku-4-5-20251001"]
 
@@ -5975,7 +5982,7 @@ def _extract_title(content: str) -> str:
 def _sorting_model_candidates(model: str) -> List[str]:
     """Liefert ein paar robuste Fallback-Modelle für die Sortierung."""
     if model.startswith("gpt-"):
-        candidates = [model, "gpt-5.4-mini", "gpt-4.1-mini"]
+        candidates = [model, "gpt-6-luna", "gpt-5.4-mini"]
     else:
         candidates = [model, "claude-haiku-4-5-20251001"]
 
@@ -6545,7 +6552,7 @@ def _alt_model_for(model: str) -> Optional[str]:
         return "claude-sonnet-5"
     if model.startswith("claude-"):
         # Claude hängt → auf GPT wechseln
-        return "gpt-5.4-mini"
+        return "gpt-6-sol"
     return None
 
 

@@ -209,7 +209,7 @@ _ARCHIVE_MIME_TYPES = {
 }
 _DRAFT_DEFAULTS = {
     "provider": "OpenAI (GPT)",
-    "model": "gpt-5.4-mini",
+    "model": "gpt-6-sol",
     "include_weather": True,
     "content_check_enabled": True,
     "content_check_mode": "warn",
@@ -8363,10 +8363,10 @@ with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
     with st.expander("💸 Backup: via OpenAI/Anthropic-API (ca. USD 0.20-0.50)", expanded=False):
         meta_api_model = st.selectbox(
             "API-Modell",
-            options=["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.2", "gpt-4.1-mini"],
-            index=2,
+            options=["gpt-6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.5", "gpt-5.4-mini"],
+            index=0,
             key="meta_api_model",
-            help="Für Wochen-Meta: gpt-5.4-mini ist der Standard. gpt-5.5/gpt-5.4 sind stärker, aber teurer.",
+            help="Für Wochen-Meta: GPT-6 Sol ist der Standard. Astra ist stärker, aber teurer; Luna sehr günstig.",
         )
         meta_button = st.button(
             "Wochen-Meta + Coach via API erstellen",
@@ -8629,21 +8629,20 @@ if _lazy_o:
     with _opt_col1:
         if is_openai:
             _api_models = [
+                "gpt-6-sol",
+                "gpt-6-astra",
+                "gpt-6-luna",
                 "gpt-5.5",
-                "gpt-5.4",
                 "gpt-5.4-mini",
-                "gpt-5.4-nano",
-                "gpt-5.2",
-                "gpt-4.1-mini",
             ]
             if st.session_state.get("model") not in _api_models:
-                st.session_state["model"] = "gpt-5.4-mini"
+                st.session_state["model"] = "gpt-6-sol"
             model = st.selectbox(
                 "Modell",
                 _api_models,
-                index=_api_models.index(st.session_state.get("model", "gpt-5.4-mini")),
+                index=_api_models.index(st.session_state.get("model", "gpt-6-sol")),
                 key="model",
-                help="GPT-5.4-mini: empfohlener Standard für tägliche Briefings. GPT-5.5/GPT-5.4: stärker, aber teurer. GPT-5.4-nano: sehr günstig, eher für einfache Checks.",
+                help="GPT-6 Sol: empfohlener Standard für tägliche Briefings. GPT-6 Astra: stärker, aber teurer. GPT-6 Luna: sehr günstig, eher für einfache Checks.",
             )
         else:
             # IDs kommen aus der Models-API (1x täglich gecacht), damit ein neues
