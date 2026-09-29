@@ -26,6 +26,10 @@ import fehlerbuch  # muss VOR jedem Playwright-Import stehen (25.08.)
 import urllib.error
 import urllib.request
 
+# Ladezeitpunkt: die laufende App lädt das Modul neu, wenn die Datei jünger ist
+# (sonst gelten Korrekturen erst nach einem App-Neustart).
+_GELADEN_UM = time.time()
+
 PROFILE_DIR = os.path.expanduser("~/.briefing_pocketcasts_profile")
 NEW_RELEASES_URL = "https://pocketcasts.com/new-releases"
 _TRANSCRIPT_URL = "https://shownotes.pocketcasts.com/generated_transcripts/{podcast}/{episode}.vtt"
@@ -493,7 +497,10 @@ def collect_new_releases(progress=None):
 # Florians intelligente Playlist auf dem iPhone (Leerzeichen am Ende gehoert dazu!).
 IOS_FILTER_TITLE = "All Together "
 # Ohne Altersgrenze liefert der Filter den kompletten Rueckstand (369 Folgen).
-IOS_FILTER_MAX_AGE_DAYS = 4
+# 29.09.2026: 4 → 7 Tage. Florian sortiert seine Liste über die Woche auf dem
+# iPhone (Uninteressantes archiviert er) — was drinbleibt, will er im Briefing.
+# Schon Zusammengefasstes fängt das „Schon geholt"-Gedächtnis ab.
+IOS_FILTER_MAX_AGE_DAYS = 7
 
 
 def _neueste_zuerst(episoden: list, max_alter_tage: float) -> list:
@@ -514,6 +521,33 @@ def _neueste_zuerst(episoden: list, max_alter_tage: float) -> list:
     return sorted(frisch, key=_alter)
 
 
+def _aktuelle_folgen():
+    """Offene Folgen aus Florians iOS-Liste im Zeitfenster, neueste zuerst.
+
+    Rückgabe (episoden, status): "ok" | "leer" (angemeldet, aber nichts offen) |
+    "no_login_or_empty". Mit Einmal-Anmeldung NUR über die Schnittstelle — den
+    alten Browser-Weg blockt Pocket Casts seit 28.09.2026, er kostete dann nur
+    Zeit (drei Anläufe) und lieferte nichts."""
+    if _token_lesen():
+        if not _api_token():
+            return [], "no_login_or_empty"
+        res = list_curated_episodes(filter_title=IOS_FILTER_TITLE)
+        if res.get("errors"):
+            return [], "no_login_or_empty"
+        eps = _neueste_zuerst(res.get("episodes") or [], IOS_FILTER_MAX_AGE_DAYS)
+        return eps, ("ok" if eps else "leer")
+    episodes = []
+    try:
+        _res = list_curated_episodes(filter_title=IOS_FILTER_TITLE)
+        episodes = _neueste_zuerst(_res.get("episodes") or [], IOS_FILTER_MAX_AGE_DAYS)
+    except Exception:
+        episodes = []
+    if not episodes:
+        # Rueckfallebene: der bisherige Weg ueber die New-Releases-Seite.
+        episodes = list_new_releases()
+    return episodes, ("ok" if episodes else "no_login_or_empty")
+
+
 def preview_new_releases(progress=None):
     """VORSCHAU ohne Zusammenfassen (kostet KEIN 5-Std-Limit — nur HTTP): holt die
     Liste + prüft je Folge, ob ein Transkript da ist, und hält den Volltext gleich
@@ -528,19 +562,9 @@ def preview_new_releases(progress=None):
     # Daher standen online regelmaessig mehr Folgen als auf dem iPhone, und
     # aussortierte tauchten wieder auf. Der Filter kommt live aus dem Konto, ist
     # also auch beim Aussortieren sofort aktuell.
-    episodes = []
-    try:
-        _res = list_curated_episodes(filter_title=IOS_FILTER_TITLE)
-        _eps = _res.get("episodes") or []
-        if _eps:
-            episodes = _neueste_zuerst(_eps, IOS_FILTER_MAX_AGE_DAYS)
-    except Exception:
-        episodes = []
+    episodes, status = _aktuelle_folgen()
     if not episodes:
-        # Rueckfallebene: der bisherige Weg ueber die New-Releases-Seite.
-        episodes = list_new_releases()
-    if not episodes:
-        return [], "no_login_or_empty"
+        return [], status
     items = []
     for i, ep in enumerate(episodes):
         title = ep.get("title") or "?"
@@ -1138,7 +1162,10 @@ def preview_selection(deep_titles=None, progress=None):
     from concurrent.futures import ThreadPoolExecutor
 
     deep_titles = list(deep_titles if deep_titles is not None else load_deep_podcasts())
-    episodes = list_new_releases() or []
+    # 29.09.2026: Statt der (geblockten) New-Releases-Seite dieselbe Quelle wie
+    # „Pocket Casts prüfen" — sonst meldete dieser Knopf trotz Anmeldung
+    # „Kein Pocket-Casts-Login".
+    episodes, status = _aktuelle_folgen()
     seen = {e.get("episode") for e in episodes}
 
     if deep_titles:
@@ -1153,7 +1180,7 @@ def preview_selection(deep_titles=None, progress=None):
                     episodes.append(e)
 
     if not episodes:
-        return [], "no_login_or_empty"
+        return [], status
 
     done = {"n": 0}
 

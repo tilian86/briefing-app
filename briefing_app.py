@@ -4343,8 +4343,10 @@ def _fragment_pocket_casts():
             st.session_state["_pc_preview"] = _pcjob.get("items") or []
         elif _pcjob.get("error"):
             st.session_state["_podcast_inbox_last_msg"] = f"🎧 Abruf fehlgeschlagen: {str(_pcjob['error'])[:120]}"
+        elif _pcjob.get("status") == "leer":
+            st.session_state["_podcast_inbox_last_msg"] = "🎧 In deiner Pocket-Casts-Liste ist gerade nichts Neues offen."
         else:
-            st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login (oder keine offenen Folgen) — anmelden unter „🔐 Pocket-Casts-Anmeldung“."
+            st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login — anmelden unter „🔐 Pocket-Casts-Anmeldung“."
         st.rerun(scope="app")
 
     st.markdown("### 🎧 Pocket Casts — meine kuratierten Folgen")
@@ -4354,7 +4356,7 @@ def _fragment_pocket_casts():
     # kostet KEIN Limit — nur HTTP), dann farbcodiert AUSWÄHLEN und nur die Ausgewählten
     # zusammenfassen (Limit nur dafür). Verhindert, dass Ungewolltes automatisch reinrutscht.
     st.markdown("---")
-    st.caption("🎧 **Pocket Casts:** prüft deine New-Releases-Folgen (am Handy kuratiert) und zeigt farbcodiert, "
+    st.caption("🎧 **Pocket Casts:** prüft deine Liste „All Together“ (am Handy kuratiert, letzte 7 Tage) und zeigt farbcodiert, "
                "welche ein Transkript haben — du wählst, was zusammengefasst wird. **Prüfen kostet kein Limit**, nur das Zusammenfassen.")
 
     def _pc_submit_and_summarize(_items):
@@ -4445,8 +4447,8 @@ def _fragment_pocket_casts():
         # frisch Erschienenes; die Auswahl findet auch aeltere Folgen, die
         # Pocket Casts serverseitig nicht mehr als "neu" ausliefert.
         import pocketcasts_fetch as _pcf0
-        if not hasattr(_pcf0, "api_login"):
-            # Laufende App mit altem Modulstand: neue Anmeldung ohne Neustart laden.
+        if os.path.getmtime(_pcf0.__file__) > getattr(_pcf0, "_GELADEN_UM", 0):
+            # Laufende App mit altem Modulstand: Korrekturen ohne Neustart laden.
             import importlib as _pc_il
             _pcf0 = _pc_il.reload(_pcf0)
         # 28.09.2026: Pocket Casts blockt den unsichtbaren Browser. Anmeldung jetzt
@@ -4943,8 +4945,20 @@ if _rl.get("eintraege"):
     _err9 = [e for e in _rl["eintraege"] if e.get("status") == "fehler"]
     _lauf9 = [e for e in _rl["eintraege"] if e.get("status") == "laeuft"]
     _kt9 = [e for e in _rl["eintraege"] if e.get("status") == "kein_transkript"]
+    # 29.09.2026: Eine Runde vom 14.09. zeigte wochenlang „19 offen" — die App
+    # war damals mittendrin neu gestartet. Läuft in dieser Sitzung nichts und
+    # ist die Runde älter als 3 Stunden, heißt das ehrlich „abgebrochen".
+    try:
+        _rl_alt = (datetime.datetime.now()
+                   - datetime.datetime.fromisoformat(_rl.get("stand") or "")).total_seconds() > 3 * 3600
+    except Exception:
+        _rl_alt = False
+    _rl_haengt = bool(_lauf9) and _rl_alt and not any(
+        not _j["fut"].done() for _j in (st.session_state.get("_round_jobs") or [])
+        if isinstance(_j, dict) and _j.get("fut"))
     _kopf = (f"📋 Letzte Podcast-Runde — ✅ {len(_ok9)} eingefügt"
-             + (f" · 🔄 {len(_lauf9)} offen" if _lauf9 else "")
+             + ((f" · ⏹️ {len(_lauf9)} abgebrochen" if _rl_haengt else f" · 🔄 {len(_lauf9)} offen")
+                if _lauf9 else "")
              + (f" · ❌ {len(_err9)} fehlgeschlagen" if _err9 else "")
              + (f" · ⏭️ {len(_kt9)} ohne Transkript" if _kt9 else ""))
     with st.expander(_kopf, expanded=False):
