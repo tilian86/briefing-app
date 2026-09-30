@@ -769,6 +769,22 @@ def cli_effort(task: str) -> str:
     return CLI_EFFORT.get(task, "medium")
 
 
+def cli_modell(model: str) -> str:
+    """Feste Claude-IDs (z. B. claude-sonnet-5-5) auf den Familien-Alias der CLI abbilden.
+
+    Die Aliase opus/sonnet/haiku/fable löst die CLI immer auf das neueste Modell
+    auf — so bleibt jeder CLI-Aufruf ohne Code-Änderung aktuell (30.09.2026,
+    Florian will neue Versionen nie mehr von Hand nachziehen). Voraussetzung: die
+    CLI selbst ist aktuell → nächtliches `claude update` auf Mac und Funk-Server.
+    """
+    m = (model or "").strip().lower()
+    if m.startswith("claude-"):
+        for familie in ("opus", "sonnet", "haiku", "fable"):
+            if familie in m:
+                return familie
+    return model
+
+
 # --- Automatische Modellwahl: immer das neueste Modell einer Familie ---------
 #
 # Der CLI-Pfad (Max-Abo) übergibt ohnehin nur die Aliase "opus"/"sonnet"/"haiku"
@@ -1783,7 +1799,7 @@ def llm_confirm_duplicate_clusters(clusters, model="sonnet", cli_path=None, time
         lines.append("")
     payload = _DEDUP_CONFIRM_PROMPT + "\n\n=== KANDIDATEN ===\n\n" + "\n".join(lines)
     cmd = [
-        cli, "--print", "--output-format", "text", "--model", model,
+        cli, "--print", "--output-format", "text", "--model", cli_modell(model),
         "--dangerously-skip-permissions", "--effort", cli_effort("mechanik"),
         "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt, ohne Vorrede oder Erklärung.",
     ]
@@ -13027,7 +13043,7 @@ def run_briefing_via_claude_cli(
         cli,
         "--print",
         "--output-format", "text",
-        "--model", model,
+        "--model", cli_modell(model),
         "--dangerously-skip-permissions",
         "--effort", cli_effort("artikel"),
         "--append-system-prompt", _CLAUDE_CLI_RESPONSE_PROMPT,
@@ -14863,7 +14879,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         _use_opus = n_src >= 2 or _weight >= 4
         _model = _CLI_JUDGE_MODEL if _use_opus else "sonnet"
         t["_model_used"] = "opus" if _use_opus else "sonnet"
-        c = [cli, "--print", "--output-format", "text", "--model", _model,
+        c = [cli, "--print", "--output-format", "text", "--model", cli_modell(_model),
              "--dangerously-skip-permissions", "--effort", cli_effort("verwebung")]
         # 21.08.: Zwei Versuche gab es schon — aber OHNE Pause. Bei "overloaded"
         # lief der zweite sofort in dieselbe Auslastung und das Thema war weg
@@ -15267,7 +15283,7 @@ def summarize_podcast_transcript_via_cli(transcript: str, cli_path: Optional[str
                  "Jede wesentliche Person, Zahl, Anekdote und Wendung des Gesprächs gehört hinein."
                + "\n\n=== TRANSKRIPT ===\n\n" + cleaned)
     cmd = [
-        cli, "--print", "--output-format", "text", "--model", model,
+        cli, "--print", "--output-format", "text", "--model", cli_modell(model),
         "--dangerously-skip-permissions",
         # Sehr lange Transkripte brauchen mehr Denkstufe, um nichts zu verlieren.
         "--effort", (cli_effort("synthese") if _n_chars >= 80_000 else cli_effort("podcast")),
@@ -15826,7 +15842,7 @@ def run_briefing_via_claude_cli_chunked(
                 "sections_count": 0, "completeness": None, "output_pdf_path": None}
 
     cmd = [
-        cli, "--print", "--output-format", "text", "--model", model,
+        cli, "--print", "--output-format", "text", "--model", cli_modell(model),
         "--dangerously-skip-permissions", "--effort", cli_effort("artikel"),
         "--append-system-prompt", _CLAUDE_CLI_RESPONSE_PROMPT,
     ]
@@ -17317,7 +17333,7 @@ def repair_stub_sections(sections: List[dict], handoff_text: str, stubs: List[di
                    f"=== ORIGINAL-ROHDATEN ===\n\n{handoff_text[:120000]}")
         try:
             sr = _run_claude_cli_subprocess_streaming(
-                [cli, "--print", "--output-format", "text", "--model", model,
+                [cli, "--print", "--output-format", "text", "--model", cli_modell(model),
                  "--dangerously-skip-permissions", "--effort", cli_effort("pruefen"),
                  "--system-prompt", _STUB_REPAIR_PROMPT],
                 payload, timeout_seconds=240, expected_duration_s=40.0,
@@ -17407,7 +17423,7 @@ def repair_bundled_sections(sections: List[dict], bundles: List[dict],
             continue
         try:
             sr = _run_claude_cli_subprocess_streaming(
-                [cli, "--print", "--output-format", "text", "--model", model,
+                [cli, "--print", "--output-format", "text", "--model", cli_modell(model),
                  "--dangerously-skip-permissions", "--effort", cli_effort("pruefen"),
                  "--system-prompt", _BUNDLE_SPLIT_PROMPT],
                 original, timeout_seconds=300, expected_duration_s=45.0,
@@ -17504,7 +17520,7 @@ def correct_podcast_concern(summary: str, transcript: str, concern: str,
                f"=== TRANSKRIPT ===\n{transcript[:80000]}")
     try:
         sr = _run_claude_cli_subprocess_streaming(
-            [cli, "--print", "--output-format", "text", "--model", model,
+            [cli, "--print", "--output-format", "text", "--model", cli_modell(model),
              "--dangerously-skip-permissions", "--effort", cli_effort("pruefen"),
              "--system-prompt", _CONCERN_FIX_PROMPT],
             payload, timeout_seconds=300, expected_duration_s=40.0,
@@ -17656,7 +17672,7 @@ def run_content_check_via_claude_cli(
     cmd = [
         cli,
         "--print",
-        "--model", model,
+        "--model", cli_modell(model),
         "--dangerously-skip-permissions",
         "--effort", cli_effort("pruefen"),
         "--system-prompt", _CLAUDE_CLI_CONTENT_CHECK_SYSTEM_PROMPT,
@@ -17808,7 +17824,7 @@ def _run_genius_quality_check_via_cli(
 
     cmd = [
         cli, "--print",
-        "--model", model,
+        "--model", cli_modell(model),
         "--dangerously-skip-permissions",
         "--effort", cli_effort("pruefen"),
         "--system-prompt", _GENIUS_QUALITY_CHECK_PROMPT,
@@ -17885,7 +17901,7 @@ def _run_genius_repair_via_cli(
 
     cmd = [
         cli, "--print",
-        "--model", model,
+        "--model", cli_modell(model),
         "--dangerously-skip-permissions",
         "--effort", cli_effort("pruefen"),
         "--system-prompt", _GENIUS_REPAIR_PROMPT,
@@ -18071,7 +18087,7 @@ def run_briefing_repair_via_claude_cli(
     cmd = [
         cli,
         "--print",
-        "--model", model,
+        "--model", cli_modell(model),
         "--dangerously-skip-permissions",
         "--effort", cli_effort("pruefen"),
         "--system-prompt", _CLAUDE_CLI_REPAIR_SYSTEM_PROMPT,
@@ -18287,7 +18303,7 @@ def _enrich_section_titles_via_cli(sections, text_by_idx, cli_path=None, model="
         "pro Beitrag im Format `[N] Schlagzeile`, und verwende GENAU DIESELBEN Nummern wie in "
         "der Eingabe. Keine Vorrede, keine Erklärungen."
     )
-    cmd = [cli, "--print", "--output-format", "text", "--model", model,
+    cmd = [cli, "--print", "--output-format", "text", "--model", cli_modell(model),
            "--dangerously-skip-permissions", "--effort", cli_effort("klassifik"),
            "--system-prompt", system_prompt]
     try:
@@ -18413,7 +18429,7 @@ def run_genius_summary_via_claude_cli(
         cli,
         "--print",
         "--output-format", "text",
-        "--model", model,
+        "--model", cli_modell(model),
         "--dangerously-skip-permissions",
         "--effort", cli_effort("synthese"),
         "--system-prompt", system_prompt,
@@ -18722,7 +18738,7 @@ def run_direct_genius_via_claude_cli(
         cli,
         "--print",
         "--output-format", "text",
-        "--model", model,
+        "--model", cli_modell(model),
         "--dangerously-skip-permissions",
         "--effort", _direct_effort,
         "--system-prompt", system_prompt,
@@ -19073,7 +19089,7 @@ def run_meta_briefing_via_claude_cli(
         cli,
         "--print",
         "--output-format", "text",
-        "--model", model,
+        "--model", cli_modell(model),
         "--dangerously-skip-permissions",
         # Synthese-Aufgabe (Muster/Querverbindungen/Coach) → hohe Sorgfalt. Ein
         # einziger Aufruf, kostenlos. „low" ließ Opus gelegentlich abbrechen und
