@@ -3296,7 +3296,7 @@ def _sum_cli_usage(t0_iso: str, t1_iso: str) -> dict:
             continue
     # Präfixe absichtlich ohne Versionsnummer beim Opus: neue Opus-Generationen
     # (5, 6, …) erben den Preis 5/25 automatisch statt auf Sonnet zurückzufallen.
-    price = {"claude-sonnet-5": (3, 15, 3.75, 0.3), "claude-opus": (5, 25, 6.25, 0.5), "claude-haiku": (1, 5, 1.25, 0.1)}
+    price = {"claude-sonnet-5-5": (3, 15, 3.75, 0.3), "claude-opus": (5, 25, 6.25, 0.5), "claude-haiku": (1, 5, 1.25, 0.1)}
     usd = 0.0
     for m, b in by_model.items():
         pi, po, pcw, pcr = next((v for k, v in price.items() if m.startswith(k)), (3, 15, 3.75, 0.3))
@@ -6804,7 +6804,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             options=["sonnet", "opus", "haiku"],
             index=0,
             key="claude_cli_model",
-            help="Modell für die Artikel-Zusammenfassungen. sonnet = empfohlen — löst automatisch auf das neueste Sonnet auf, aktuell Sonnet 5 (fast Opus-Qualität, schnell). opus = beste Qualität, langsamer. haiku = schneller, knapper.",
+            help="Modell für die Artikel-Zusammenfassungen. sonnet = empfohlen — löst automatisch auf das neueste Sonnet auf, aktuell Sonnet 5.5 (fast Opus-Qualität, schnell). opus = beste Qualität, langsamer. haiku = schneller, knapper.",
             disabled=not _cli_available or _direct_only_now,
         )
         if _direct_only_now:

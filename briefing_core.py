@@ -684,7 +684,7 @@ ANTHROPIC_PRICING_USD_PER_MTOKEN = {
     "claude-opus-5-5": {"input": 4.0, "cache_write": 5.0, "cache_read": 0.20, "output": 20.0},
     "claude-opus-5": {"input": 5.0, "cache_write": 6.25, "cache_read": 0.50, "output": 25.0},
     "claude-opus-4-8": {"input": 5.0, "cache_write": 6.25, "cache_read": 0.50, "output": 25.0},
-    "claude-sonnet-5": {"input": 3.0, "cache_write": 3.75, "cache_read": 0.30, "output": 15.0},
+    "claude-sonnet-5-5": {"input": 3.0, "cache_write": 3.75, "cache_read": 0.30, "output": 15.0},
     "claude-sonnet-4": {"input": 3.0, "cache_write": 3.75, "cache_read": 0.30, "output": 15.0},
     "claude-haiku-4-5": {"input": 1.0, "cache_write": 1.25, "cache_read": 0.10, "output": 5.0},
     "claude-haiku-3.5": {"input": 0.80, "cache_write": 1.0, "cache_read": 0.08, "output": 4.0},
@@ -726,7 +726,7 @@ def _resolve_anthropic_pricing(model: str) -> tuple:
         label = lowered if lowered in ANTHROPIC_PRICING_USD_PER_MTOKEN else "claude-opus-5"
         return ANTHROPIC_PRICING_USD_PER_MTOKEN[label], label, None
     if lowered.startswith("claude-sonnet-5"):
-        return ANTHROPIC_PRICING_USD_PER_MTOKEN["claude-sonnet-5"], "claude-sonnet-5", "Konservativ mit Listenpreis 3/15 gerechnet — bis 31.08.2026 gilt der günstigere Einführungspreis (2/10). Achtung: Sonnet 5 zählt ~30% mehr Tokens für denselben Text."
+        return ANTHROPIC_PRICING_USD_PER_MTOKEN["claude-sonnet-5-5"], "claude-sonnet-5-5", "Konservativ mit Listenpreis 3/15 gerechnet. Achtung: Sonnet 5.x zählt ~30% mehr Tokens für denselben Text."
     if lowered.startswith("claude-sonnet-4-6") or lowered.startswith("claude-sonnet-4"):
         return ANTHROPIC_PRICING_USD_PER_MTOKEN["claude-sonnet-4"], "claude-sonnet-4", None
     if lowered.startswith("claude-haiku-4-5") or lowered.startswith("claude-haiku"):
@@ -779,7 +779,7 @@ def cli_effort(task: str) -> str:
 
 CLAUDE_MODEL_FALLBACKS = {
     "opus": "claude-opus-5-5",
-    "sonnet": "claude-sonnet-5",
+    "sonnet": "claude-sonnet-5-5",
     "haiku": "claude-haiku-4-5",
 }
 _MODEL_CACHE_PATH = os.getenv("BRIEFING_MODEL_CACHE_PATH") or os.path.expanduser("~/.briefing_model_cache.json")
@@ -2065,7 +2065,7 @@ def inspect_similar_article_topics(
     progress_callback: Optional[Callable] = None,
     relevance_filter: bool = False,
     api_key: str = "",
-    model: str = "claude-sonnet-5",
+    model: str = "claude-sonnet-5-5",
 ) -> dict:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -2843,7 +2843,7 @@ def _call_openai(client, model: str, prompt: str, text: str,
 
 
 def summarize(client, text: str, prompt: str,
-              model: str = "claude-sonnet-5",
+              model: str = "claude-sonnet-5-5",
               max_tokens: int = 8192,
               json_mode: bool = False,
               timeout_seconds: Optional[float] = None) -> Optional[str]:
@@ -6549,7 +6549,7 @@ def _alt_model_for(model: str) -> Optional[str]:
         return None
     if model.startswith("gpt-"):
         # OpenAI hängt → auf Claude wechseln
-        return "claude-sonnet-5"
+        return "claude-sonnet-5-5"
     if model.startswith("claude-"):
         # Claude hängt → auf GPT wechseln
         return "gpt-6-sol"
@@ -10625,7 +10625,7 @@ def generate_briefing(
     urls_text: str = "",
     paywall_text: str = "",
     podcast_text: str = "",
-    model: str = "claude-sonnet-5",
+    model: str = "claude-sonnet-5-5",
     include_weather: bool = True,
     requested_exports: Optional[dict] = None,
     content_check_enabled: bool = False,
@@ -14855,8 +14855,8 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         pl = prompt + "\n\n=== QUELLEN ZU DIESEM THEMA ===\n\n" + "\n\n".join(src_parts)
         # MODELL-MIX: Mehrquellen-Verwebung, schwere Themen (Gewicht ≥4) und Web-Recherche
         # brauchen Opus. Einzelquellen-Themen mit geringem Gewicht sind Umschreiben/Verdichten
-        # = Sonnet-5-Kernkompetenz (schneller + eigenes Rate-Limit → mehr echte Parallelität).
-        # Web-Ergänzung ist KEIN Opus-Grund (Sonnet 5 kann die Websuche auch) — sonst
+        # = Sonnet-Kernkompetenz (schneller + eigenes Rate-Limit → mehr echte Parallelität).
+        # Web-Ergänzung ist KEIN Opus-Grund (Sonnet 5.5 kann die Websuche auch) — sonst
         # würde der Mix bei Florians Default (Web an) nie greifen. Opus nur für die
         # Fälle, wo es zählt: Mehrquellen-Verwebung oder schwere Themen.
         _weight = int(t.get("weight") or 3)
@@ -14935,7 +14935,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         return [], failed + _fail_count, len(topics), [], True
     _mopus = sum(1 for t in topics if t.get("_model_used") == "opus")
     _msonnet = sum(1 for t in topics if t.get("_model_used") == "sonnet")
-    print(f"[synthese] Modell-Mix: {_mopus} Themen auf Opus (Verwebung/schwer), {_msonnet} auf Sonnet 5 (Einzelquelle) — 8 parallel.", file=sys.stderr)
+    print(f"[synthese] Modell-Mix: {_mopus} Themen auf Opus (Verwebung/schwer), {_msonnet} auf Sonnet 5.5 (Einzelquelle) — 8 parallel.", file=sys.stderr)
     _uncovered = []
     for ti, t in enumerate(topics):
         md = results.get(ti)
@@ -15775,7 +15775,7 @@ def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_comp
 # ebenfalls kostenlos übers Max-Abo. Verifiziert am 04.06.2026, dass das Alias greift.
 _CLI_JUDGE_MODEL = "opus"
 # Struktur-/Einordnungs-Aufgaben (Clustering, Ressort-Zuordnung, Tragweite-Bewertung):
-# Sonnet 5 kann das genauso gut wie Opus, verbraucht aber weniger vom 5-Std-Limit und
+# Sonnet 5.5 kann das genauso gut wie Opus, verbraucht aber weniger vom 5-Std-Limit und
 # läuft über ein eigenes Rate-Limit → entlastet Opus für die Verwebung/Qualität.
 _CLI_CLASSIFY_MODEL = "sonnet"
 
