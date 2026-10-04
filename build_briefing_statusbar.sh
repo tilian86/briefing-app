@@ -2,7 +2,7 @@
 set -eu
 
 APP_NAME="Briefing Status"
-APP_DIR="/Users/florian/Applications/Audio-Briefing/${APP_NAME}.app"
+APP_DIR="/Applications/${APP_NAME}.app"
 SRC="/Users/florian/Library/Application Support/Projects/Briefing-App/StatusBar/BriefingStatusBar.m"
 BIN_DIR="${APP_DIR}/Contents/MacOS"
 RES_DIR="${APP_DIR}/Contents/Resources"
