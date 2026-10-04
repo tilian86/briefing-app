@@ -385,13 +385,17 @@ def main():
     # Häkchen „Tagesbriefing automatisch senden“, über Chatfunk an die Freunde (höchstens
     # einmal am Tag, prüft wa_runde selbst). Nachhol-Läufe (BRIEFING_MANUELL, mehrere
     # Teile aus einem Artikelberg) senden nie automatisch — sonst ginge nur Teil 1 raus.
+    # Nachtruhe (Häkchen „Nachts nicht senden“, Standard an): fertig ab 22:00 bis „frühestens
+    # ab“ → Chatfunk plant es auf dem Server für den Morgen.
     # Nichts davon darf den Lauf kippen: Fehler stehen nur im Eintrag (rot in der App).
     status.update({"step": "📲 WhatsApp-Runde…", "ratio": 0.98, "results": [entry]})
     _write_status(status)
     try:
         import wa_runde
         entry["wa_runde"] = wa_runde.nach_briefing(
-            out_pdf, entry.get("eleven_txt"), auto=bool(draft.get("wa_runde_auto")) and not MANUELL, log=_log)
+            out_pdf, entry.get("eleven_txt"), auto=bool(draft.get("wa_runde_auto")) and not MANUELL, log=_log,
+            nachts_bis=(draft.get("wa_runde_frueh") or wa_runde.FRUEH_STANDARD)
+            if draft.get("wa_runde_nachts_aus", True) else None)
     except Exception as _wrx:
         entry["wa_runde"] = "fail: %s" % str(_wrx)[:150]
     _log("WhatsApp-Runde: %s" % entry.get("wa_runde"))

@@ -23,6 +23,12 @@ Automatisch gesendet wird höchstens einmal am Tag und nur das Tagesbriefing (Ap
 terminierter Lauf). Das Wochenbriefing (So 19:10) bekommt nur den Begleittext — raus geht
 es ausschließlich per Knopf.
 
+Versandzeit (seit 04.10.): per Knopf „jetzt“ oder „um HH:MM“ (schon vorbei → morgen). Die
+Automatik plant ein Briefing, das nachts fertig wird (NACHT_AB bis „frühestens ab“, Standard
+07:00), für den Morgen. Der Plan liegt auf dem Funk-Server (Chatfunk speichert PDF-Kopie +
+Zeit), geht also auch raus, wenn der Mac schläft. Ein Plan je Briefing: ein neuer Auftrag für
+dasselbe PDF ersetzt den geplanten (Chatfunk-Schlüssel „briefing:<PDF-Name>“).
+
 Weg zum Server: Mac → https://chatfunk.46-225-133-113.sslip.io/api/* mit dem Server-Secret
 (CHATFUNK_URL / CHATFUNK_SECRET in .env, wie die anderen Schlüssel der App). Der
 Cloudflare-Worker mit PIN-Login wird bewusst umgangen — er ist nur das Tor fürs Handy.
@@ -39,8 +45,9 @@ Kommandozeile:
   python3 wa_runde.py runde --weg JID …         Mitglieder raus
   python3 wa_runde.py runde --leeren            Runde leeren
   python3 wa_runde.py text [PDF]                Begleittext erzeugen und merken
-  python3 wa_runde.py senden [PDF] [--an ich] [--nochmal] [--text DATEI|-]
-                                                ohne PDF: das neueste Briefing-PDF
+  python3 wa_runde.py senden [PDF] [--an ich] [--nochmal] [--text DATEI|-] [--um HH:MM]
+                                                ohne PDF: das neueste Briefing-PDF; --um plant
+  python3 wa_runde.py abbrechen [ID]            geplante Sendung abbrechen (ohne ID: alle geplanten)
 """
 import base64
 import datetime
@@ -76,6 +83,12 @@ _WD = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "So
 _MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August",
            "September", "Oktober", "November", "Dezember"]
 _TS_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})")
+_WD_KURZ = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+# Nachtruhe der Automatik: fertig ab NACHT_AB bis „frühestens ab“ → für „frühestens ab“ planen.
+# 22:00, weil ein Abendlauf bis dahin noch gut ankommt, später niemand mehr eine PDF will.
+NACHT_AB = "22:00"
+FRUEH_STANDARD = "07:00"
+FRUEH_OPTIONEN = ["%02d:%02d" % (h, m) for h in range(5, 12) for m in (0, 30)] + ["12:00"]
 
 
 class WaRundeFehler(Exception):
@@ -612,6 +625,49 @@ def begleittext(pdf: Optional[str], txt: Optional[str] = None) -> Tuple[str, str
     return notfall_text(inhalt, datum, om_zeile, woche=woche), "notfall"
 
 
+# ------------------------------------------------------------------ Versandzeit
+
+def _hhmm(uhrzeit) -> Tuple[int, int]:
+    if isinstance(uhrzeit, (datetime.time, datetime.datetime)):
+        return uhrzeit.hour, uhrzeit.minute
+    m = re.match(r"^\s*(\d{1,2})[:.](\d{2})\s*$", str(uhrzeit or ""))
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        raise WaRundeFehler("Uhrzeit nicht verstanden: %s (so: 7:00)" % uhrzeit)
+    return int(m.group(1)), int(m.group(2))
+
+
+def naechster_zeitpunkt(uhrzeit, jetzt: Optional[datetime.datetime] = None) -> datetime.datetime:
+    """Heute um diese Uhrzeit — oder morgen, wenn sie heute schon vorbei ist."""
+    jetzt = jetzt or datetime.datetime.now()
+    h, m = _hhmm(uhrzeit)
+    z = jetzt.replace(hour=h, minute=m, second=0, microsecond=0)
+    return z if z > jetzt else z + datetime.timedelta(days=1)
+
+
+def nachtplan(frueh: Optional[str], jetzt: Optional[datetime.datetime] = None) -> Optional[datetime.datetime]:
+    """Für die Automatik: fertig zwischen NACHT_AB und „frühestens ab“ → dieser Zeitpunkt
+    (heute bzw. morgen früh); tagsüber oder ohne Nachtruhe None = sofort."""
+    if not frueh:
+        return None
+    jetzt = jetzt or datetime.datetime.now()
+    t = (jetzt.hour, jetzt.minute)
+    if t >= _hhmm(NACHT_AB) or t < _hhmm(frueh):
+        return naechster_zeitpunkt(frueh, jetzt)
+    return None
+
+
+def zeit_text(zeit) -> str:
+    """ms/datetime → „Mo 5.10. 07:00“."""
+    d = zeit if isinstance(zeit, datetime.datetime) else datetime.datetime.fromtimestamp(float(zeit) / 1000)
+    return "%s %d.%d. %02d:%02d" % (_WD_KURZ[d.weekday()], d.day, d.month, d.hour, d.minute)
+
+
+def tag_text(zeit: datetime.datetime, jetzt: Optional[datetime.datetime] = None) -> str:
+    """„heute“ / „morgen“ / „übermorgen“ / „“."""
+    diff = (zeit.date() - (jetzt or datetime.datetime.now()).date()).days
+    return {0: "heute", 1: "morgen", 2: "übermorgen"}.get(diff, "")
+
+
 # ------------------------------------------------------------------ Senden
 
 def _sendung_aus(a: dict, alt: Optional[dict] = None) -> dict:
@@ -623,6 +679,9 @@ def _sendung_aus(a: dict, alt: Optional[dict] = None) -> dict:
                         "ich": bool(x.get("ich")), "um": x.get("um")} for x in a.get("empfaenger") or []],
         "fertig": a.get("fertigUm"),
     })
+    for k in ("zeit", "grund"):      # nur geplante Aufträge haben das
+        if a.get(k):
+            s[k] = a[k]
     return s
 
 
@@ -633,9 +692,11 @@ def _speichere_sendung(s: dict) -> None:
 
 
 def senden(pdf: str, text: str, an: Optional[List[str]] = None, nochmal: bool = False,
-           auto: bool = False, warten_s: int = 0) -> dict:
+           auto: bool = False, warten_s: int = 0, zeit: Optional[datetime.datetime] = None) -> dict:
     """Schickt das PDF über Chatfunk. an=None → an die Briefing-Runde. Gibt die Sendung zurück
-    (Chatfunk arbeitet im Hintergrund; Stand später mit aktualisieren())."""
+    (Chatfunk arbeitet im Hintergrund; Stand später mit aktualisieren()). Mit zeit plant
+    Chatfunk die Sendung auf dem Server. Ein neuer Auftrag für dasselbe PDF (Runde bzw. Test)
+    ersetzt dort einen noch geplanten."""
     p = Path(pdf)
     if not p.exists():
         raise WaRundeFehler("PDF nicht gefunden: %s" % p.name)
@@ -644,27 +705,95 @@ def senden(pdf: str, text: str, an: Optional[List[str]] = None, nochmal: bool = 
         raise WaRundeFehler("Das PDF ist zu groß (%.1f MB, höchstens 15 MB)" % (len(roh) / 1048576))
     body = {"datei": base64.b64encode(roh).decode("ascii"), "dateiName": anzeige_dateiname(pdf),
             "text": (text or "").strip() or None, "nochmal": bool(nochmal),
-            "quelle": "briefing-auto" if auto else "briefing", "warten": int(warten_s or 0)}
+            "quelle": "briefing-auto" if auto else "briefing", "warten": int(warten_s or 0),
+            "schluessel": ("briefing-test:" if an else "briefing:") + p.name}
+    if zeit is not None:
+        if zeit <= datetime.datetime.now():
+            raise WaRundeFehler("Die Versandzeit liegt in der Vergangenheit")
+        body["zeit"] = int(zeit.timestamp() * 1000)
+        body["warten"] = 0
     if an:
         body["an"] = list(an)
     else:
         body["verteiler"] = VERTEILER_ID
-    a = _api("POST", "/api/datei", body, timeout=60 + int(warten_s or 0))["auftrag"]
+    a = _api("POST", "/api/datei", body, timeout=60 + int(body["warten"]))["auftrag"]
     s = _sendung_aus(a, {"pdf": str(pdf), "datei": body["dateiName"], "auto": bool(auto),
                          "runde": not an, "test": bool(an) and list(an) == ["ich"],
+                         "schluessel": body["schluessel"],
                          "erstellt": datetime.datetime.now().isoformat(timespec="seconds"),
                          "text": (text or "")[:1500]})
-    _speichere_sendung(s)
+    # Chatfunk hat einen älteren Plan mit demselben Schlüssel ersetzt — lokal nachziehen
+    d = _lies_state()
+    for x in d["sendungen"]:
+        if x.get("status") == "geplant" and x.get("schluessel") == body["schluessel"] and x.get("id") != s["id"]:
+            x["status"], x["grund"] = "abgebrochen", "ersetzt"
+    d["sendungen"] = [x for x in d["sendungen"] if x.get("id") != s["id"]] + [s]
+    _schreib_state(d)
     return s
 
 
 def aktualisieren(sendung_id: str) -> dict:
     """Holt den aktuellen Stand eines Auftrags von Chatfunk und merkt ihn lokal."""
-    a = _api("GET", "/api/datei/%s" % sendung_id, timeout=15)["auftrag"]
     alt = next((x for x in _lies_state()["sendungen"] if x.get("id") == sendung_id), None)
+    try:
+        a = _api("GET", "/api/datei/%s" % sendung_id, timeout=15)["auftrag"]
+    except WaRundeFehler as e:
+        if "Nicht gefunden" not in str(e) or not alt:
+            raise
+        a = dict(alt, status="fertig" if alt.get("status") != "geplant" else "abgebrochen",
+                 grund="auf dem Server nicht mehr da", fertigUm=alt.get("fertig"))
     s = _sendung_aus(a, alt)
     _speichere_sendung(s)
     return s
+
+
+def _plan_aktion(sendung_id: str, methode: str, pfad: str) -> dict:
+    alt = next((x for x in _lies_state()["sendungen"] if x.get("id") == sendung_id), None)
+    a = _api(methode, pfad, timeout=20)["auftrag"]
+    s = _sendung_aus(a, alt)
+    _speichere_sendung(s)
+    return s
+
+
+def abbrechen(sendung_id: str) -> dict:
+    """Geplante Sendung auf dem Server abbrechen (PDF-Kopie wird dort gelöscht)."""
+    return _plan_aktion(sendung_id, "DELETE", "/api/datei/%s" % sendung_id)
+
+
+def jetzt_senden(sendung_id: str) -> dict:
+    """Geplante Sendung sofort starten (mit dem Text vom Planen)."""
+    return _plan_aktion(sendung_id, "POST", "/api/datei/%s/jetzt" % sendung_id)
+
+
+_OFFEN = ("geplant", "wartet", "laeuft")
+_zuletzt_aufgefrischt = [0.0]
+
+
+def offene_auffrischen(min_abstand: float = 20.0) -> None:
+    """Geplante/laufende Sendungen mit dem Server abgleichen (ausgeführt, abgebrochen in der
+    Chatfunk-App, ersetzt). Höchstens alle min_abstand Sekunden; Fehler still."""
+    if time.time() - _zuletzt_aufgefrischt[0] < min_abstand:
+        return
+    _zuletzt_aufgefrischt[0] = time.time()
+    for x in [x for x in _lies_state()["sendungen"] if x.get("status") in _OFFEN][-6:]:
+        try:
+            aktualisieren(x["id"])
+        except Exception:
+            pass
+
+
+def geplante_sendungen() -> List[dict]:
+    """Lokal bekannte, noch geplante Sendungen (früheste zuerst)."""
+    return sorted([x for x in _lies_state()["sendungen"] if x.get("status") == "geplant"],
+                  key=lambda x: x.get("zeit") or 0)
+
+
+def plan_text(s: dict) -> str:
+    """„📅 geplant: Mo 5.10. 07:00 an 7 Leute“."""
+    emp = s.get("empfaenger") or []
+    andere = len([x for x in emp if not x.get("ich")])
+    wen = ("%d %s" % (andere, "Person" if andere == 1 else "Leute")) if andere else "dich"
+    return "📅 geplant: %s an %s" % (zeit_text(s["zeit"]) if s.get("zeit") else "?", wen)
 
 
 def warte_auf(sendung_id: str, max_s: int = 900, takt: float = 5.0) -> dict:
@@ -679,36 +808,59 @@ def warte_auf(sendung_id: str, max_s: int = 900, takt: float = 5.0) -> dict:
     return s
 
 
-def letzte_sendung() -> Optional[dict]:
-    s = _lies_state()["sendungen"]
-    return s[-1] if s else None
-
-
-def laufende_sendung() -> Optional[dict]:
-    s = letzte_sendung()
-    if s and s.get("status") != "fertig":
-        try:
-            if time.time() - datetime.datetime.fromisoformat(s.get("erstellt")).timestamp() < 3600:
-                return s
-        except Exception:
-            pass
+def letzte_sendung(auch_geplant: bool = False) -> Optional[dict]:
+    """Die jüngste Sendung — geplante nur mit auch_geplant (die zeigt die Oberfläche extra),
+    abgebrochene Pläne nie (sonst verdeckt „✕ abgebrochen“ die letzte echte Quittung)."""
+    for s in reversed(_lies_state()["sendungen"]):
+        if s.get("status") == "abgebrochen":
+            continue
+        if auch_geplant or s.get("status") != "geplant":
+            return s
     return None
 
 
-def heute_an_runde(pdf: Optional[str] = None, nur_tages: bool = False) -> Optional[dict]:
-    """Letzte Sendung von heute an die Runde, bei der mindestens eine Person etwas bekam
-    (optional nur für dieses PDF bzw. nur Tagesbriefings)."""
-    heute = datetime.date.today().isoformat()
+def _start_ts(s: dict) -> float:
+    if s.get("zeit"):
+        return float(s["zeit"]) / 1000
+    try:
+        return datetime.datetime.fromisoformat(s.get("erstellt")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def laufende_sendung() -> Optional[dict]:
+    """Eine Sendung, die gerade läuft (gestartet vor < 1 h) — geplante zählen nicht."""
     for s in reversed(_lies_state()["sendungen"]):
-        if not s.get("runde") or not str(s.get("erstellt", "")).startswith(heute):
+        if s.get("status") in ("wartet", "laeuft") and time.time() - _start_ts(s) < 3600:
+            return s
+    return None
+
+
+def liefertag(s: dict) -> datetime.date:
+    """An welchem Tag die Sendung rausging bzw. rausgeht (geplant: Plan-Zeit)."""
+    return datetime.date.fromtimestamp(_start_ts(s))
+
+
+def runde_am_tag(tag: datetime.date, pdf: Optional[str] = None, nur_tages: bool = False,
+                 mit_geplant: bool = True) -> Optional[dict]:
+    """Letzte Runden-Sendung für diesen Tag, bei der jemand etwas bekam, die noch läuft oder
+    (mit_geplant) geplant ist — optional nur dieses PDF bzw. nur Tagesbriefings."""
+    for s in reversed(_lies_state()["sendungen"]):
+        if not s.get("runde") or s.get("status") == "abgebrochen" or liefertag(s) != tag:
             continue
         if pdf and os.path.basename(s.get("pdf") or "") != os.path.basename(pdf):
             continue
         if nur_tages and ist_wochenbriefing(s.get("pdf")):
             continue
+        if s.get("status") == "geplant" and not mit_geplant:
+            continue
         if s.get("gesendet") or s.get("status") != "fertig":
             return s
     return None
+
+
+def heute_an_runde(pdf: Optional[str] = None, nur_tages: bool = False, mit_geplant: bool = True) -> Optional[dict]:
+    return runde_am_tag(datetime.date.today(), pdf=pdf, nur_tages=nur_tages, mit_geplant=mit_geplant)
 
 
 def _uhr(s: dict) -> str:
@@ -724,6 +876,12 @@ def quittung(s: Optional[dict]) -> Tuple[str, List[str]]:
     """(„✅ an 7 gesendet, 14:32“, [Fehlerzeilen je Person]) für die Oberfläche."""
     if not s:
         return "", []
+    if s.get("status") == "geplant":
+        return plan_text(s), []
+    if s.get("status") == "abgebrochen":
+        wann = " für %s" % zeit_text(s["zeit"]) if s.get("zeit") else ""
+        warum = " (durch neuen Auftrag ersetzt)" if any(w in str(s.get("grund")) for w in ("ersetzt", "sofort")) else ""
+        return "✕ Plan%s abgebrochen%s — nichts gesendet" % (wann, warum), []
     emp = s.get("empfaenger") or []
     an_andere = [x for x in emp if x.get("status") == "gesendet" and not x.get("ich")]
     fehler = ["%s: %s" % (x.get("name"), x.get("fehler") or "Fehler") for x in emp if x.get("status") == "fehler"]
@@ -754,9 +912,12 @@ def job_eintrag(s: dict) -> str:
 
 # ------------------------------------------------------------------ Für den Briefing-Lauf
 
-def nach_briefing(pdf: str, txt: Optional[str] = None, auto: bool = False, log=None) -> str:
+def nach_briefing(pdf: str, txt: Optional[str] = None, auto: bool = False, log=None,
+                  nachts_bis: Optional[str] = None) -> str:
     """Nach jedem fertigen Briefing-PDF: Begleittext erzeugen + merken. Mit auto geht ein
-    TAGESbriefing an die Runde — höchstens einmal am Tag; ein Wochenbriefing nie automatisch.
+    TAGESbriefing an die Runde — höchstens einmal je Liefertag; ein Wochenbriefing nie
+    automatisch. nachts_bis="07:00": fertig zwischen NACHT_AB und 07:00 → auf dem Server für
+    07:00 geplant (ein neueres Briefing ersetzt einen automatischen Plan für denselben Morgen).
     Wirft nie — der Briefing-Lauf darf hieran nicht scheitern. Rückgabe für results[].wa_runde."""
     def _log(m):
         try:
@@ -782,11 +943,26 @@ def nach_briefing(pdf: str, txt: Optional[str] = None, auto: bool = False, log=N
     try:
         if not eingerichtet():
             raise WaRundeFehler("Chatfunk ist nicht eingerichtet (CHATFUNK_URL / CHATFUNK_SECRET in .env)")
-        schon = heute_an_runde(nur_tages=True)
+        offene_auffrischen(min_abstand=0)
+        plan_zeit = nachtplan(nachts_bis)
+        schon = runde_am_tag((plan_zeit or datetime.datetime.now()).date(), nur_tages=True)
+        if schon and schon.get("status") == "geplant":
+            if not schon.get("auto"):
+                return "aus: für %s schon von Hand geplant — die Automatik lässt es dabei" % zeit_text(schon["zeit"])
+            if os.path.basename(schon.get("pdf") or "") != os.path.basename(pdf):
+                abbrechen(schon["id"])      # neueres Briefing ersetzt den automatischen Plan
+                _log("automatischen Plan für %s (%s) durch das neue Briefing ersetzt"
+                     % (zeit_text(schon["zeit"]), os.path.basename(schon.get("pdf") or "")))
+            schon = None
         if schon:
             return "aus: heute schon an die Runde gesendet (%s) — nochmal nur von Hand" % _uhr(schon)
         if not runde().get("mitglieder"):
             raise WaRundeFehler("Die Briefing-Runde ist leer — keine Empfänger eingetragen")
+        if plan_zeit:
+            s = senden(pdf, text, auto=True, zeit=plan_zeit)
+            e = "ok: %s (nachts fertig — Funk-Server sendet morgens)" % plan_text(s)
+            _log(e)
+            return e
         s = senden(pdf, text, auto=True)
         _log("Auftrag %s an Chatfunk übergeben, warte auf Abschluss…" % s.get("id"))
         s = warte_auf(s["id"], max_s=900)
@@ -829,6 +1005,9 @@ def _cli(argv: List[str]) -> int:
     s.add_argument("--an", nargs="+", help="statt der Runde, z. B. --an ich")
     s.add_argument("--nochmal", action="store_true", help="auch wer die Datei heute schon bekam")
     s.add_argument("--text", help="Begleittext aus Datei (- = stdin); sonst der gemerkte bzw. neu erzeugte")
+    s.add_argument("--um", help="planen statt sofort, z. B. --um 7:00 (schon vorbei → morgen)")
+    ab = sub.add_parser("abbrechen")
+    ab.add_argument("id", nargs="?")
     a = ap.parse_args(argv)
 
     try:
@@ -838,6 +1017,9 @@ def _cli(argv: List[str]) -> int:
             rd = runde()
             print("Briefing-Runde (%d): %s" % (len(rd["mitglieder"]), ", ".join(kontakt_label(m) for m in rd["mitglieder"]) or "—"))
             print("Neuestes Briefing-PDF: %s" % (neuestes_pdf() or "—"))
+            offene_auffrischen(min_abstand=0)
+            for gp in geplante_sendungen():
+                print("%s · %s · %s" % (plan_text(gp), gp.get("datei"), gp.get("id")))
             q, f = quittung(letzte_sendung())
             if q:
                 print("Letzte Sendung: %s" % q)
@@ -878,7 +1060,11 @@ def _cli(argv: List[str]) -> int:
                 if not text:
                     text, quelle = begleittext(pdf)
                     _merke_text(pdf, text, quelle)
-            s = senden(pdf, text, an=a.an, nochmal=a.nochmal)
+            zeit = naechster_zeitpunkt(a.um) if a.um else None
+            s = senden(pdf, text, an=a.an, nochmal=a.nochmal, zeit=zeit)
+            if zeit:
+                print("%s (%s) — Auftrag %s liegt auf dem Funk-Server" % (plan_text(s), os.path.basename(pdf), s["id"]))
+                return 0
             print("Auftrag %s an Chatfunk übergeben (%d Empfänger) — warte…" % (s["id"], len(s["empfaenger"])))
             s = warte_auf(s["id"], max_s=900)
             q, f = quittung(s)
@@ -886,6 +1072,13 @@ def _cli(argv: List[str]) -> int:
             for z in f:
                 print("  ❌ " + z)
             return 1 if f else 0
+        elif a.befehl == "abbrechen":
+            offene_auffrischen(min_abstand=0)
+            ids = [a.id] if a.id else [x["id"] for x in geplante_sendungen()]
+            if not ids:
+                print("Nichts geplant.")
+            for i in ids:
+                print(quittung(abbrechen(i))[0])
         else:
             ap.print_help()
     except WaRundeFehler as e:

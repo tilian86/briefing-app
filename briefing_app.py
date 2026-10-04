@@ -253,6 +253,10 @@ _DRAFT_DEFAULTS = {
     # 📲 WhatsApp-Runde (04.10.): fertiges Tagesbriefing-PDF automatisch über Chatfunk an
     # die Freundesrunde. Standard AUS — das Häkchen setzt Florian selbst.
     "wa_runde_auto": False,
+    # Nachtruhe der Automatik (04.10.): fertig zwischen 22:00 und „frühestens ab“ → auf dem
+    # Funk-Server für diese Uhrzeit geplant statt sofort gesendet.
+    "wa_runde_nachts_aus": True,
+    "wa_runde_frueh": "07:00",
     "last_meta_created_iso": "",
     "meta_web_recherche": True,    # Wochenbriefing recherchiert selbst nach (14.09.)
     "weekly_auto_7d": True,        # alle 7 Tage automatisch nach einem Tagesbriefing
@@ -3568,7 +3572,8 @@ def _briefing_worker(cfg: dict, status: dict):
             try:
                 import wa_runde as _war_w
                 _we["wa_runde"] = _war_w.nach_briefing(_we["pdf"], _we.get("eleven_txt"),
-                                                       auto=bool(cfg.get("wa_runde_auto")))
+                                                       auto=bool(cfg.get("wa_runde_auto")),
+                                                       nachts_bis=cfg.get("wa_runde_nachts_bis"))
             except Exception as _wex:
                 _we["wa_runde"] = "fail: %s" % str(_wex)[:150]
             _upd(results=results)
@@ -6720,6 +6725,8 @@ topic_synthesis_mode = bool(st.session_state.get("topic_synthesis_mode", True))
 # Die Runde liegt auf dem Server, damit Knopf und Hintergrundlauf dieselbe Liste
 # nutzen. Gesendet wird im Hintergrund (Pausen zwischen den Leuten) — das Fragment
 # tickt nur, solange eine Sendung läuft. Logik: wa_runde.py.
+# Versandzeit (04.10.): Knopf „jetzt“ oder „um HH:MM“; die Automatik plant nachts fertige
+# Briefings für den Morgen. Geplant wird auf dem Funk-Server (Chatfunk), nicht hier.
 import wa_runde as _war
 
 
@@ -6737,14 +6744,25 @@ def _war_runde_speichern():
         st.session_state["_war_fehler"] = "Runde nicht gespeichert: %s" % _e
 
 
-def _war_senden(pdf, an=None, nochmal=False):
-    """Übergibt die Sendung an Chatfunk. True = übergeben (danach voller Rerun → Takt an)."""
+def _war_senden(pdf, an=None, nochmal=False, zeit=None):
+    """Übergibt die Sendung an Chatfunk (mit zeit: dort geplant). True = übergeben
+    (danach voller Rerun → Takt an bzw. Plan anzeigen)."""
     try:
-        _war.senden(pdf, st.session_state.get("wa_runde_text") or "", an=an, nochmal=nochmal)
+        _s = _war.senden(pdf, st.session_state.get("wa_runde_text") or "", an=an, nochmal=nochmal, zeit=zeit)
+        if zeit:
+            st.session_state["_war_meldung"] = "%s — liegt auf dem Funk-Server, der Mac darf schlafen." % _war.plan_text(_s)
         return True
     except Exception as _e:
-        st.session_state["_war_fehler"] = "Nicht gesendet: %s" % _e
+        st.session_state["_war_fehler"] = ("Nicht geplant: %s" if zeit else "Nicht gesendet: %s") % _e
         return False
+
+
+def _war_plan_aktion(fn, sid, ok):
+    try:
+        fn(sid)
+        st.session_state["_war_meldung"] = ok
+    except Exception as _e:
+        st.session_state["_war_fehler"] = str(_e)
 
 
 def _war_neu_zeichnen():
@@ -6777,6 +6795,7 @@ def _fragment_wa_runde():
         except Exception as _e:
             st.error("Chatfunk nicht erreichbar: %s" % _e)
             return
+        _war.offene_auffrischen()   # geplante/laufende mit dem Server abgleichen (höchstens alle 20 s)
 
         # Empfänger: Suche ist im Feld eingebaut (tippen filtert die Kontakte)
         _labels = {k["jid"]: _war.kontakt_label(k) for k in _kt if not k.get("gruppe")}
@@ -6845,26 +6864,62 @@ def _fragment_wa_runde():
                  "mit dem erzeugten Begleittext an die Runde — höchstens einmal pro Tag automatisch, ein zweiter "
                  "Lauf am selben Tag nur per Knopf. Fehler stehen rot im Job-Status.",
         )
+        # Nachtruhe der Automatik: fertig zwischen 22:00 und „frühestens ab“ → für dann geplant
+        if st.session_state.get("wa_runde_frueh") not in _war.FRUEH_OPTIONEN:
+            st.session_state["wa_runde_frueh"] = _war.FRUEH_STANDARD
+        _auto_an = bool(st.session_state.get("wa_runde_auto"))
+        _nc1, _nc2 = st.columns([3, 1])
+        with _nc1:
+            st.checkbox("🌙 Nachts nicht senden: frühestens ab", key="wa_runde_nachts_aus", on_change=_save_draft,
+                        disabled=not _auto_an,
+                        help="Wird ein Tagesbriefing zwischen %s und dieser Uhrzeit fertig, plant die Automatik "
+                             "es für diese Uhrzeit — der Plan liegt auf dem Funk-Server und geht auch raus, wenn "
+                             "der Mac zu ist. Tagsüber fertig → sofort." % _war.NACHT_AB)
+        with _nc2:
+            st.selectbox("frühestens ab", options=_war.FRUEH_OPTIONEN, key="wa_runde_frueh", on_change=_save_draft,
+                         label_visibility="collapsed",
+                         disabled=not (_auto_an and st.session_state.get("wa_runde_nachts_aus", True)))
+        if _auto_an and st.session_state.get("wa_runde_nachts_aus", True):
+            st.caption("🌙 Fertig zwischen %s und %s Uhr → geht erst um %s raus (geplant auf dem Funk-Server)."
+                       % (_war.NACHT_AB, st.session_state["wa_runde_frueh"], st.session_state["wa_runde_frueh"]))
         st.caption("🗓️ Das Wochenbriefing (So 19:10) geht nie automatisch raus — nur hier per Knopf.")
 
-        # Senden
+        # Senden: jetzt oder um eine Uhrzeit (schon vorbei → morgen)
         _n = len(st.session_state.get("wa_runde_mitglieder") or [])
         _laeuft = _war.laufende_sendung()
-        _schon = _war.heute_an_runde(_pdf) if _pdf else None
+        _schon = _war.heute_an_runde(_pdf, mit_geplant=False) if _pdf else None
         _rerun = False
+        _wc1, _wc2 = st.columns([3, 1])
+        with _wc1:
+            _wann = st.radio("⏰ Wann?", ["jetzt", "um Uhrzeit"], key="_war_wann", horizontal=True,
+                             help="„um Uhrzeit“ plant die Sendung auf dem Funk-Server — sie geht auch raus, "
+                                  "wenn der Mac zu ist. Liegt die Uhrzeit heute schon hinter uns, gilt morgen.")
+        _zeit = None
+        with _wc2:
+            if _wann == "um Uhrzeit":
+                _um = st.time_input("Uhrzeit", value=datetime.time(7, 0), key="_war_um", step=900,
+                                    label_visibility="collapsed")
+                _zeit = _war.naechster_zeitpunkt(_um)
+        if _zeit:
+            _tt = _war.tag_text(_zeit)
+            st.caption("📅 geht raus: **%s**%s" % (_war.zeit_text(_zeit), (" (%s)" % _tt) if _tt else ""))
         _bc1, _bc2 = st.columns([3, 1])
         with _bc1:
-            if st.button("📲 Jetzt an die Runde senden (%d %s)" % (_n, "Person" if _n == 1 else "Leute"),
+            _leute = "%d %s" % (_n, "Person" if _n == 1 else "Leute")
+            if st.button(("📅 Für %s planen (%s)" % (_war.zeit_text(_zeit), _leute)) if _zeit else
+                         ("📲 Jetzt an die Runde senden (%s)" % _leute),
                          key="_war_btn_senden", type="primary", use_container_width=True,
                          disabled=not _pdf or not _n or bool(_laeuft)):
-                if _schon:
+                if _zeit:
+                    _rerun = _war_senden(_pdf, zeit=_zeit)
+                elif _schon:
                     st.session_state["_war_bestaetigen"] = _pdf
                 else:
                     _rerun = _war_senden(_pdf)
         with _bc2:
             if st.button("🧪 Test an mich", key="_war_btn_test", use_container_width=True,
                          disabled=not _pdf or bool(_laeuft),
-                         help="Schickt PDF + Begleittext nur in deinen eigenen Chat („Ich“)."):
+                         help="Schickt PDF + Begleittext sofort nur in deinen eigenen Chat („Ich“)."):
                 _rerun = _war_senden(_pdf, an=["ich"], nochmal=True)
         if _pdf and st.session_state.get("_war_bestaetigen") == _pdf and not _rerun:
             st.warning("Dieses PDF ging heute schon an die Runde (%s). Wirklich nochmal an alle senden?"
@@ -6878,12 +6933,30 @@ def _fragment_wa_runde():
                 if st.button("Abbrechen", key="_war_btn_abbrechen", use_container_width=True):
                     st.session_state.pop("_war_bestaetigen", None)
                     _war_neu_zeichnen()
+
+        # Geplante Sendungen (liegen auf dem Funk-Server): was passiert, mit Abbrechen / Jetzt senden
+        for _gp in _war.geplante_sendungen():
+            _wer = "" if os.path.basename(_gp.get("pdf") or "") == os.path.basename(_pdf or "") else \
+                " · %s" % (_gp.get("datei") or os.path.basename(_gp.get("pdf") or ""))
+            _gc1, _gc2, _gc3 = st.columns([5, 2, 2])
+            with _gc1:
+                st.info("%s%s%s" % (_war.plan_text(_gp), " · Test" if _gp.get("test") else "", _wer))
+            with _gc2:
+                if st.button("✕ Abbrechen", key="_war_ab_%s" % _gp["id"], use_container_width=True):
+                    _war_plan_aktion(_war.abbrechen, _gp["id"], "✕ Plan abgebrochen — geht nicht raus.")
+                    _rerun = True
+            with _gc3:
+                if st.button("Jetzt senden", key="_war_jetzt_%s" % _gp["id"], use_container_width=True,
+                             disabled=bool(_laeuft), help="Startet die geplante Sendung sofort (mit dem Text vom Planen)."):
+                    _war_plan_aktion(_war.jetzt_senden, _gp["id"], "📲 Geplante Sendung läuft jetzt.")
+                    _rerun = True
+
         if _rerun or st.session_state.get("_war_fehler"):
             st.rerun()   # voller Durchlauf: Takt an bzw. Fehler oben zeigen
 
         # Quittung der letzten Sendung (läuft sie noch, frisch vom Server holen)
         _ls = _war.letzte_sendung()
-        if _ls and _ls.get("status") != "fertig":
+        if _ls and _ls.get("status") in ("wartet", "laeuft"):
             try:
                 _ls = _war.aktualisieren(_ls["id"])
             except Exception as _e:
@@ -6894,7 +6967,9 @@ def _fragment_wa_runde():
         if _q:
             _wer = " · automatisch" if _ls.get("auto") else (" · Test" if _ls.get("test") else "")
             _was = "%s%s" % (_q, _wer)
-            if _ls.get("status") != "fertig":
+            if _ls.get("status") == "abgebrochen":
+                st.caption(_was)
+            elif _ls.get("status") != "fertig":
                 st.info(_was)
             elif _fehler or _q.startswith("❌"):
                 st.error(_was)
@@ -7183,6 +7258,8 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "web": bool(st.session_state.get("synthesis_web_enrich", True)),
                 "podcast_mode": {"Einweben (kürzen)": "woven", "Länger erhalten": "soft", "Original übernehmen": "verbatim"}.get(st.session_state.get("podcast_synth_mode", "Länger erhalten"), "soft"),
                 "wa_runde_auto": bool(st.session_state.get("wa_runde_auto", False)),
+                "wa_runde_nachts_bis": ((st.session_state.get("wa_runde_frueh") or "07:00")
+                                        if st.session_state.get("wa_runde_nachts_aus", True) else None),
                 "qc": bool(st.session_state.get("quality_check_enabled", True)),
                 "specials": split_special_topics(st.session_state.get("special_topics_text") or ""),
                 # 14.08.: Upload NIE stillschweigend ueberspringen. Stand die
