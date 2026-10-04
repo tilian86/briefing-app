@@ -248,6 +248,9 @@ _DRAFT_DEFAULTS = {
     "auto_reader_upload": True,
     "reader_cleanup_days": 14,
     "whatsapp_pdf_additional": True,
+    # 📲 WhatsApp-Runde (04.10.): fertiges WhatsApp-PDF automatisch über Chatfunk an die
+    # Freundesrunde. Standard AUS — das Häkchen setzt Florian selbst.
+    "wa_runde_auto": False,
     "last_meta_created_iso": "",
     "meta_web_recherche": True,    # Wochenbriefing recherchiert selbst nach (14.09.)
     "weekly_auto_7d": True,        # alle 7 Tage automatisch nach einem Tagesbriefing
@@ -3554,6 +3557,22 @@ def _briefing_worker(cfg: dict, status: dict):
                         entry["upload"] = "fail: " + str(_uex)[:100]
                     _upd(results=results)
 
+        # 📲 WhatsApp-Runde (04.10.): Begleittext zum WhatsApp-PDF erzeugen und — mit
+        # Häkchen „Automatisch senden“ — über Chatfunk an die Runde schicken. Erst NACH
+        # allen Versionen, damit Hören/Upload nicht warten. Fehler landen nur im
+        # Eintrag (results[].wa_runde, rot in der Oberfläche), nie im Lauf.
+        for _we in results:
+            if _we.get("wa") and _we.get("ok") and not _cancelled():
+                _upd(step="📲 WhatsApp-Runde: Begleittext" + (" + Senden an die Runde…" if cfg.get("wa_runde_auto") else "…"),
+                     ratio=0.96)
+                try:
+                    import wa_runde as _war_w
+                    _we["wa_runde"] = _war_w.nach_wa_pdf(_we["pdf"], _we.get("eleven_txt"),
+                                                         auto=bool(cfg.get("wa_runde_auto")))
+                except Exception as _wex:
+                    _we["wa_runde"] = "fail: %s" % str(_wex)[:150]
+                _upd(results=results)
+
         if cfg["upload"] and int(cfg.get("cleanup_days") or 0) > 0 and not _cancelled():
             _upd(step="🗑️ Räume alte Bibliothekseinträge auf…", ratio=0.97)
             try:
@@ -6694,6 +6713,193 @@ compact_mode = _briefing_depth != "Ausführlich"
 ultra_compact = _briefing_depth == "Sehr kurz"
 topic_synthesis_mode = bool(st.session_state.get("topic_synthesis_mode", True))
 
+# ============================================================
+# 📲 WhatsApp-Runde (04.10.): WhatsApp-PDF über Chatfunk an die Freundesrunde
+# ============================================================
+# Ersetzt Florians Handarbeit mit der Broadcast-Liste. Chatfunk (Funk-Server) schickt
+# das PDF EINZELN an jede Person des Verteilers „Briefing-Runde“, mit Begleittext
+# (Datum, Wetter, 3 Themen, „Außerdem drin“; erzeugt nach jedem WhatsApp-PDF).
+# Die Runde liegt auf dem Server, damit Knopf und Hintergrundlauf dieselbe Liste
+# nutzen. Gesendet wird im Hintergrund (Pausen zwischen den Leuten) — das Fragment
+# tickt nur, solange eine Sendung läuft. Logik: wa_runde.py.
+import wa_runde as _war
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _war_kontakte():
+    return _war.kontakte()
+
+
+def _war_runde_speichern():
+    try:
+        _rd = _war.runde_setzen(st.session_state.get("wa_runde_mitglieder") or [])
+        st.session_state["_war_namen"] = {m["jid"]: _war.kontakt_label(m) for m in _rd["mitglieder"]}
+        st.session_state["_war_meldung"] = "💾 Briefing-Runde gespeichert (%d)" % len(_rd["mitglieder"])
+    except Exception as _e:
+        st.session_state["_war_fehler"] = "Runde nicht gespeichert: %s" % _e
+
+
+def _war_senden(pdf, an=None, nochmal=False):
+    """Übergibt die Sendung an Chatfunk. True = übergeben (danach voller Rerun → Takt an)."""
+    try:
+        _war.senden(pdf, st.session_state.get("wa_runde_text") or "", an=an, nochmal=nochmal)
+        return True
+    except Exception as _e:
+        st.session_state["_war_fehler"] = "Nicht gesendet: %s" % _e
+        return False
+
+
+def _war_neu_zeichnen():
+    """Nur das Fragment neu zeichnen; lief es im vollen Durchlauf (z. B. erster Aufbau,
+    Tests), geht scope="fragment" nicht — dann eben die ganze Seite."""
+    try:
+        st.rerun(scope="fragment")
+    except st.errors.StreamlitAPIException:
+        st.rerun()
+
+
+_war_aktiv = bool(_war.laufende_sendung())
+
+
+@st.fragment(run_every=(4 if _war_aktiv else None))
+def _fragment_wa_runde():
+    with st.expander("📲 WhatsApp-Runde — das WhatsApp-PDF an deine Freunde", expanded=False):
+        if not _war.eingerichtet():
+            st.warning("Chatfunk ist nicht eingerichtet: CHATFUNK_URL und CHATFUNK_SECRET fehlen in .env.")
+            return
+        for _k, _fn in (("_war_fehler", st.error), ("_war_meldung", st.success)):
+            if st.session_state.get(_k):
+                _fn(st.session_state.pop(_k))
+        try:
+            _kt = _war_kontakte()
+            if "wa_runde_mitglieder" not in st.session_state:
+                _rd = _war.runde()
+                st.session_state["wa_runde_mitglieder"] = [m["jid"] for m in _rd["mitglieder"]]
+                st.session_state["_war_namen"] = {m["jid"]: _war.kontakt_label(m) for m in _rd["mitglieder"]}
+        except Exception as _e:
+            st.error("Chatfunk nicht erreichbar: %s" % _e)
+            return
+
+        # Empfänger: Suche ist im Feld eingebaut (tippen filtert die Kontakte)
+        _labels = {k["jid"]: _war.kontakt_label(k) for k in _kt if not k.get("gruppe")}
+        for _j, _l in (st.session_state.get("_war_namen") or {}).items():
+            _labels.setdefault(_j, _l)
+        for _j in st.session_state.get("wa_runde_mitglieder") or []:
+            _labels.setdefault(_j, _j)
+        st.multiselect(
+            "👥 Briefing-Runde (Empfänger)", options=list(_labels), format_func=lambda j: _labels.get(j, j),
+            key="wa_runde_mitglieder", on_change=_war_runde_speichern,
+            placeholder="Namen tippen zum Suchen …",
+            help="Kontakte aus Chatfunk (deine WhatsApp). Die letzten 4 Ziffern unterscheiden gleichnamige "
+                 "Kontakte. Jede Änderung wird sofort auf dem Funk-Server gespeichert — Knopf und "
+                 "Automatik nutzen dieselbe Liste. Jede Person bekommt das PDF einzeln, nicht als Gruppe.",
+        )
+
+        _pdf = _war.neuestes_wa_pdf()
+        if not _pdf:
+            st.caption("📄 Noch kein WhatsApp-PDF da — es entsteht beim nächsten Lauf, wenn oben "
+                       "„📱 WhatsApp-Lese-PDF zusätzlich“ angehakt ist.")
+        else:
+            st.caption("📄 Neuestes WhatsApp-PDF: **%s** · geht raus als „%s“"
+                       % (os.path.basename(_pdf), _war.anzeige_dateiname(_pdf)))
+            # Begleittext: beim Bau erzeugt; neues PDF → Feld neu befüllen
+            if st.session_state.get("_war_text_pdf") != _pdf:
+                st.session_state["wa_runde_text"] = (_war.gemerkter_text(_pdf) or {}).get("text", "")
+                st.session_state["_war_text_pdf"] = _pdf
+            if "_war_text_neu" in st.session_state:
+                st.session_state["wa_runde_text"] = st.session_state.pop("_war_text_neu")
+            st.text_area("✍️ Begleittext (geht mit, darfst du ändern)", key="wa_runde_text", height=250,
+                         help="WhatsApp-Format: *fett*. Bis 1024 Zeichen steht der Text direkt unter dem PDF, "
+                              "längere Texte kommen als eigene Nachricht direkt davor.")
+            _tl = len(st.session_state.get("wa_runde_text") or "")
+            _tc1, _tc2 = st.columns([3, 1])
+            with _tc1:
+                st.caption(("%d Zeichen — steht als Text unter dem PDF." % _tl) if 0 < _tl <= 1024 else
+                           ("%d Zeichen — kommt als eigene Nachricht direkt vor dem PDF." % _tl) if _tl else
+                           "Kein Begleittext — das PDF geht ohne Text raus.")
+            with _tc2:
+                if st.button("✨ Neu erzeugen", key="_war_btn_text", use_container_width=True,
+                             help="Claude (Sonnet, Max-Abo) liest die WhatsApp-Version und schreibt Datum, "
+                                  "Wetter, die 3 wichtigsten Themen und „Außerdem drin“ — ca. 15 Sekunden."):
+                    with st.spinner("Claude schreibt den Begleittext …"):
+                        _t, _q = _war.begleittext(_pdf)
+                    try:
+                        _war._merke_text(_pdf, _t, _q)
+                    except Exception:
+                        pass
+                    st.session_state["_war_text_neu"] = _t
+                    if _q != "claude":
+                        st.session_state["_war_meldung"] = "Claude war nicht erreichbar — Notfalltext (Datum, Wetter, Überschriften)."
+                    _war_neu_zeichnen()
+
+        st.checkbox(
+            "Automatisch senden, wenn das WhatsApp-PDF fertig ist", key="wa_runde_auto", on_change=_save_draft,
+            help="Nach jedem Briefing-Lauf mit WhatsApp-PDF (App-Knopf UND terminierter Lauf) geht es mit dem "
+                 "erzeugten Begleittext an die Runde — höchstens einmal pro Tag automatisch, ein zweiter Lauf "
+                 "am selben Tag nur per Knopf. Fehler stehen rot im Job-Status.",
+        )
+        if st.session_state.get("wa_runde_auto") and not st.session_state.get("whatsapp_pdf_additional"):
+            st.caption("⚠️ Ohne „📱 WhatsApp-Lese-PDF zusätzlich“ (oben) entsteht kein WhatsApp-PDF — dann gibt es nichts zu senden.")
+
+        # Senden
+        _n = len(st.session_state.get("wa_runde_mitglieder") or [])
+        _laeuft = _war.laufende_sendung()
+        _schon = _war.heute_an_runde(_pdf) if _pdf else None
+        _rerun = False
+        _bc1, _bc2 = st.columns([3, 1])
+        with _bc1:
+            if st.button("📲 Jetzt an die Runde senden (%d %s)" % (_n, "Person" if _n == 1 else "Leute"),
+                         key="_war_btn_senden", type="primary", use_container_width=True,
+                         disabled=not _pdf or not _n or bool(_laeuft)):
+                if _schon:
+                    st.session_state["_war_bestaetigen"] = _pdf
+                else:
+                    _rerun = _war_senden(_pdf)
+        with _bc2:
+            if st.button("🧪 Test an mich", key="_war_btn_test", use_container_width=True,
+                         disabled=not _pdf or bool(_laeuft),
+                         help="Schickt PDF + Begleittext nur in deinen eigenen Chat („Ich“)."):
+                _rerun = _war_senden(_pdf, an=["ich"], nochmal=True)
+        if _pdf and st.session_state.get("_war_bestaetigen") == _pdf and not _rerun:
+            st.warning("Dieses PDF ging heute schon an die Runde (%s). Wirklich nochmal an alle senden?"
+                       % (_war.quittung(_schon)[0] or "früher"))
+            _cc1, _cc2 = st.columns(2)
+            with _cc1:
+                if st.button("Ja, nochmal an alle", key="_war_btn_nochmal", use_container_width=True):
+                    st.session_state.pop("_war_bestaetigen", None)
+                    _rerun = _war_senden(_pdf, nochmal=True)
+            with _cc2:
+                if st.button("Abbrechen", key="_war_btn_abbrechen", use_container_width=True):
+                    st.session_state.pop("_war_bestaetigen", None)
+                    _war_neu_zeichnen()
+        if _rerun or st.session_state.get("_war_fehler"):
+            st.rerun()   # voller Durchlauf: Takt an bzw. Fehler oben zeigen
+
+        # Quittung der letzten Sendung (läuft sie noch, frisch vom Server holen)
+        _ls = _war.letzte_sendung()
+        if _ls and _ls.get("status") != "fertig":
+            try:
+                _ls = _war.aktualisieren(_ls["id"])
+            except Exception as _e:
+                st.caption("Stand gerade nicht abrufbar: %s" % _e)
+            if _ls.get("status") == "fertig" and _war_aktiv:
+                st.rerun()   # fertig → Takt aus
+        _q, _fehler = _war.quittung(_ls)
+        if _q:
+            _wer = " · automatisch" if _ls.get("auto") else (" · Test" if _ls.get("test") else "")
+            _was = "%s%s" % (_q, _wer)
+            if _ls.get("status") != "fertig":
+                st.info(_was)
+            elif _fehler or _q.startswith("❌"):
+                st.error(_was)
+            else:
+                st.success(_was)
+            for _z in _fehler:
+                st.error("❌ " + _z)
+
+
+_fragment_wa_runde()
+
 # "Neues Briefing" bleibt sichtbar (geteilter Reset für beide Pfade)
 _nb_col1, _nb_col2 = st.columns([3, 1])
 with _nb_col2:
@@ -6971,6 +7177,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "web": bool(st.session_state.get("synthesis_web_enrich", True)),
                 "podcast_mode": {"Einweben (kürzen)": "woven", "Länger erhalten": "soft", "Original übernehmen": "verbatim"}.get(st.session_state.get("podcast_synth_mode", "Länger erhalten"), "soft"),
                 "wa": bool(st.session_state.get("whatsapp_pdf_additional", True)),
+                "wa_runde_auto": bool(st.session_state.get("wa_runde_auto", False)),
                 "qc": bool(st.session_state.get("quality_check_enabled", True)),
                 "specials": split_special_topics(st.session_state.get("special_topics_text") or ""),
                 # 14.08.: Upload NIE stillschweigend ueberspringen. Stand die
@@ -7150,6 +7357,12 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 st.success("✅ Briefing fertig — Hörversion(en) sind in der ElevenReader-Bibliothek.")
             else:
                 st.success("✅ Briefing fertig — PDF + Hörtext liegen im Archiv.")
+            # 📲 WhatsApp-Runde: Sendefehler genauso laut wie ein gescheiterter Upload
+            for _wr9 in [str(r.get("wa_runde") or "") for r in (_job_done.get("results") or [])]:
+                if _wr9.startswith("fail"):
+                    st.error("📲 **WhatsApp-Runde: nicht (an alle) gesendet.**  \n"
+                             f"_{_wr9[5:].strip()[:400]}_  \n"
+                             "Unten bei „📲 WhatsApp-Runde“ kannst du es von Hand nochmal schicken.")
             if _job_done.get("reused_prepared"):
                 st.caption("♻️ Rohdaten (Fetch + Merge) aus dem vorherigen Lauf wiederverwendet — schneller & spart Kontingent.")
         _inp = _job_done.get("inputs") or {}
@@ -7182,6 +7395,10 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                     _bits.append(f"🧠 {_re9['specials']} Sonderthema/-themen")
                 if _re9.get("upload"):
                     _bits.append("🎧 " + ("✓" if str(_re9["upload"]).startswith("ok") else f"Upload: {_re9['upload']}"))
+                if _re9.get("wa_runde"):
+                    _wr = str(_re9["wa_runde"])
+                    _bits.append("📲 " + (_wr[3:].strip() if _wr.startswith("ok:") else
+                                          _wr[4:].strip() if _wr.startswith("aus:") else "❌ siehe oben"))
             else:
                 _bits.append(f"❌ {str(_re9.get('error'))[:100]}")
             st.caption(" · ".join(_bits))

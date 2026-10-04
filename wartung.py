@@ -27,7 +27,7 @@ sys.path.insert(0, APP_DIR)
 LOG = os.path.join(APP_DIR, ".wartung.log")
 BERICHT = os.path.join(APP_DIR, "WARTUNGSBERICHT.md")
 MODULE = ("briefing_core", "briefing_app", "feedly_fetch", "pocketcasts_fetch",
-          "reader_upload", "briefing_scheduled", "fehlerbuch", "browser_pfad")
+          "reader_upload", "briefing_scheduled", "fehlerbuch", "browser_pfad", "wa_runde")
 
 # Was der Wartungslauf anfassen darf — und was ausdrücklich nicht.
 AUFTRAG = """Du bist der nächtliche Wartungslauf einer privaten Briefing-App.
