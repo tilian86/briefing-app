@@ -272,7 +272,7 @@ def main():
              "eleven_txt": (r.get("artifacts") or {}).get("eleven_txt"),
              "sections": r.get("beitrag_count") or r.get("sections_count"),
              "elapsed": int(r.get("elapsed_seconds") or 0),
-             "error": r.get("error"), "upload": None, "wa": False}
+             "error": r.get("error"), "upload": None}
     cc = r.get("content_check") or {}
     if cc:
         entry["plausi"] = "%sW/%sN, repariert %s" % (cc.get("warnings", "?"), cc.get("notices", "?"), r.get("content_repaired", 0))
@@ -381,51 +381,20 @@ def main():
             except Exception:
                 pass
 
-    # 📱 04.10.: WhatsApp-Version auch im terminierten Lauf — wie der App-Knopf,
-    # wenn im Entwurf „WhatsApp-PDF zusätzlich“ angehakt ist. Sie nutzt die schon
-    # geholten Rohdaten (prepared), kostet also nur den kurzen Schreibschritt.
-    # Danach die 📲 WhatsApp-Runde: Begleittext erzeugen und — nur mit Häkchen
-    # „Automatisch senden“ — über Chatfunk an die Freunde. Nachhol-Läufe
-    # (BRIEFING_MANUELL) bauen keine WhatsApp-Version. Nichts davon darf den Lauf
-    # kippen: Fehler stehen nur im Eintrag (rot in der App).
-    results = [entry]
-    if draft.get("whatsapp_pdf_additional", True) and not MANUELL:
-        wa_pdf = os.path.join(archive, "%s_briefing%s_whatsapp.pdf" % (ts, suffix))
-        wa_entry = {"label": "WhatsApp 📱", "ok": False, "pdf": wa_pdf, "eleven_txt": None,
-                    "sections": None, "elapsed": 0, "error": None, "upload": None, "wa": True}
-        results.append(wa_entry)
-        status.update({"step": "📱 WhatsApp-Version…", "ratio": 0.95, "results": results})
-        _write_status(status)
-        _log("Baue WhatsApp-Version…")
-        try:
-            rw = core.run_briefing_via_claude_cli_chunked(
-                urls_text=urls, paywall_text=paywall, podcast_text=podcast,
-                include_weather=True, output_pdf_path=wa_pdf, model=model,
-                compact_mode=True, ultra_compact=True,
-                merge_duplicates=True, prepared=r.get("prepared"),
-                topic_synthesis=False, synthesis_narrative=False, synthesis_web_enrich=False,
-                content_check=False, auto_repair=False, special_topics=None,
-                smart_length=False, smart_cap=0, podcast_mode=podcast_mode,
-                progress_callback=lambda s, x: None,
-            )
-            wa_entry.update({"ok": bool(rw.get("ok")),
-                             "eleven_txt": (rw.get("artifacts") or {}).get("eleven_txt"),
-                             "sections": rw.get("beitrag_count") or rw.get("sections_count"),
-                             "elapsed": int(rw.get("elapsed_seconds") or 0), "error": rw.get("error")})
-        except Exception as _wex:
-            wa_entry["error"] = str(_wex)[:200]
-            _log("WhatsApp-Version: Ausnahme\n" + traceback.format_exc())
-        _log("WhatsApp-Version: %s" % ("ok" if wa_entry["ok"] else "fehlgeschlagen: %s" % wa_entry["error"]))
-        if wa_entry["ok"]:
-            status.update({"step": "📲 WhatsApp-Runde…", "ratio": 0.98, "results": results})
-            _write_status(status)
-            try:
-                import wa_runde
-                wa_entry["wa_runde"] = wa_runde.nach_wa_pdf(
-                    wa_pdf, wa_entry.get("eleven_txt"), auto=bool(draft.get("wa_runde_auto")), log=_log)
-            except Exception as _wrx:
-                wa_entry["wa_runde"] = "fail: %s" % str(_wrx)[:150]
-            _log("WhatsApp-Runde: %s" % wa_entry.get("wa_runde"))
+    # 📲 04.10.: WhatsApp-Runde — Begleittext zum fertigen Haupt-PDF erzeugen und, mit
+    # Häkchen „Tagesbriefing automatisch senden“, über Chatfunk an die Freunde (höchstens
+    # einmal am Tag, prüft wa_runde selbst). Nachhol-Läufe (BRIEFING_MANUELL, mehrere
+    # Teile aus einem Artikelberg) senden nie automatisch — sonst ginge nur Teil 1 raus.
+    # Nichts davon darf den Lauf kippen: Fehler stehen nur im Eintrag (rot in der App).
+    status.update({"step": "📲 WhatsApp-Runde…", "ratio": 0.98, "results": [entry]})
+    _write_status(status)
+    try:
+        import wa_runde
+        entry["wa_runde"] = wa_runde.nach_briefing(
+            out_pdf, entry.get("eleven_txt"), auto=bool(draft.get("wa_runde_auto")) and not MANUELL, log=_log)
+    except Exception as _wrx:
+        entry["wa_runde"] = "fail: %s" % str(_wrx)[:150]
+    _log("WhatsApp-Runde: %s" % entry.get("wa_runde"))
 
     try:
         status["usage_5h_after"] = core._read_real_5h_usage()
@@ -438,7 +407,7 @@ def main():
     _schluss = ("✅ Fertig (terminiert)." if not _fehlend else
                 f"⚠️ Fertig (terminiert) — aber {_fehlend} Quelle(n) fehlen im "
                 f"Briefing (Limit/Auslastung beim Schreiben).")
-    status.update({"active": True, "done": True, "step": _schluss, "ratio": 1.0, "results": results})
+    status.update({"active": True, "done": True, "step": _schluss, "ratio": 1.0, "results": [entry]})
     _write_status(status)
     _log("=== Fertig: %s Beiträge, Upload=%s ===" % (entry.get("sections"), entry.get("upload")))
     _cleanup()

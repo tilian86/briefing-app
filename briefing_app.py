@@ -247,9 +247,11 @@ _DRAFT_DEFAULTS = {
     "podcast_synth_mode": "Länger erhalten",
     "auto_reader_upload": True,
     "reader_cleanup_days": 14,
-    "whatsapp_pdf_additional": True,
-    # 📲 WhatsApp-Runde (04.10.): fertiges WhatsApp-PDF automatisch über Chatfunk an die
-    # Freundesrunde. Standard AUS — das Häkchen setzt Florian selbst.
+    # 04.10.: "whatsapp_pdf_additional" (eigenes WhatsApp-Lese-PDF) ausgebaut — Florian
+    # schickt immer das normale Briefing. Alte Entwürfe mit dem Schlüssel stören nicht:
+    # geladen und gespeichert werden nur die Schlüssel dieser Liste.
+    # 📲 WhatsApp-Runde (04.10.): fertiges Tagesbriefing-PDF automatisch über Chatfunk an
+    # die Freundesrunde. Standard AUS — das Häkchen setzt Florian selbst.
     "wa_runde_auto": False,
     "last_meta_created_iso": "",
     "meta_web_recherche": True,    # Wochenbriefing recherchiert selbst nach (14.09.)
@@ -3373,7 +3375,7 @@ def _briefing_worker(cfg: dict, status: dict):
     (plus Datei-Spiegel für Sessions, die den Thread nicht kennen).
 
     Reihenfolge auf Tempo optimiert: Hauptversion ZUERST (→ sofort hochladen, Florian
-    kann hören), dann WhatsApp + weitere Längen."""
+    kann hören), dann weitere Längen."""
     import json as _json
     import threading as _th
     _wach = _wachhalter_start()   # PDF-/Upload-Phasen zwischen den CLI-Aufrufen abdecken
@@ -3395,15 +3397,12 @@ def _briefing_worker(cfg: dict, status: dict):
 
     try:
         depths = cfg["depths"]
-        wa = cfg["wa"]
         plan = []
+        # Hauptversion zuerst, weitere Längen danach. (Das eigene WhatsApp-Lese-PDF ist
+        # seit 04.10. ausgebaut — die 📲 WhatsApp-Runde verschickt das Haupt-PDF.)
         for _di, dep in enumerate(cfg["depths"]):
             sfx = {"Sehr kurz": "_sehr-kurz", "Kürzer": "_kuerzer", "Ausführlich": "_ausfuehrlich", "Intelligent kompakt": "_int-s", "Intelligent": "_int-m", "Intelligent ausführlich": "_int-l"}[dep] if len(depths) > 1 else ""
-            plan.append({"label": dep, "depth": dep, "synth": cfg["synth"], "suffix": sfx, "wa": False})
-        if wa:
-            plan.append({"label": "WhatsApp 📱", "depth": "Sehr kurz", "synth": False, "suffix": "_whatsapp", "wa": True})
-        # Hauptversion zuerst, WhatsApp direkt danach, weitere Längen zum Schluss
-        plan = [plan[0]] + ([p for p in plan if p["wa"]] if wa else []) + [p for p in plan[1:] if not p["wa"]]
+            plan.append({"label": dep, "depth": dep, "synth": cfg["synth"], "suffix": sfx})
 
         if cfg["upload"]:
             try:
@@ -3485,7 +3484,7 @@ def _briefing_worker(cfg: dict, status: dict):
             entry = {"label": rp["label"], "ok": bool(r.get("ok")), "pdf": str(out_pdf),
                      "eleven_txt": (r.get("artifacts") or {}).get("eleven_txt"),
                      "sections": r.get("beitrag_count") or r.get("sections_count"), "elapsed": int(r.get("elapsed_seconds") or 0),
-                     "error": r.get("error"), "upload": None, "wa": rp["wa"]}
+                     "error": r.get("error"), "upload": None}
             cc = r.get("content_check") or {}
             if cc:
                 entry["plausi"] = f"{cc.get('warnings', '?')}W/{cc.get('notices', '?')}N, repariert {r.get('content_repaired', 0)}"
@@ -3529,7 +3528,7 @@ def _briefing_worker(cfg: dict, status: dict):
                     pass
 
             # 🎧 Sofort-Upload je fertiger Hauptversion (Florians Wunsch)
-            if not rp["wa"] and cfg["upload"]:
+            if cfg["upload"]:
                 _txtp = (r.get("artifacts") or {}).get("eleven_txt")
                 if _txtp:
                     _upd(step=f"🎧 {rp['label']}: Upload in die ElevenReader-Bibliothek…")
@@ -3557,21 +3556,22 @@ def _briefing_worker(cfg: dict, status: dict):
                         entry["upload"] = "fail: " + str(_uex)[:100]
                     _upd(results=results)
 
-        # 📲 WhatsApp-Runde (04.10.): Begleittext zum WhatsApp-PDF erzeugen und — mit
-        # Häkchen „Automatisch senden“ — über Chatfunk an die Runde schicken. Erst NACH
+        # 📲 WhatsApp-Runde (04.10.): Begleittext zum Haupt-PDF (erste Version) erzeugen
+        # und — mit Häkchen „Automatisch senden“ — über Chatfunk an die Runde schicken
+        # (höchstens einmal am Tag; dieser Lauf ist immer ein Tagesbriefing). Erst NACH
         # allen Versionen, damit Hören/Upload nicht warten. Fehler landen nur im
         # Eintrag (results[].wa_runde, rot in der Oberfläche), nie im Lauf.
-        for _we in results:
-            if _we.get("wa") and _we.get("ok") and not _cancelled():
-                _upd(step="📲 WhatsApp-Runde: Begleittext" + (" + Senden an die Runde…" if cfg.get("wa_runde_auto") else "…"),
-                     ratio=0.96)
-                try:
-                    import wa_runde as _war_w
-                    _we["wa_runde"] = _war_w.nach_wa_pdf(_we["pdf"], _we.get("eleven_txt"),
-                                                         auto=bool(cfg.get("wa_runde_auto")))
-                except Exception as _wex:
-                    _we["wa_runde"] = "fail: %s" % str(_wex)[:150]
-                _upd(results=results)
+        _we = results[0] if results else None
+        if _we and _we.get("ok") and not _cancelled():
+            _upd(step="📲 WhatsApp-Runde: Begleittext" + (" + Senden an die Runde…" if cfg.get("wa_runde_auto") else "…"),
+                 ratio=0.96)
+            try:
+                import wa_runde as _war_w
+                _we["wa_runde"] = _war_w.nach_briefing(_we["pdf"], _we.get("eleven_txt"),
+                                                       auto=bool(cfg.get("wa_runde_auto")))
+            except Exception as _wex:
+                _we["wa_runde"] = "fail: %s" % str(_wex)[:150]
+            _upd(results=results)
 
         if cfg["upload"] and int(cfg.get("cleanup_days") or 0) > 0 and not _cancelled():
             _upd(step="🗑️ Räume alte Bibliothekseinträge auf…", ratio=0.97)
@@ -6619,10 +6619,6 @@ def _fragment_briefing_einstellungen():
             st.caption("Kürzere Artikel — volles Briefing in voller Qualität, nur knackiger. Für die meisten Tagesläufe.")
         else:
             st.caption("Ausführlicher: mehr Kontext pro Beitrag, dafür länger.")
-        st.checkbox(
-            "📱 WhatsApp-Lese-PDF zusätzlich", key="whatsapp_pdf_additional", on_change=_save_draft,
-            help="Erstellt bei jedem Lauf zusätzlich eine kompakte LESE-Version für deinen WhatsApp-Broadcast: klassisches Format (ein Beitrag pro Quelle, wie deine Leser es kennen) in der Stufe Sehr kurz. Artikel werden nur EINMAL geladen — es kommt nur ein zweiter Verdichtungs-Durchlauf dazu (0 € übers Abo). Datei endet auf _whatsapp.pdf. Geht NICHT automatisch an ElevenReader.",
-        )
     with _mode_col2:
         topic_synthesis_mode = st.checkbox(
             "🧵 Themen-Synthese", key="topic_synthesis_mode", on_change=_save_draft,
@@ -6714,11 +6710,13 @@ ultra_compact = _briefing_depth == "Sehr kurz"
 topic_synthesis_mode = bool(st.session_state.get("topic_synthesis_mode", True))
 
 # ============================================================
-# 📲 WhatsApp-Runde (04.10.): WhatsApp-PDF über Chatfunk an die Freundesrunde
+# 📲 WhatsApp-Runde (04.10.): das normale Briefing-PDF über Chatfunk an die Freundesrunde
 # ============================================================
 # Ersetzt Florians Handarbeit mit der Broadcast-Liste. Chatfunk (Funk-Server) schickt
-# das PDF EINZELN an jede Person des Verteilers „Briefing-Runde“, mit Begleittext
-# (Datum, Wetter, 3 Themen, „Außerdem drin“; erzeugt nach jedem WhatsApp-PDF).
+# das Haupt-PDF des Briefings EINZELN an jede Person des Verteilers „Briefing-Runde“,
+# mit Begleittext (Datum, Wetter, 3 Themen, „Außerdem drin“; erzeugt nach jedem
+# fertigen Briefing-PDF). Automatisch nur das Tagesbriefing, höchstens 1× am Tag;
+# das Wochenbriefing nur per Knopf.
 # Die Runde liegt auf dem Server, damit Knopf und Hintergrundlauf dieselbe Liste
 # nutzen. Gesendet wird im Hintergrund (Pausen zwischen den Leuten) — das Fragment
 # tickt nur, solange eine Sendung läuft. Logik: wa_runde.py.
@@ -6763,7 +6761,7 @@ _war_aktiv = bool(_war.laufende_sendung())
 
 @st.fragment(run_every=(4 if _war_aktiv else None))
 def _fragment_wa_runde():
-    with st.expander("📲 WhatsApp-Runde — das WhatsApp-PDF an deine Freunde", expanded=False):
+    with st.expander("📲 WhatsApp-Runde — das Briefing-PDF an deine Freunde", expanded=False):
         if not _war.eingerichtet():
             st.warning("Chatfunk ist nicht eingerichtet: CHATFUNK_URL und CHATFUNK_SECRET fehlen in .env.")
             return
@@ -6795,14 +6793,23 @@ def _fragment_wa_runde():
                  "Automatik nutzen dieselbe Liste. Jede Person bekommt das PDF einzeln, nicht als Gruppe.",
         )
 
-        _pdf = _war.neuestes_wa_pdf()
-        if not _pdf:
-            st.caption("📄 Noch kein WhatsApp-PDF da — es entsteht beim nächsten Lauf, wenn oben "
-                       "„📱 WhatsApp-Lese-PDF zusätzlich“ angehakt ist.")
+        # Welches PDF: das normale Briefing (neuestes vorgewählt; kommt ein neues dazu,
+        # springt die Auswahl darauf). Wochenbriefings stehen mit drin — nur per Knopf.
+        _pdfs = _war.briefing_pdfs(8)
+        _pdf = None
+        if not _pdfs:
+            st.caption("📄 Noch kein Briefing-PDF da — es entsteht beim nächsten Briefing-Lauf.")
         else:
-            st.caption("📄 Neuestes WhatsApp-PDF: **%s** · geht raus als „%s“"
-                       % (os.path.basename(_pdf), _war.anzeige_dateiname(_pdf)))
-            # Begleittext: beim Bau erzeugt; neues PDF → Feld neu befüllen
+            if (st.session_state.get("_war_neuestes") != _pdfs[0]
+                    or st.session_state.get("_war_pdf_wahl") not in _pdfs):
+                st.session_state["_war_pdf_wahl"] = _pdfs[0]
+                st.session_state["_war_neuestes"] = _pdfs[0]
+            _pdf = st.selectbox("📄 Welches Briefing?", options=_pdfs, key="_war_pdf_wahl",
+                                format_func=_war.pdf_label,
+                                help="Das normale Briefing-PDF, so wie die App es baut. Das neueste ist "
+                                     "vorgewählt; ältere und Wochenbriefings kannst du hier wählen.")
+            st.caption("📄 **%s** · geht raus als „%s“" % (os.path.basename(_pdf), _war.anzeige_dateiname(_pdf)))
+            # Begleittext: nach dem Bau erzeugt; anderes PDF → Feld neu befüllen
             if st.session_state.get("_war_text_pdf") != _pdf:
                 st.session_state["wa_runde_text"] = (_war.gemerkter_text(_pdf) or {}).get("text", "")
                 st.session_state["_war_text_pdf"] = _pdf
@@ -6816,11 +6823,11 @@ def _fragment_wa_runde():
             with _tc1:
                 st.caption(("%d Zeichen — steht als Text unter dem PDF." % _tl) if 0 < _tl <= 1024 else
                            ("%d Zeichen — kommt als eigene Nachricht direkt vor dem PDF." % _tl) if _tl else
-                           "Kein Begleittext — das PDF geht ohne Text raus.")
+                           "Noch kein Begleittext — „✨ Neu erzeugen“ schreibt einen. Ohne Text geht nur das PDF raus.")
             with _tc2:
                 if st.button("✨ Neu erzeugen", key="_war_btn_text", use_container_width=True,
-                             help="Claude (Sonnet, Max-Abo) liest die WhatsApp-Version und schreibt Datum, "
-                                  "Wetter, die 3 wichtigsten Themen und „Außerdem drin“ — ca. 15 Sekunden."):
+                             help="Claude (Sonnet, Max-Abo) liest das Briefing und schreibt Datum, Wetter, "
+                                  "die 3 wichtigsten Themen und „Außerdem drin“ — ca. 20 Sekunden."):
                     with st.spinner("Claude schreibt den Begleittext …"):
                         _t, _q = _war.begleittext(_pdf)
                     try:
@@ -6833,13 +6840,12 @@ def _fragment_wa_runde():
                     _war_neu_zeichnen()
 
         st.checkbox(
-            "Automatisch senden, wenn das WhatsApp-PDF fertig ist", key="wa_runde_auto", on_change=_save_draft,
-            help="Nach jedem Briefing-Lauf mit WhatsApp-PDF (App-Knopf UND terminierter Lauf) geht es mit dem "
-                 "erzeugten Begleittext an die Runde — höchstens einmal pro Tag automatisch, ein zweiter Lauf "
-                 "am selben Tag nur per Knopf. Fehler stehen rot im Job-Status.",
+            "Tagesbriefing automatisch senden (höchstens 1× am Tag)", key="wa_runde_auto", on_change=_save_draft,
+            help="Nach jedem Tagesbriefing-Lauf (App-Knopf UND terminierter Lauf) geht das normale Briefing-PDF "
+                 "mit dem erzeugten Begleittext an die Runde — höchstens einmal pro Tag automatisch, ein zweiter "
+                 "Lauf am selben Tag nur per Knopf. Fehler stehen rot im Job-Status.",
         )
-        if st.session_state.get("wa_runde_auto") and not st.session_state.get("whatsapp_pdf_additional"):
-            st.caption("⚠️ Ohne „📱 WhatsApp-Lese-PDF zusätzlich“ (oben) entsteht kein WhatsApp-PDF — dann gibt es nichts zu senden.")
+        st.caption("🗓️ Das Wochenbriefing (So 19:10) geht nie automatisch raus — nur hier per Knopf.")
 
         # Senden
         _n = len(st.session_state.get("wa_runde_mitglieder") or [])
@@ -7112,7 +7118,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         use_container_width=True,
         type="primary",
         disabled=(not _cli_available) or _job_active,
-        help="Startet den kompletten Lauf im Hintergrund: Hauptversion zuerst (wird sofort in den ElevenReader geladen — hören, während der Rest rechnet), dann WhatsApp + weitere Längen. Klicken, Neuladen, Browser zumachen — alles egal, der Lauf läuft weiter. Nutzt dein Max-Abo, keine API-Kosten.",
+        help="Startet den kompletten Lauf im Hintergrund: Hauptversion zuerst (wird sofort in den ElevenReader geladen — hören, während der Rest rechnet), dann weitere Längen. Klicken, Neuladen, Browser zumachen — alles egal, der Lauf läuft weiter. Nutzt dein Max-Abo, keine API-Kosten.",
     )
     if _auto_fire:
         _kette_loeschen()
@@ -7176,7 +7182,6 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 "magazin": bool(st.session_state.get("synthesis_narrative_style", True)),
                 "web": bool(st.session_state.get("synthesis_web_enrich", True)),
                 "podcast_mode": {"Einweben (kürzen)": "woven", "Länger erhalten": "soft", "Original übernehmen": "verbatim"}.get(st.session_state.get("podcast_synth_mode", "Länger erhalten"), "soft"),
-                "wa": bool(st.session_state.get("whatsapp_pdf_additional", True)),
                 "wa_runde_auto": bool(st.session_state.get("wa_runde_auto", False)),
                 "qc": bool(st.session_state.get("quality_check_enabled", True)),
                 "specials": split_special_topics(st.session_state.get("special_topics_text") or ""),
@@ -7663,10 +7668,9 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                 )
                 _depths_run = st.session_state.get("_depths_to_run") or ["Kürzer"]
                 _synth_on = bool(st.session_state.get("topic_synthesis_mode", False))
-                _wa_on = bool(st.session_state.get("whatsapp_pdf_additional", True))
                 # Mehrere Längen oder Themen-Synthese → immer Häppchen-Modus (nur der
                 # kann Basis-Wiederverwendung bzw. die Synthese-Pipeline).
-                _use_chunked = ((_cli_item_count >= 25) or len(_depths_run) > 1 or _synth_on or _wa_on) and not _cli_narrative_selected
+                _use_chunked = ((_cli_item_count >= 25) or len(_depths_run) > 1 or _synth_on) and not _cli_narrative_selected
                 if len(_depths_run) > 1 and _cli_narrative_selected:
                     st.caption("ℹ️ Erzähl-Version gewählt — es wird nur die erste Länge erstellt.")
 
@@ -7682,21 +7686,16 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                     handoff_text = ""  # im chunked-Pfad nicht gebaut; verhindert NameError unten
                     st.session_state["claude_handoff_text"] = ""
                     _depth_suffix = {"Sehr kurz": "_sehr-kurz", "Kürzer": "_kuerzer", "Ausführlich": "_ausfuehrlich", "Intelligent kompakt": "_int-s", "Intelligent": "_int-m", "Intelligent ausführlich": "_int-l"}
-                    # Lauf-Plan: WhatsApp-Lese-Version (klassisch, Sehr kurz) ZUERST —
-                    # sie füllt die geteilte Basis; die Hauptversionen laufen danach,
-                    # damit _AKTUELL-TXT und Reader-Upload die Hörversion tragen.
+                    # Lauf-Plan: eine Version je Länge (WhatsApp-Lese-PDF seit 04.10. ausgebaut).
                     _run_plan = []
-                    if _wa_on:
-                        _run_plan.append({"label": "WhatsApp 📱", "depth": "Sehr kurz", "synth": False,
-                                          "suffix": "_whatsapp", "wa": True})
                     for _depth in _depths_run:
                         _sfx = _depth_suffix[_depth] if (len(_depths_run) > 1) else ""
                         _run_plan.append({"label": _depth, "depth": _depth, "synth": _synth_on,
-                                          "suffix": _sfx, "wa": False})
+                                          "suffix": _sfx})
                     _multi = len(_run_plan) > 1
-                    # Plausi-Check + Auto-Repair laufen für die ERSTE Hauptversion (nicht WhatsApp,
-                    # nicht Zweitlängen — die teilen dieselbe geprüfte Rohdaten-Basis).
-                    _check_idx = next((_ci for _ci, _cr in enumerate(_run_plan) if not _cr["wa"]), 0)
+                    # Plausi-Check + Auto-Repair laufen für die ERSTE Version (nicht für
+                    # Zweitlängen — die teilen dieselbe geprüfte Rohdaten-Basis).
+                    _check_idx = 0
                     _special_list = split_special_topics(st.session_state.get("special_topics_text") or "")
                     _prepared_pkg = None
                     _multi_results = []  # [(Label, Pfad, result), …]
@@ -7785,9 +7784,6 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             st.success(f"🧠 {_sp_main['special_done']} Sonderthema/-themen recherchiert und als eigener Block eingewoben.")
                         if _sp_failed:
                             st.warning(f"🧠 {len(_sp_failed)} Sonderthema/-themen fehlgeschlagen — bleiben in der Box für den nächsten Lauf.")
-                    for _md, _mp, _mr in _multi_results:
-                        if str(_md).startswith("WhatsApp"):
-                            st.success(f"📱 WhatsApp-Lese-PDF bereit zum Verschicken: `{_mp.name}`")
                     # 🎧 Automatisch in die ElevenReader-Bibliothek hochladen (synct aufs iPhone)
                     if st.session_state.get("auto_reader_upload", True) and _multi_results:
                         try:
@@ -7795,8 +7791,6 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                             _wd_de = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
                             _now_up = datetime.datetime.now()
                             for _md, _mp, _mr in _multi_results:
-                                if str(_md).startswith("WhatsApp"):
-                                    continue  # Lese-Version ist fürs Verschicken, nicht für die Hör-Bibliothek
                                 _txtp = (_mr.get("artifacts") or {}).get("eleven_txt")
                                 if not _txtp:
                                     continue

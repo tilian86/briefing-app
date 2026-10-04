@@ -272,6 +272,15 @@ def main():
     _log("=== Fertig: %s aus %s Tagesbriefings in %ds, Upload=%s ==="
          % (titel, stats.get("briefings"), int(r.get("elapsed_seconds") or 0), hochgeladen))
 
+    # 📲 04.10.: WhatsApp-Runde — Begleittext fürs Wochenbriefing schon vorbereiten.
+    # Gesendet wird das Wochenbriefing NIE automatisch, nur per Knopf in der App.
+    if r.get("pdf_path"):
+        try:
+            import wa_runde
+            _log("WhatsApp-Runde: %s" % wa_runde.nach_briefing(str(r["pdf_path"]), txtp, auto=False, log=_log))
+        except Exception as e:
+            _log("WhatsApp-Runde: Begleittext nicht erzeugt: %s" % e)
+
 
 def _fehlerbuch(bereich, meldung, schwere="normal"):
     try:

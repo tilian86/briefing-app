@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""📲 WhatsApp-Runde: das WhatsApp-PDF des Briefings automatisch an Florians Freundesrunde.
+"""📲 WhatsApp-Runde: das normale Briefing-PDF automatisch an Florians Freundesrunde.
 
-Bisher hat Florian das fertige *_whatsapp.pdf von Hand über eine WhatsApp-Broadcast-Liste
+Bisher hat Florian das fertige Briefing-PDF von Hand über eine WhatsApp-Broadcast-Liste
 verschickt. Jetzt geht es über Chatfunk (verknüpftes WhatsApp-Gerät auf dem Funk-Server)
 EINZELN an jede Person des Verteilers „Briefing-Runde“ — mit kurzem Begleittext:
 
@@ -12,9 +12,16 @@ EINZELN an jede Person des Verteilers „Briefing-Runde“ — mit kurzem Beglei
     • …
     *Außerdem drin:* Stichwort · Stichwort · …
 
-Der Begleittext entsteht aus dem fertigen Inhalt der WhatsApp-Version mit EINEM kurzen
-Claude-Aufruf über die CLI (Max-Abo, nie API, Sonnet reicht). Klappt das nicht, baut ein
-fester Notfalltext Datum + Wetter (Open-Meteo, ohne Schlüssel) + Überschriften zusammen.
+Es geht immer das HAUPT-PDF des Briefings raus (…_briefing_claude_synthese.pdf), dasselbe,
+das die App baut — kein eigenes WhatsApp-PDF mehr (04.10. ausgebaut). Der Begleittext
+entsteht nach jedem fertigen Briefing-PDF mit EINEM kurzen Claude-Aufruf über die CLI
+(Max-Abo, nie API, Sonnet reicht). Lange Briefings (100+ Beiträge) bekommt Claude als
+Verdichtung: alle Überschriften plus der Anfang jedes Beitrags. Klappt der Aufruf nicht,
+baut ein fester Notfalltext Datum + Wetter (Open-Meteo, ohne Schlüssel) + Überschriften.
+
+Automatisch gesendet wird höchstens einmal am Tag und nur das Tagesbriefing (App-Lauf und
+terminierter Lauf). Das Wochenbriefing (So 19:10) bekommt nur den Begleittext — raus geht
+es ausschließlich per Knopf.
 
 Weg zum Server: Mac → https://chatfunk.46-225-133-113.sslip.io/api/* mit dem Server-Secret
 (CHATFUNK_URL / CHATFUNK_SECRET in .env, wie die anderen Schlüssel der App). Der
@@ -33,7 +40,7 @@ Kommandozeile:
   python3 wa_runde.py runde --leeren            Runde leeren
   python3 wa_runde.py text [PDF]                Begleittext erzeugen und merken
   python3 wa_runde.py senden [PDF] [--an ich] [--nochmal] [--text DATEI|-]
-                                                ohne PDF: das neueste *_whatsapp.pdf
+                                                ohne PDF: das neueste Briefing-PDF
 """
 import base64
 import datetime
@@ -56,6 +63,10 @@ ARCHIV_DIRS = [
     Path("/Users/florian/Library/Mobile Documents/com~apple~CloudDocs/Downloads/Briefings"),
     APP_DIR / ".archive",
 ]
+# Der launchd-Dienst kann iCloud nicht auflisten, nur per Pfad lesen — darum zusätzlich
+# die Pfade, die App und Wochenlauf ohnehin mitschreiben (Tests setzen beides auf None).
+WOCHEN_STATUS_PATH = APP_DIR / ".wochenbriefing_status.json"
+ARCHIV_INDEX_PATH = Path.home() / ".briefing_meta_mirror" / ".archive_index.json"
 VERTEILER_ID = "briefing-runde"
 VERTEILER_NAME = "Briefing-Runde"
 CAPTION_MAX = 1024          # WhatsApp-Bildunterschrift; länger → Chatfunk schickt den Text vorweg
@@ -192,28 +203,95 @@ def runde_setzen(jids: List[str]) -> dict:
     return runde()
 
 
-# ------------------------------------------------------------------ Neuestes WhatsApp-PDF
+# ------------------------------------------------------------------ Briefing-PDFs finden
 
-def neuestes_wa_pdf() -> Optional[str]:
-    """Neuestes *_whatsapp.pdf. Der launchd-Dienst kann iCloud nicht auflisten, nur per
-    Pfad lesen — darum zuerst die gemerkten Pfade (Zustand, Job-Status), dann glob."""
-    kandidaten = []
-    lp = _lies_state().get("letzte_pdf")
-    if lp:
-        kandidaten.append(lp)
+# Haupt-PDFs: „<ts>_briefing_claude_synthese.pdf“ (auch _claude, _claude_erzaehl, Längen-Suffix
+# wie _int-m) und „<ts>_wochenbriefing_7d.pdf“. Nicht: Kompaktfassungen (_tagesbriefing_kompakt…)
+# und alte WhatsApp-Lese-PDFs (_whatsapp.pdf, seit 04.10. ausgebaut, liegen evtl. noch im Archiv).
+_PDF_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}_(?:briefing[\w-]*|wochenbriefing_\d+d)\.pdf$")
+
+
+def ist_briefing_pdf(pdf: Optional[str]) -> bool:
+    n = os.path.basename(str(pdf or ""))
+    return bool(_PDF_RE.match(n)) and not n.endswith("_whatsapp.pdf")
+
+
+def ist_wochenbriefing(pdf: Optional[str]) -> bool:
+    return "_wochenbriefing_" in os.path.basename(str(pdf or ""))
+
+
+def _json_datei(pfad) -> object:
+    if not pfad:
+        return None
     try:
-        for r in json.loads(JOB_STATUS_PATH.read_text(encoding="utf-8")).get("results") or []:
-            if r.get("wa") and r.get("pdf"):
-                kandidaten.append(r["pdf"])
+        return json.loads(Path(pfad).read_text(encoding="utf-8"))
     except Exception:
-        pass
+        return None
+
+
+def briefing_pdfs(n: int = 8) -> List[str]:
+    """Die neuesten Briefing-PDFs (Tages- und Wochenbriefing), neuestes zuerst."""
+    kandidaten = []
+    st = _lies_state()
+    kandidaten += [st.get("letzte_pdf")] + [x.get("pdf") for x in st.get("sendungen") or []]
+    job = _json_datei(JOB_STATUS_PATH)
+    if isinstance(job, dict):
+        kandidaten += [r.get("pdf") for r in job.get("results") or [] if isinstance(r, dict)]
+    wb = _json_datei(WOCHEN_STATUS_PATH)
+    if isinstance(wb, dict):
+        kandidaten.append(wb.get("pdf"))
+    idx = _json_datei(ARCHIV_INDEX_PATH)
+    for x in idx if isinstance(idx, list) else []:
+        x = str(x)
+        if x.endswith("_eleven-reader.txt") and os.sep + "Texte" + os.sep in x:
+            # Texte/<stamm>_eleven-reader.txt → <Archiv>/<stamm>.pdf
+            ordner, name = os.path.split(x)
+            x = os.path.join(os.path.dirname(ordner), name[:-len("_eleven-reader.txt")] + ".pdf")
+        kandidaten.append(x)
     for d in ARCHIV_DIRS:
-        try:
-            kandidaten += [str(p) for p in d.glob("*_whatsapp.pdf")]
-        except Exception:
-            pass
-    da = [p for p in set(kandidaten) if p.endswith("_whatsapp.pdf") and os.path.exists(p)]
-    return max(da, key=lambda p: os.path.basename(p)) if da else None
+        for muster in ("*.pdf", "Wochen-Briefings/*.pdf"):
+            try:
+                kandidaten += [str(p) for p in d.glob(muster)]
+            except Exception:
+                pass
+    je_name = {}
+    for p in kandidaten:
+        if p and ist_briefing_pdf(p) and os.path.basename(p) not in je_name and os.path.exists(p):
+            je_name[os.path.basename(p)] = str(p)
+    return [je_name[k] for k in sorted(je_name, reverse=True)][:n]
+
+
+def neuestes_pdf(nur_tages: bool = False) -> Optional[str]:
+    for p in briefing_pdfs(30):
+        if not (nur_tages and ist_wochenbriefing(p)):
+            return p
+    return None
+
+
+def txt_zum_pdf(pdf: Optional[str]) -> Optional[str]:
+    """Der saubere Text zum PDF (ElevenReader-Text bzw. Wochenbriefing-.txt), falls da."""
+    if not pdf:
+        return None
+    ordner, name = os.path.split(str(pdf))
+    stamm = name[:-4] if name.lower().endswith(".pdf") else name
+    if ist_wochenbriefing(pdf):
+        orte = [os.path.join(ordner, stamm + ".txt")]
+    else:
+        orte = [os.path.join(ordner, "Texte", stamm + "_eleven-reader.txt"),
+                str(Path.home() / ".briefing_meta_mirror" / "Texte" / (stamm + "_eleven-reader.txt"))]
+    return next((o for o in orte if os.path.exists(o)), None)
+
+
+def pdf_label(pdf: str) -> str:
+    """„📰 Tagesbriefing Di 29.9. · 14:29 Uhr“ für die Auswahl in der App."""
+    n = os.path.basename(pdf)
+    d, m = briefing_datum(pdf), _TS_RE.search(n)
+    art = "🗓️ Wochenbriefing" if ist_wochenbriefing(pdf) else "📰 Tagesbriefing"
+    out = "%s %s %d.%d." % (art, _WD[d.weekday()][:2], d.day, d.month)
+    if m:
+        out += " · %s:%s Uhr" % (m.group(4), m.group(5))
+    variante = re.sub(r"^.*?_briefing(?:_claude(?:_synthese|_erzaehl)?)?", "", n[:-4]).strip("_")
+    return out + (" · " + variante if variante and not ist_wochenbriefing(pdf) else "")
 
 
 def briefing_datum(pdf: Optional[str]) -> datetime.date:
@@ -227,8 +305,10 @@ def briefing_datum(pdf: Optional[str]) -> datetime.date:
 
 
 def anzeige_dateiname(pdf: str) -> str:
-    """Freundlicher Dateiname für die Empfänger statt „…_claude_synthese_whatsapp.pdf“."""
+    """Freundlicher Dateiname für die Empfänger statt „2026-09-29_14-29_briefing_claude_synthese.pdf“."""
     d = briefing_datum(pdf)
+    if ist_wochenbriefing(pdf):
+        return "Wochenbriefing %d.%d.%d.pdf" % (d.day, d.month, d.year)
     return "Briefing %s %d.%d.%d.pdf" % (_WD[d.weekday()], d.day, d.month, d.year)
 
 
@@ -287,17 +367,24 @@ def _messwerte_text(w: Optional[dict], datum: datetime.date) -> str:
                 int(w["code"]), wetter_zeile(w)))
 
 
-# ------------------------------------------------------------------ Inhalt der WhatsApp-Version
+# ------------------------------------------------------------------ Inhalt des Briefings
 
-def inhalt_lesen(pdf: Optional[str], txt: Optional[str] = None, max_zeichen: int = 30000) -> str:
-    """Text der WhatsApp-Version: ElevenReader-Text (sauber), sonst aus dem PDF gezogen."""
+_ROH_MAX = 600000   # mehr liest niemand: ~220k Zeichen hat ein langes Tagesbriefing
+
+
+def inhalt_lesen(pdf: Optional[str], txt: Optional[str] = None, max_zeichen: int = 40000) -> str:
+    """Text des Briefings: sauberer Text (ElevenReader / Wochen-.txt), sonst aus dem PDF
+    gezogen. Länger als max_zeichen → Verdichtung über ALLE Beiträge (nicht abschneiden,
+    sonst sähe Claude von 120 Beiträgen nur die ersten 25)."""
+    roh = ""
+    txt = txt or txt_zum_pdf(pdf)
     if txt and os.path.exists(txt):
         try:
             with open(txt, encoding="utf-8") as f:
-                return f.read()[:max_zeichen]
+                roh = f.read(_ROH_MAX)
         except Exception:
-            pass
-    if pdf and os.path.exists(pdf):
+            roh = ""
+    if not roh.strip() and pdf and os.path.exists(pdf):
         try:
             import pypdf
             teile, n = [], 0
@@ -305,15 +392,38 @@ def inhalt_lesen(pdf: Optional[str], txt: Optional[str] = None, max_zeichen: int
                 t = seite.extract_text() or ""
                 teile.append(t)
                 n += len(t)
-                if n > max_zeichen:
+                if n > _ROH_MAX:
                     break
-            return "\n".join(teile)[:max_zeichen]
+            roh = "\n".join(teile)
         except Exception:
-            pass
-    return ""
+            roh = ""
+    return _verdichten(roh, max_zeichen)
 
 
 _SEITENKOPF_RE = re.compile(r"^(Seite \d+|.*Tagesbriefing\s+-\s+.*|DIGITALES AUDIO-BRIEFING)$")
+_BEITRAG_RE = re.compile(r"(?m)^[ \t]*(Beitrag \d+ von \d+\.?)[ \t]*$")
+
+
+def _verdichten(inhalt: str, max_zeichen: int) -> str:
+    """Kopf (mit „Die drei wichtigsten Themen“) + je Beitrag Überschrift und Anfang;
+    der Wetter-Beitrag etwas länger (Zahlen fürs Wetter)."""
+    if len(inhalt) <= max_zeichen:
+        return inhalt
+    teile = _BEITRAG_RE.split(inhalt)   # [Kopf, Marke1, Text1, Marke2, Text2, …]
+    if len(teile) < 3:
+        return inhalt[:max_zeichen]
+    kopf = teile[0].strip()[:6000]
+    bloecke = []
+    for marke, text in zip(teile[1::2], teile[2::2]):
+        zeilen = [z.strip() for z in text.splitlines() if z.strip() and not _SEITENKOPF_RE.match(z.strip())]
+        bloecke.append((marke, zeilen[0] if zeilen else "", " ".join(zeilen[1:])))
+    fest = len(kopf) + sum(len(m) + len(t) + 3 for m, t, _ in bloecke) + 1700
+    je = max(0, min(800, (max_zeichen - fest) // max(1, len(bloecke))))
+    out = [kopf, "", "[Verdichtet: alle %d Beiträge mit Überschrift und Anfang]" % len(bloecke)]
+    for marke, titel, rumpf in bloecke:
+        n = 1200 if titel.lower().startswith("wetter") else je
+        out += ["", marke, titel] + ([_kuerzen(rumpf, n)] if rumpf and n >= 60 else [])
+    return "\n".join(out)[:max_zeichen]
 
 
 def _ueberschriften(inhalt: str) -> List[str]:
@@ -335,6 +445,22 @@ def _ueberschriften(inhalt: str) -> List[str]:
                 titel.append(nxt)
             break
     return titel
+
+
+# Gliederungs-Überschriften des Wochenbriefings, die kein Thema sind
+_WOCHEN_GERUEST = ("die lage in", "die großen stränge", "lokales aus", "querverbindungen",
+                   "unterschätzte signale", "was daraus geworden", "der coach-blick", "recap der woche",
+                   "was wirklich bleibt", "bis zum nächsten", "wochenrückblick")
+
+
+def _wochen_ueberschriften(inhalt: str) -> List[str]:
+    """Themen-Überschriften des Wochenbriefings („#### Pflege: Gestritten wird …“)."""
+    out = []
+    for z in re.findall(r"(?m)^#{2,4}\s+(.+?)\s*$", inhalt):
+        z = _saeubern(z)
+        if z and not z.lower().startswith(_WOCHEN_GERUEST):
+            out.append(z)
+    return out
 
 
 def _top3(inhalt: str) -> List[str]:
@@ -372,12 +498,14 @@ def _saeubern(t: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-def _zusammensetzen(datum: datetime.date, wetter: str, themen: List[str], ausserdem: List[str]) -> str:
-    zeilen = ["📻 *Briefing vom %s, %d. %s*" % (_WD[datum.weekday()], datum.day, _MONATE[datum.month - 1])]
-    if wetter:
+def _zusammensetzen(datum: datetime.date, wetter: str, themen: List[str], ausserdem: List[str],
+                    woche: bool = False) -> str:
+    zeilen = ["📻 *%s vom %s, %d. %s*" % ("Wochenbriefing" if woche else "Briefing",
+                                          _WD[datum.weekday()], datum.day, _MONATE[datum.month - 1])]
+    if wetter and not woche:
         zeilen.append(wetter)
     if themen:
-        zeilen += ["", "*Die 3 wichtigsten Themen*"] + ["• " + t for t in themen[:3]]
+        zeilen += ["", "*Die 3 wichtigsten Themen%s*" % (" der Woche" if woche else "")] + ["• " + t for t in themen[:3]]
     if ausserdem:
         stich, laenge = [], 0
         for s in ausserdem:
@@ -390,10 +518,10 @@ def _zusammensetzen(datum: datetime.date, wetter: str, themen: List[str], ausser
     return "\n".join(zeilen)
 
 
-def notfall_text(inhalt: str, datum: datetime.date, wetter: str) -> str:
+def notfall_text(inhalt: str, datum: datetime.date, wetter: str, woche: bool = False) -> str:
     """Ohne Claude: Datum + Wetter + Top-3 bzw. Überschriften der ersten Beiträge."""
-    titel = _ueberschriften(inhalt)
-    themen = _top3(inhalt)
+    titel = _wochen_ueberschriften(inhalt) if woche else _ueberschriften(inhalt)
+    themen = [] if woche else _top3(inhalt)
     rest = titel
     if len(themen) < 3:
         themen = [_kuerzen(t, 150) for t in titel[:3]]
@@ -408,10 +536,10 @@ def notfall_text(inhalt: str, datum: datetime.date, wetter: str) -> str:
             continue
         gesehen.add(s.lower())
         ausserdem.append(s)
-    return _zusammensetzen(datum, wetter, themen, ausserdem[:6])
+    return _zusammensetzen(datum, wetter, themen, ausserdem[:6], woche=woche)
 
 
-_PROMPT = """Du schreibst den Begleittext für ein WhatsApp-PDF: Florians tägliches Nachrichten-Briefing, das er Freunden schickt.
+_PROMPT = """Du schreibst den Begleittext für ein PDF, das Florian per WhatsApp an Freunde schickt: sein Nachrichten-Briefing.
 Lies das Briefing unten und antworte AUSSCHLIESSLICH mit einem JSON-Objekt, ohne Vorrede, ohne Markdown:
 {"wetter": "...", "themen": ["...", "...", "..."], "ausserdem": ["...", "..."]}
 
@@ -419,10 +547,13 @@ Regeln:
 - themen: die 3 wichtigsten Themen des Tages, je EIN kurzer Satz (höchstens 14 Wörter), sachlich und konkret, ohne Links, ohne Emojis, ohne Markdown. Nennt das Briefing selbst „Die drei wichtigsten Themen“, nimm genau diese.
 - ausserdem: 5 bis 8 weitere Themen aus dem Briefing als knappe Stichworte (je 1 bis 3 Wörter, z. B. „Bahnstreik“, „Tübinger Gemeinderat“, „Bundesliga“), nicht doppelt zu den themen, wichtigste zuerst.
 - wetter: EINE Zeile für Tübingen am Briefing-Tag im Format „<Emoji> <Höchst>°/<Tiefst>°, <2 bis 4 Wörter>“, z. B. „☀️ 14°/6°, trocken“ oder „🌦️ 11°/7°, nachmittags Schauer“. Zahlen nur aus dem Wetterabschnitt des Briefings oder aus den Messwerten unten, nichts erfinden; fehlt im Briefing ein Wert, nimm die Messwerte. Leerer String, wenn es gar keine Zahlen gibt.
+- Ist das Briefing sehr lang, bekommst du es verdichtet (jeder Beitrag mit Überschrift und Anfang) — wähle trotzdem aus dem GANZEN Briefing.
+"""
+_PROMPT_WOCHE = """Achtung, das ist das WOCHENBRIEFING (Rückblick auf die Woche): themen = die 3 wichtigsten Linien der Woche, ausserdem = weitere Themen der Woche, wetter = leerer String.
 """
 
 
-def _claude_text(inhalt: str, datum: datetime.date, w: Optional[dict]) -> Optional[dict]:
+def _claude_text(inhalt: str, datum: datetime.date, w: Optional[dict], woche: bool = False) -> Optional[dict]:
     """EIN kurzer CLI-Aufruf (Max-Abo, Sonnet). None, wenn es nicht klappt."""
     if os.environ.get("WA_RUNDE_OHNE_CLAUDE"):
         return None
@@ -433,15 +564,17 @@ def _claude_text(inhalt: str, datum: datetime.date, w: Optional[dict]) -> Option
     cli = core._locate_claude_cli()
     if not cli or not inhalt.strip():
         return None
-    eingabe = (_PROMPT + "\nBriefing-Tag: %s, %s\n%s\n\n=== BRIEFING (WhatsApp-Version) ===\n%s"
-               % (_WD[datum.weekday()], datum.strftime("%d.%m.%Y"), _messwerte_text(w, datum), inhalt))
+    eingabe = (_PROMPT + (_PROMPT_WOCHE if woche else "")
+               + "\nBriefing-Tag: %s, %s\n%s\n\n=== BRIEFING ===\n%s"
+               % (_WD[datum.weekday()], datum.strftime("%d.%m.%Y"),
+                  "" if woche else _messwerte_text(w, datum), inhalt))
     cmd = [cli, "--print", "--output-format", "text", "--model", core.cli_modell("sonnet"),
            "--dangerously-skip-permissions", "--effort", core.cli_effort("mechanik"),
            "--append-system-prompt", "Antworte ausschließlich mit dem JSON-Objekt, ohne Vorrede oder Erklärung."]
     try:
         sr = core._run_claude_cli_subprocess_streaming(
             cmd, eingabe, timeout_seconds=180, expected_duration_s=30.0,
-            label="WhatsApp-Begleittext (Claude)", use_caffeinate=False)
+            label="WhatsApp-Runde: Begleittext (Claude)", use_caffeinate=False)
     except Exception:
         return None
     if not sr.get("ok") or sr.get("returncode") not in (0, None):
@@ -454,12 +587,13 @@ def _claude_text(inhalt: str, datum: datetime.date, w: Optional[dict]) -> Option
 def begleittext(pdf: Optional[str], txt: Optional[str] = None) -> Tuple[str, str]:
     """(Text, Quelle) — Quelle „claude“ oder „notfall“. Wirft nie."""
     datum = briefing_datum(pdf)
+    woche = ist_wochenbriefing(pdf)
     inhalt = inhalt_lesen(pdf, txt)
-    w = wetter_open_meteo(datum)
+    w = None if woche else wetter_open_meteo(datum)
     om_zeile = wetter_zeile(w)
     d = None
     try:
-        d = _claude_text(inhalt, datum, w)
+        d = _claude_text(inhalt, datum, w, woche=woche)
     except Exception:
         d = None
     if d:
@@ -474,8 +608,8 @@ def begleittext(pdf: Optional[str], txt: Optional[str] = None) -> Tuple[str, str
         if not re.search(r"-?\d+°\s*/\s*-?\d+°", wetter) or len(wetter) > 60:
             wetter = om_zeile
         if len(themen) >= 3:
-            return _zusammensetzen(datum, wetter, themen[:3], ausserdem), "claude"
-    return notfall_text(inhalt, datum, om_zeile), "notfall"
+            return _zusammensetzen(datum, wetter, themen[:3], ausserdem, woche=woche), "claude"
+    return notfall_text(inhalt, datum, om_zeile, woche=woche), "notfall"
 
 
 # ------------------------------------------------------------------ Senden
@@ -561,14 +695,16 @@ def laufende_sendung() -> Optional[dict]:
     return None
 
 
-def heute_an_runde(pdf: Optional[str] = None) -> Optional[dict]:
+def heute_an_runde(pdf: Optional[str] = None, nur_tages: bool = False) -> Optional[dict]:
     """Letzte Sendung von heute an die Runde, bei der mindestens eine Person etwas bekam
-    (optional nur für dieses PDF)."""
+    (optional nur für dieses PDF bzw. nur Tagesbriefings)."""
     heute = datetime.date.today().isoformat()
     for s in reversed(_lies_state()["sendungen"]):
         if not s.get("runde") or not str(s.get("erstellt", "")).startswith(heute):
             continue
         if pdf and os.path.basename(s.get("pdf") or "") != os.path.basename(pdf):
+            continue
+        if nur_tages and ist_wochenbriefing(s.get("pdf")):
             continue
         if s.get("gesendet") or s.get("status") != "fertig":
             return s
@@ -618,8 +754,9 @@ def job_eintrag(s: dict) -> str:
 
 # ------------------------------------------------------------------ Für den Briefing-Lauf
 
-def nach_wa_pdf(pdf: str, txt: Optional[str] = None, auto: bool = False, log=None) -> str:
-    """Nach dem Bau des WhatsApp-PDFs: Begleittext erzeugen + merken, bei auto an die Runde.
+def nach_briefing(pdf: str, txt: Optional[str] = None, auto: bool = False, log=None) -> str:
+    """Nach jedem fertigen Briefing-PDF: Begleittext erzeugen + merken. Mit auto geht ein
+    TAGESbriefing an die Runde — höchstens einmal am Tag; ein Wochenbriefing nie automatisch.
     Wirft nie — der Briefing-Lauf darf hieran nicht scheitern. Rückgabe für results[].wa_runde."""
     def _log(m):
         try:
@@ -637,12 +774,15 @@ def nach_wa_pdf(pdf: str, txt: Optional[str] = None, auto: bool = False, log=Non
             merke_pdf(pdf)
         except Exception:
             pass
+    bereit = "Begleittext bereit (%s)" % ("Claude" if quelle == "claude" else "Notfalltext")
     if not auto:
-        return "aus: Begleittext bereit (%s), Auto-Senden ist aus" % ("Claude" if quelle == "claude" else "Notfalltext")
+        return "aus: %s, Auto-Senden ist aus" % bereit
+    if ist_wochenbriefing(pdf):
+        return "aus: %s — das Wochenbriefing geht nur per Knopf raus" % bereit
     try:
         if not eingerichtet():
             raise WaRundeFehler("Chatfunk ist nicht eingerichtet (CHATFUNK_URL / CHATFUNK_SECRET in .env)")
-        schon = heute_an_runde()
+        schon = heute_an_runde(nur_tages=True)
         if schon:
             return "aus: heute schon an die Runde gesendet (%s) — nochmal nur von Hand" % _uhr(schon)
         if not runde().get("mitglieder"):
@@ -697,7 +837,7 @@ def _cli(argv: List[str]) -> int:
             print("Chatfunk: %s · heute gesendet %s/%s" % (st.get("verbindung"), st.get("heuteGesendet"), st.get("limit")))
             rd = runde()
             print("Briefing-Runde (%d): %s" % (len(rd["mitglieder"]), ", ".join(kontakt_label(m) for m in rd["mitglieder"]) or "—"))
-            print("Neuestes WhatsApp-PDF: %s" % (neuestes_wa_pdf() or "—"))
+            print("Neuestes Briefing-PDF: %s" % (neuestes_pdf() or "—"))
             q, f = quittung(letzte_sendung())
             if q:
                 print("Letzte Sendung: %s" % q)
@@ -718,17 +858,17 @@ def _cli(argv: List[str]) -> int:
             for m in rd["mitglieder"]:
                 print("  %-45s %s" % (kontakt_label(m), m["jid"]))
         elif a.befehl == "text":
-            pdf = a.pdf or neuestes_wa_pdf()
+            pdf = a.pdf or neuestes_pdf()
             if not pdf:
-                print("Kein WhatsApp-PDF gefunden.", file=sys.stderr)
+                print("Kein Briefing-PDF gefunden.", file=sys.stderr)
                 return 1
             text, quelle = begleittext(pdf)
             _merke_text(pdf, text, quelle)
             print("(%s, %d Zeichen)\n%s" % (quelle, len(text), text))
         elif a.befehl == "senden":
-            pdf = a.pdf or neuestes_wa_pdf()
+            pdf = a.pdf or neuestes_pdf()
             if not pdf:
-                print("Kein WhatsApp-PDF gefunden.", file=sys.stderr)
+                print("Kein Briefing-PDF gefunden.", file=sys.stderr)
                 return 1
             if a.text:
                 text = sys.stdin.read() if a.text == "-" else open(a.text, encoding="utf-8").read()
