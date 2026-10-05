@@ -524,8 +524,9 @@ def _neueste_zuerst(episoden: list, max_alter_tage: float) -> list:
 def _aktuelle_folgen():
     """Wie _aktuelle_folgen_roh, aber ohne gesperrte Podcasts.
 
-    05.10.2026: Der Einschlafen-Podcast steht in Florians Liste, gehört aber nie
-    ins Briefing. Die Sperrliste pflegt podcast_verbaut.py."""
+    05.10.2026: Ganze Podcasts lassen sich über die Sperrliste in
+    podcast_verbaut.py aus der Liste nehmen. Einträge für einzelne Folgen
+    („Podcast – Folge“) greifen hier nicht, nur beim Bau."""
     eps, status = _aktuelle_folgen_roh()
     try:
         import podcast_verbaut as _pv

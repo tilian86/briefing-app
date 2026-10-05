@@ -3754,6 +3754,18 @@ def _maybe_autostart_briefing(source: str):
         return
     if _podcast_arbeit_offen():
         return
+    # 05.10.: Florian sucht nach den Podcasts oft noch Feedly-Artikel aus
+    # („Erst dann erstellen"). Liegt die Pause-Datei mit heutigem Datum da,
+    # zündet der Auto-Start nicht — das Briefing startet er dann selbst.
+    try:
+        _pause = json.loads((_APP_DIR / ".briefing_autostart_pause.json").read_text(encoding="utf-8"))
+        if (_pause.get("datum") or "") == datetime.date.today().isoformat():
+            st.session_state["_podcast_inbox_last_msg"] = (
+                f"⏸️ Podcasts fertig ({source}) — Auto-Start ist heute pausiert. "
+                "Briefing bitte selbst starten, sobald Feedly ausgesucht ist.")
+            return
+    except Exception:
+        pass
     _fj = st.session_state.get("_feedly_job")
     if _fj and not _fj.get("done"):
         # Abruf läuft (auch manuell gestartete): Staffelstab übergeben statt
