@@ -522,6 +522,23 @@ def _neueste_zuerst(episoden: list, max_alter_tage: float) -> list:
 
 
 def _aktuelle_folgen():
+    """Wie _aktuelle_folgen_roh, aber ohne gesperrte Podcasts.
+
+    05.10.2026: Der Einschlafen-Podcast steht in Florians Liste, gehört aber nie
+    ins Briefing. Die Sperrliste pflegt podcast_verbaut.py."""
+    eps, status = _aktuelle_folgen_roh()
+    try:
+        import podcast_verbaut as _pv
+        liste = _pv.nie_liste()
+        eps = [e for e in eps if not _pv.gesperrt(e.get("podcastTitle") or "", liste)]
+    except Exception:
+        return eps, status
+    if not eps and status == "ok":
+        status = "leer"
+    return eps, status
+
+
+def _aktuelle_folgen_roh():
     """Offene Folgen aus Florians iOS-Liste im Zeitfenster, neueste zuerst.
 
     Rückgabe (episoden, status): "ok" | "leer" (angemeldet, aber nichts offen) |

@@ -90,6 +90,16 @@ def main():
     urls = draft.get("urls_text", "") or ""
     paywall = draft.get("paywall_text", "") or ""
     podcast = draft.get("podcast_text", "") or ""
+    # 05.10.: Folgen aus einem frueheren Briefing und gesperrte Podcasts
+    # (Einschlafen Podcast) nicht noch einmal verarbeiten — wie in der App.
+    try:
+        import podcast_verbaut as _pv
+        podcast, _pv_alt, _pv_nie = _pv.bereinigen(
+            podcast, core.split_podcast_summaries, core.combine_podcast_field)
+        if _pv_alt or _pv_nie:
+            _log(_pv.kurzmeldung(_pv_alt, _pv_nie))
+    except Exception as _pvex:
+        _log("Podcast-Abgleich übersprungen: %s" % _pvex)
 
     # 22.09.: Newsletter (Hotel Matze & Co.) kommen von selbst dazu — Florians
     # Wunsch „immer direkt in mein Briefing automatisch". Quelle ist der offene
@@ -323,6 +333,13 @@ def main():
     # Podcast kommt nicht aus der Feedly-Merkliste (siehe briefing_app.py).
     _unc_artikel = [u for u in (status.get("uncovered_sources") or [])
                     if (u.get("kind") or "article") != "podcast"]
+
+    # 05.10.: Diese Podcast-Folgen stehen jetzt in einem fertigen Briefing.
+    try:
+        import podcast_verbaut as _pv_ok
+        _pv_ok.merken(core.split_podcast_summaries(podcast) if podcast.strip() else [])
+    except Exception as _pvex2:
+        _log("Podcast-Merkliste nicht aktualisiert: %s" % _pvex2)
 
     # Newsletter abhaken — bis hierher ist der Bau gelungen, die Ausgaben standen
     # im Material. Jede Ausgabe kommt genau einmal; kein Nachschieben, weil ein

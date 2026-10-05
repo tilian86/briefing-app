@@ -3606,6 +3606,15 @@ def _briefing_worker(cfg: dict, status: dict):
             except Exception:
                 pass
 
+        # 🎧 Verbaute Podcast-Zusammenfassungen merken (05.10.) — der nächste Bau
+        # lässt sie aus, falls sie im Feld stehen bleiben.
+        if any(_e.get("ok") for _e in results) and not _cancelled():
+            try:
+                import podcast_verbaut as _pv_ok
+                _pv_ok.merken(split_podcast_summaries(cfg.get("podcast") or ""))
+            except Exception:
+                pass
+
         # 📥 Verarbeitete Artikel aus der Feedly-Merkliste entfernen — ERST HIER,
         # nach einem erfolgreichen Lauf. 03.08.: Dieser Block stand vorher im
         # Legacy-Zweig `if False:` und lief deshalb nie; die Merkliste wuchs auf
@@ -5055,16 +5064,40 @@ if _podcast_blocks:
     with st.expander(f"🎧 Übersicht — einzelne rausnehmen ({len(_podcast_blocks)})", expanded=False):
         st.caption('Hake an, was NICHT ins Briefing soll, dann „entfernen“. Der Rest bleibt wie er ist.')
         import re as _re_pc
+        # 05.10.: Alte (schon verbaute) und gesperrte Folgen markieren + mit einem
+        # Klick entfernen. Der Bau lässt sie ohnehin aus (podcast_verbaut).
+        try:
+            import podcast_verbaut as _pv_ui
+            _pv_alt_idx = {i: (_pv_ui.schon_verbaut(b) or ("gesperrt" if _pv_ui.gesperrt(_pv_ui.titel(b)) else None))
+                           for i, b in enumerate(_podcast_blocks)}
+            _pv_alt_idx = {i: v for i, v in _pv_alt_idx.items() if v}
+        except Exception:
+            _pv_alt_idx = {}
         _pc_remove = []
         for _bi, _blk in enumerate(_podcast_blocks):
             _m = _re_pc.match(r"\s*\*\*(.+?)\*\*", _blk)
             _lbl = (_m.group(1) if _m else next((l.strip() for l in _blk.splitlines() if l.strip()), "?"))
-            if st.checkbox(_lbl[:90], key=f"pcrm_{_bi}"):
+            _marke = _pv_alt_idx.get(_bi)
+            if _marke == "gesperrt":
+                _lbl = "🚫 " + _lbl[:80] + " · gesperrter Podcast"
+            elif _marke:
+                _lbl = "♻️ " + _lbl[:72] + f" · schon im Briefing vom {_marke[8:10]}.{_marke[5:7]}."
+            if st.checkbox(_lbl[:110], key=f"pcrm_{_bi}"):
                 _pc_remove.append(_bi)
+        if _pv_alt_idx and not _pc_remove:
+            if st.button(f"🧹 {len(_pv_alt_idx)} alte/gesperrte entfernen", key="pc_remove_alt_btn", type="primary",
+                         help="Nimmt alles heraus, was schon in einem früheren Briefing stand oder von einem gesperrten Podcast kommt."):
+                _pc_remove = list(_pv_alt_idx)
+                st.session_state["_pc_remove_alt_jetzt"] = True
         if _pc_remove:
-            if st.button(f"✂️ {len(_pc_remove)} Zusammenfassung(en) entfernen", key="pc_remove_btn", type="primary"):
+            if st.session_state.pop("_pc_remove_alt_jetzt", False) or st.button(
+                    f"✂️ {len(_pc_remove)} Zusammenfassung(en) entfernen", key="pc_remove_btn", type="primary"):
                 _kept = [b for i, b in enumerate(_podcast_blocks) if i not in _pc_remove]
                 st.session_state["podcast_text_pending_value"] = combine_podcast_field("", _kept)
+                # Ohne diese Marke dreht die Schrumpf-Firewall (>15 %) das bewusste
+                # Entfernen still zurück (wie beim Paywall-Feld, 30.08.).
+                st.session_state["_intentional_clear"] = True
+                _save_draft(podcast_text=combine_podcast_field("", _kept))
                 for _bi in range(len(_podcast_blocks)):
                     st.session_state.pop(f"pcrm_{_bi}", None)  # Häkchen zurücksetzen (Indizes verschieben sich)
                 st.session_state["_podcast_inbox_last_msg"] = f"✂️ {len(_pc_remove)} Podcast-Zusammenfassung(en) entfernt — {len(_kept)} bleiben."
@@ -7251,8 +7284,21 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             import threading as _threading
             _wd_de9 = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
             _now9 = datetime.datetime.now()
+            # 🎧 05.10.: Schon verbaute Folgen und gesperrte Podcasts (Einschlafen …)
+            # nie ein zweites Mal ins Briefing — egal, was noch im Feld steht. Nach
+            # den Läufen vom 29.09. blieb das Feld voll; 28 alte Folgen wären sonst
+            # doppelt gelandet. Das Feld selbst bleibt unangetastet.
+            _pod_bau = podcast_text
+            try:
+                import podcast_verbaut as _pv_bau
+                _pod_bau, _pv_alt, _pv_nie = _pv_bau.bereinigen(
+                    podcast_text, split_podcast_summaries, combine_podcast_field)
+                if _pv_alt or _pv_nie:
+                    st.session_state["_podcast_inbox_last_msg"] = _pv_bau.kurzmeldung(_pv_alt, _pv_nie)
+            except Exception:
+                _pod_bau = podcast_text
             _cfg = {
-                "urls": urls_text, "paywall": paywall_text, "podcast": podcast_text,
+                "urls": urls_text, "paywall": paywall_text, "podcast": _pod_bau,
                 "depths": list(_depths_to_run), "synth": bool(st.session_state.get("topic_synthesis_mode", True)),
                 "magazin": bool(st.session_state.get("synthesis_narrative_style", True)),
                 "web": bool(st.session_state.get("synthesis_web_enrich", True)),
@@ -7271,7 +7317,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
                                or _DRAFT_DEFAULTS["auto_reader_upload"]),
                 "cleanup_days": int(st.session_state.get("reader_cleanup_days", 14) or 0),
                 "model": _cli_model, "ts": _now9.strftime("%Y-%m-%d_%H-%M"), "ts_iso": _now9.isoformat(),
-                "inputs_hash": _inputs_hash(urls_text, paywall_text, podcast_text),
+                "inputs_hash": _inputs_hash(urls_text, paywall_text, _pod_bau),
                 "archive_dir": _resolve_archive_dir(for_write=True),
                 "title_base": f"Tagesbriefing {_wd_de9[_now9.weekday()]} {_now9.strftime('%d.%m.')}",
             }
@@ -7286,7 +7332,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             _inp_counts = {
                 "urls": len([l for l in urls_text.splitlines() if l.strip().startswith("http")]),
                 "paywall": len(split_paywall_articles(paywall_text)) if paywall_text.strip() else 0,
-                "podcasts": len(split_podcast_summaries(podcast_text)) if podcast_text.strip() else 0,
+                "podcasts": len(split_podcast_summaries(_pod_bau)) if _pod_bau.strip() else 0,
                 "specials": len(_cfg["specials"]),
             }
             _status = {"active": True, "started": _now9.isoformat(), "step": "Wird gestartet…",
