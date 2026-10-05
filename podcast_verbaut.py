@@ -20,7 +20,7 @@ PFAD = Path(os.environ.get("BRIEFING_PODCAST_VERBAUT_PATH")
             or _APP_DIR / ".briefing_podcasts_verbaut.json")
 NIE_PFAD = Path(os.environ.get("BRIEFING_PODCASTS_NIE_PATH")
                 or os.path.expanduser("~/.briefing_podcasts_nie.json"))
-AUFBEWAHREN_TAGE = 45
+AUFBEWAHREN_TAGE = 60  # ≥ Zeitfenster in pocketcasts_fetch
 # Einträge sind Präfixe: „Podcast“ sperrt den ganzen Podcast, „Podcast – Folge“
 # nur diese eine Folge. Florian 05.10.2026: Einschlafen nur dieses Mal, nicht
 # generell — deshalb steht dort nur die eine Folge.

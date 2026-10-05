@@ -38,7 +38,9 @@ _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML
 # Knopfdruck dieselben Folgen NOCHMAL zusammenfassen (das 4-Tage-Fenster hält sie
 # ja tagelang in der Liste) → doppelte Beiträge + verschwendetes Kontingent.
 _FETCHED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".pocketcasts_fetched.json")
-_FETCHED_RETENTION_DAYS = 14
+# 05.10.2026: 14 → 60 Tage. Muss mindestens so lang sein wie das Zeitfenster
+# (IOS_FILTER_MAX_AGE_DAYS), sonst kommen schon verbaute Folgen ein zweites Mal.
+_FETCHED_RETENTION_DAYS = 60
 
 
 def _load_fetched() -> dict:
@@ -500,7 +502,11 @@ IOS_FILTER_TITLE = "All Together "
 # 29.09.2026: 4 → 7 Tage. Florian sortiert seine Liste über die Woche auf dem
 # iPhone (Uninteressantes archiviert er) — was drinbleibt, will er im Briefing.
 # Schon Zusammengefasstes fängt das „Schon geholt"-Gedächtnis ab.
-IOS_FILTER_MAX_AGE_DAYS = 7
+# 05.10.2026: 7 → 50 Tage. Florian kommt nicht jede Woche durch seine Liste;
+# auf dem iPhone reichte sie bis 18.08. zurück (~30 Folgen älter als 7 Tage),
+# die er auch haben will. Dahinter liegt der unberührte Altbestand (Mai–Juli),
+# den die App nicht kennt — das Fenster wandert mit, holt ihn also nie herein.
+IOS_FILTER_MAX_AGE_DAYS = 50
 
 
 def _neueste_zuerst(episoden: list, max_alter_tage: float) -> list:
