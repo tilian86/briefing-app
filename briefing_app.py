@@ -4401,7 +4401,7 @@ def _fragment_pocket_casts():
     # kostet KEIN Limit — nur HTTP), dann farbcodiert AUSWÄHLEN und nur die Ausgewählten
     # zusammenfassen (Limit nur dafür). Verhindert, dass Ungewolltes automatisch reinrutscht.
     st.markdown("---")
-    st.caption("🎧 **Pocket Casts:** prüft deine Liste „All Together“ (am Handy kuratiert, letzte 7 Tage) und zeigt farbcodiert, "
+    st.caption("🎧 **Pocket Casts:** prüft deine Liste „All Together“ (am Handy kuratiert, letzte 50 Tage) und zeigt farbcodiert, "
                "welche ein Transkript haben — du wählst, was zusammengefasst wird. **Prüfen kostet kein Limit**, nur das Zusammenfassen.")
 
     def _pc_submit_and_summarize(_items):
