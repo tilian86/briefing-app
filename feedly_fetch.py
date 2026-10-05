@@ -527,6 +527,32 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
         if len(items) >= limit:
             say(f"⚠️ Notbremse bei {limit} Einträgen gegriffen — das wäre höchst ungewöhnlich, bitte melden!")
 
+        # 05.10.: Zweite Quelle — was Florian auf der Feedfunk-Seite angehakt hat
+        # (entry_id "vw:…"). Steht derselbe Artikel schon in der Merkliste, gilt er
+        # als übersprungen (wird nach dem Briefing trotzdem im Korb abgehakt).
+        # Ein Netzproblem dort darf das Briefing nie stören: holen() liefert dann [].
+        vw_doppelt = []
+        try:
+            import vorauswahl_quelle
+            vw_items = vorauswahl_quelle.holen()
+            if vorauswahl_quelle.letzter_fehler:
+                say(f"⚠️ Feedfunk-Vorauswahl übersprungen: {vorauswahl_quelle.letzter_fehler}")
+        except Exception as exc:
+            vw_items = []
+            say(f"⚠️ Feedfunk-Vorauswahl übersprungen ({exc.__class__.__name__})")
+        if vw_items:
+            _merk_urls = {_norm_url(i["url"]) for i in items}
+            vw_neu = []
+            for i in vw_items:
+                if _norm_url(i["url"]) in _merk_urls:
+                    vw_doppelt.append(i)
+                else:
+                    _merk_urls.add(_norm_url(i["url"]))
+                    vw_neu.append(i)
+            items = items + vw_neu
+            say(f"+ {len(vw_neu)} aus der Feedfunk-Vorauswahl"
+                + (f" ({len(vw_doppelt)} standen schon in der Merkliste)." if vw_doppelt else "."))
+
         # Dubletten aussortieren, BEVOR die Volltexte geladen werden — spart
         # Zeit und verhindert, dass derselbe Artikel zweimal im Feld landet.
         _skip_urls = {_norm_url(u) for u in (skip_urls or []) if u}
@@ -537,6 +563,9 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
             _skip_set = {id(i) for i in skipped}
             items = [i for i in items if id(i) not in _skip_set]
             say(f"{len(skipped)} bereits im Briefing — übersprungen.")
+        # Vorauswahl-Einträge, die schon als Merklisten-Artikel kommen: mit auf die
+        # Aufräumliste (über "skipped"), damit sie nach dem Briefing aus dem Korb gehen.
+        skipped = skipped + vw_doppelt
 
         ok, problems, ohne_zugang = [], [], []
         for idx, item in enumerate(items, 1):
@@ -606,6 +635,20 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
     if not entry_ids:
         return 0
 
+    # 05.10.: "vw:"-Ids stammen aus der Feedfunk-Vorauswahl — die gehen an den
+    # Feedfunk-Korb, nicht an Feedly. Ohne Feedly-Ids startet gar kein Browser.
+    vw_ids = [e for e in entry_ids if str(e).startswith("vw:")]
+    entry_ids = [e for e in entry_ids if not str(e).startswith("vw:")]
+    removed_vw = 0
+    if vw_ids:
+        try:
+            import vorauswahl_quelle
+            removed_vw = vorauswahl_quelle.erledigt(vw_ids)
+        except Exception as exc:
+            print(f"  ! Feedfunk-Korb nicht abgehakt: {exc}", file=sys.stderr)
+    if not entry_ids:
+        return removed_vw
+
     p, ctx = _launch(headless=headless)
     try:
         page = _page(ctx)
@@ -642,7 +685,7 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
                 print(f"  ! Gruppe {nr + 1} bleibt stehen: {letzter}", file=sys.stderr)
             if nr + 1 < len(gruppen):
                 page.wait_for_timeout(2500)   # freundlich zum Server bleiben
-        return removed
+        return removed + removed_vw
     finally:
         try:
             _sitzung_sichern(ctx)
