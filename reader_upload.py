@@ -270,8 +270,13 @@ def _do_upload(file_path: str, expect_title: str, timeout_s: int, t0: float) -> 
             page.get_by_role("button", name="Import", exact=True).first.click(timeout=10000)
         page.wait_for_timeout(600)
         _dismiss_overlays(page)
-        page.get_by_role("tab", name="Upload file").click(timeout=10000)
-        page.wait_for_timeout(400)
+        # 07.10.2026: ElevenReader hat den Dialog umgebaut — keine Reiter mehr,
+        # Datei-Feld und Textfeld stehen direkt im Dialog "Upload". Den alten
+        # Reiter nur noch anklicken, wenn es ihn gibt.
+        _reiter = page.get_by_role("tab", name="Upload file")
+        if _reiter.count() > 0:
+            _reiter.first.click(timeout=10000)
+            page.wait_for_timeout(400)
         file_input = page.locator('input[type="file"]').first
         file_input.set_input_files(file_path, timeout=10000)
         page.wait_for_timeout(800)
