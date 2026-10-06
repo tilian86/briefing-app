@@ -13,7 +13,7 @@ Germany. UI, prompts and code comments are in German.
 
 | Step | How |
 |---|---|
-| Collect | Feedly read-later list (`feedly_fetch.py`), RSS and newsletter feeds (`newsletter_fetch.py`), full-text extraction with trafilatura/readability, paywalled sites via a persistent Playwright profile with the user's own subscriptions |
+| Collect | Reading basket of the companion RSS reader Feedfunk (`vorauswahl_quelle.py`; the old Feedly read-later path in `feedly_fetch.py` is switched off via `FEEDLY_AKTIV`), RSS and newsletter feeds (`newsletter_fetch.py`), full-text extraction with trafilatura/readability, paywalled sites via a persistent Playwright profile with the user's own subscriptions |
 | Podcasts | Transcripts from Pocket Casts and Podcasting 2.0 feed transcripts (`pocketcasts_fetch.py`), or local transcription with mlx-whisper on Apple Silicon (`local_transcribe.py`) |
 | Condense | Two modes: *synthesis* (weaves all sources on one topic into one piece) and *classic* (one piece per source). Duplicate detection, section classification, three length levels |
 | Quality | Plausibility check against the sources plus automatic repair pass before the briefing is released |
@@ -33,7 +33,8 @@ is configurable at the top of `briefing_core.py`.
 ```
 briefing_app.py        Streamlit UI and job orchestration
 briefing_core.py       Pipeline: fetching, condensing, quality check, rendering
-feedly_fetch.py        Feedly read-later + full text (Playwright)
+feedly_fetch.py        Full text + paywall check (Playwright); Feedly path off
+vorauswahl_quelle.py   Feedfunk basket: fetch + mark done
 newsletter_fetch.py    Newsletter feeds
 pocketcasts_fetch.py   Podcast transcripts (Pocket Casts, feed transcripts)
 local_transcribe.py    Local Whisper transcription

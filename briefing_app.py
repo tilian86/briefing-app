@@ -2673,23 +2673,39 @@ st.markdown("#### Paywall-Artikel")
 # holt Merkliste + Volltexte (inkl. Zeitungs-Login) und haengt sie hier an.
 # Entfernt werden die Artikel aus der Merkliste erst NACH einem erfolgreichen
 # Briefing (siehe _feedly_pending_ids weiter unten).
+# 06.10.2026: Feedfunk ersetzt Feedly (feedly_fetch.FEEDLY_AKTIV = False) — die
+# Artikel kommen aus dem Feedfunk-Korb, kein Feedly-Login mehr. _QUELLE/_LISTE
+# sind die Anzeigenamen in den Texten rund um den Abruf.
+try:
+    import feedly_fetch as _FQ
+    _QUELLE = _FQ.QUELLE_NAME
+    _FEEDLY_AKTIV = bool(_FQ.FEEDLY_AKTIV)
+except Exception:
+    _QUELLE, _FEEDLY_AKTIV = "Feedfunk", False
+_LISTE = "Feedly-Merkliste" if _FEEDLY_AKTIV else "Feedfunk-Korb"
+_AUS_LISTE = "aus der Feedly-Merkliste" if _FEEDLY_AKTIV else "aus dem Feedfunk-Korb"
+_LOGINS = "Feedly, GEA oder SWP" if _FEEDLY_AKTIV else "GEA oder SWP/Tagblatt"
 _fl_col1, _fl_col2 = st.columns([1, 2.4])
 with _fl_col1:
     _fl_job_now = st.session_state.get("_feedly_job")
     _fl_busy = bool(_fl_job_now) and not _fl_job_now.get("done")
     _fl_clicked = st.button(
-        "📥 Läuft im Hintergrund…" if _fl_busy else "📥 Aus Feedly holen",
+        "📥 Läuft im Hintergrund…" if _fl_busy else f"📥 Aus {_QUELLE} holen",
         use_container_width=True,
         disabled=_fl_busy,
-        help="Holt alle im Feedly mit Lesezeichen markierten Artikel samt Volltext "
-             "(auch hinter Paywall über dein Zeitungs-Login) und hängt sie unten an. "
+        help=("Holt alle im Feedly mit Lesezeichen markierten Artikel samt Volltext "
+              if _FEEDLY_AKTIV else
+              "Holt alle Artikel aus dem Feedfunk-Korb (angehakt oder per Link hinzugefügt) samt Volltext ")
+             + "(auch hinter Paywall über dein Zeitungs-Login) und hängt sie unten an. "
              "Läuft im Hintergrund — du kannst währenddessen weiterarbeiten.",
     )
     _login_check_clicked = st.button(
-        "🔐 Alle Logins testen (Feedly · GEA · SWP)",
+        "🔐 Alle Logins testen (Feedly · GEA · SWP)" if _FEEDLY_AKTIV
+        else "🔐 Zeitungs-Logins testen (GEA · SWP)",
         use_container_width=True,
-        help="Prüft alle drei Anmeldungen: Feedly (sonst keine Merkliste) sowie "
-             "GEA und SWP/Tagblatt (sonst nur Anrisse statt Volltext). "
+        help=("Prüft alle drei Anmeldungen: Feedly (sonst keine Merkliste) sowie "
+              if _FEEDLY_AKTIV else "Prüft die Zeitungs-Anmeldungen ")
+             + "GEA und SWP/Tagblatt (sonst nur Anrisse statt Volltext). "
              "Dauert ~25 Sekunden.",
     )
     _lf_job = st.session_state.get("_login_fenster_job")
@@ -2699,12 +2715,13 @@ with _fl_col1:
         use_container_width=True,
         disabled=_lf_busy or _fl_busy,
         help="Öffnet ein sichtbares Browser-Fenster mit deinem Nachrichten-Profil. "
-             "Dort meldest du dich bei Feedly, GEA oder SWP an — die Anmeldung bleibt "
+             f"Dort meldest du dich bei {_LOGINS} an — die Anmeldung bleibt "
              "im Profil gespeichert, die App sieht dein Passwort nie. "
              "Fenster einfach zumachen, wenn du fertig bist.",
     )
 if _login_check_clicked:
-    with st.spinner("Teste Feedly, GEA und SWP/Tagblatt über dein Browser-Profil…"):
+    with st.spinner(("Teste Feedly, GEA und SWP/Tagblatt" if _FEEDLY_AKTIV else "Teste GEA und SWP/Tagblatt")
+                    + " über dein Browser-Profil…"):
         try:
             import feedly_fetch as _feedly_lc
             _feedly_lc.login_check_verwerfen()
@@ -2750,13 +2767,15 @@ try:
     _lcp = _lco.path.expanduser("~/.briefing_login_check.json")
     _lcd = _lcj.loads(open(_lcp, encoding="utf-8").read())
     _lc_alter = int((_lct.time() - _lcd.get("stand", 0)) / 60)
-    _lc_bad = [r for r in (_lcd.get("ergebnis") or []) if r.get("ok") is False]
+    _lc_erg = [r for r in (_lcd.get("ergebnis") or [])
+               if _FEEDLY_AKTIV or r.get("name") != "Feedly"]   # alter Stand vor 06.10.
+    _lc_bad = [r for r in _lc_erg if r.get("ok") is False]
     _lc_wann = f"vor {_lc_alter} Min." if _lc_alter < 90 else f"vor {_lc_alter // 60} Std."
     if _lc_bad:
         st.warning("⛔ Letzter Stand (" + _lc_wann + "): " +
                    ", ".join(r["name"] for r in _lc_bad) + " nicht angemeldet.")
-    elif _lcd.get("ergebnis"):
-        st.caption(f"✅ Logins geprüft {_lc_wann} — alle drei tragen.")
+    elif _lc_erg:
+        st.caption(f"✅ Logins geprüft {_lc_wann} — alle tragen.")
 except Exception:
     pass
 with _fl_col2:
@@ -2764,10 +2783,10 @@ with _fl_col2:
         "🔗 In die Auto-Kette: nach den Podcasts automatisch holen, dann Briefing",
         key="auto_feedly_before_briefing",
         on_change=_save_draft,
-        help="Spart nur den Klick auf „Aus Feedly holen“: Sobald die Podcasts fertig sind, "
-             "wird die Merkliste automatisch geholt. Fürs automatische Briefing selbst ist "
+        help=f"Spart nur den Klick auf „Aus {_QUELLE} holen“: Sobald die Podcasts fertig sind, "
+             f"wird alles {_AUS_LISTE} automatisch geholt. Fürs automatische Briefing selbst ist "
              "dieses Häkchen NICHT nötig — gezündet wird immer erst, wenn alles fertig ist, "
-             "egal ob du Feedly von Hand angestoßen hast oder es hier automatisch läuft. "
+             f"egal ob du {_QUELLE} von Hand angestoßen hast oder es hier automatisch läuft. "
              "Läuft schon ein Abruf, wartet die Kette auf ihn statt vorbeizulaufen.",
     )
     _fl_note = st.session_state.get("_feedly_note") or ""
@@ -2971,15 +2990,23 @@ def _feedly_worker(job: dict, skip_urls, skip_ids):
         # 17.08.: Erst Logins pruefen, dann holen. Vorher lief der Abruf los,
         # lieferte Anrisse und Florian musste hinterher aufraeumen — genau die
         # Bastelzeit, die er sich sparen will.
-        job["step"] = "Prüfe Anmeldungen…"
-        _lc = _F.login_check_cached()
-        _kaputt = [r for r in _lc if r["ok"] is False]
-        if _kaputt:
-            job["login_kaputt"] = _kaputt
-            job["error"] = ("Abbruch vor dem Holen: " +
-                            ", ".join(r["name"] for r in _kaputt) +
-                            " nicht angemeldet. Sonst kämen nur Anrisse.")
-            return
+        # 06.10.2026: Ohne Feedly nur, wenn im Feedfunk-Korb ein GEA/SWP/Tagblatt-
+        # Artikel liegt — sonst braucht es keinen Login-Browser.
+        _pruefen = True
+        try:
+            _pruefen = _F.login_check_noetig()
+        except Exception:
+            pass
+        if _pruefen:
+            job["step"] = "Prüfe Anmeldungen…"
+            _lc = _F.login_check_cached()
+            _kaputt = [r for r in _lc if r["ok"] is False]
+            if _kaputt:
+                job["login_kaputt"] = _kaputt
+                job["error"] = ("Abbruch vor dem Holen: " +
+                                ", ".join(r["name"] for r in _kaputt) +
+                                " nicht angemeldet. Sonst kämen nur Anrisse.")
+                return
         res = _F.fetch_all(progress=lambda m: job.__setitem__("step", m),
                            skip_urls=skip_urls, skip_ids=skip_ids)
         job["result"] = res
@@ -3029,7 +3056,7 @@ def _fragment_feedly_status():
     if not job:
         return
     if not job.get("done"):
-        st.info(f"📥 Feedly-Abruf läuft im Hintergrund — {job.get('step', '…')}")
+        st.info(f"📥 {_QUELLE}-Abruf läuft im Hintergrund — {job.get('step', '…')}")
         st.caption("Die Seite bleibt nutzbar: Podcasts einwerfen, Felder bearbeiten, alles geht parallel.")
         return
     if job.get("applied"):
@@ -3044,13 +3071,17 @@ def _fragment_feedly_status():
         elif "nicht angemeldet" in txt.lower():
             st.error(f"⛔ {txt}")
             st.caption("Oben „🔓 Anmeldefenster öffnen“ — dort anmelden, Fenster zu, "
+                       f"dann noch mal „📥 Aus {_QUELLE} holen“. Der {_LISTE} bleibt "
+                       "unangetastet, es geht nichts verloren."
+                       if not _FEEDLY_AKTIV else
+                       "Oben „🔓 Anmeldefenster öffnen“ — dort anmelden, Fenster zu, "
                        "dann noch mal „📥 Aus Feedly holen“. Die Merkliste bleibt "
                        "unangetastet, es geht nichts verloren.")
         else:
-            st.error(f"Feedly-Abruf fehlgeschlagen: {txt}")
+            st.error(f"{_QUELLE}-Abruf fehlgeschlagen: {txt}")
         if job.get("auto"):
             # ⛔ Kein Briefing ohne die kuratierten Artikel — Kette stoppt.
-            st.error("⛔ Auto-Kette gestoppt: Feedly-Artikel konnten nicht geholt werden. "
+            st.error(f"⛔ Auto-Kette gestoppt: {_QUELLE}-Artikel konnten nicht geholt werden. "
                      "Problem beheben, dann Briefing unten manuell starten.")
         st.session_state["_feedly_note"] = "❌ Abruf fehlgeschlagen."
         return
@@ -3075,20 +3106,22 @@ def _fragment_feedly_status():
 
     _free, _walled = _F.split_free_and_paywall(ok)
     msg = (f"✅ {len(ok)} Artikel ins Paywall-Feld geholt (davon {len(_walled)} hinter Bezahlschranke)."
-           if ok else "Nichts Neues in der Merkliste.")
+           if ok else ("Nichts Neues in der Merkliste." if _FEEDLY_AKTIV else "Nichts Neues im Feedfunk-Korb."))
     if skipped:
         msg += f" ⏭️ {len(skipped)} schon im Briefing — übersprungen."
     _oz = res.get("ohne_zugang") or []
     if _oz:
         msg += f" 🔒 {len(_oz)} von Zeitungen ohne Abo — übersprungen."
     if problems:
-        msg += f" ⚠️ {len(problems)} unvollständig — bleiben in der Merkliste."
+        msg += (f" ⚠️ {len(problems)} unvollständig — bleiben "
+                + ("in der Merkliste." if _FEEDLY_AKTIV else "im Feedfunk-Korb."))
     st.session_state["_feedly_note"] = msg
 
     if problems:
         st.warning(f"⚠️ {len(problems)} Artikel kamen nur als Anriss an — meist ein "
                    "abgelaufenes Zeitungs-Login. Sie wurden NICHT übernommen und "
-                   "bleiben in deiner Merkliste stehen.")
+                   + ("bleiben in deiner Merkliste stehen." if _FEEDLY_AKTIV
+                      else "bleiben in deinem Feedfunk-Korb stehen."))
         for _p in problems:
             st.caption(f"· {_p['title'][:75]} — {_p['problem']}")
         st.code("cd ~/Projects/apps/briefing-app && python3 feedly_fetch.py --login", language="bash")
@@ -3102,7 +3135,7 @@ def _fragment_feedly_status():
             # Nicht zünden; der Podcast-Abschluss übernimmt (sieht den frischen
             # Abruf und startet dann direkt, ohne erneut zu holen).
             st.session_state["_podcast_inbox_last_msg"] = (
-                "📥 Feedly fertig — warte noch auf die Podcast-Zusammenfassungen, "
+                f"📥 {_QUELLE} fertig — warte noch auf die Podcast-Zusammenfassungen, "
                 "dann startet das Briefing.")
         else:
             st.session_state["_auto_run_briefing"] = True
@@ -3635,6 +3668,12 @@ def _briefing_worker(cfg: dict, status: dict):
         # liegen; lässt sich einer davon nicht eindeutig zuordnen, bleibt wie bisher
         # alles stehen (lieber zweimal aufräumen als einen Artikel verlieren).
         _pend = cfg.get("feedly_pending") or {"entry_ids": [], "user_id": ""}
+        # 06.10.2026: Seit Feedfunk heißt die Liste „Feedfunk-Korb“ (nur Anzeige).
+        try:
+            import feedly_fetch as _fq_ml
+            _ml_name = "Merkliste" if _fq_ml.FEEDLY_AKTIV else "Feedfunk-Korb"
+        except Exception:
+            _ml_name = "Feedfunk-Korb"
         _ids_frei, _bleiben = (_pend.get("entry_ids") or []), []
         if _unc_artikel:
             try:
@@ -3647,7 +3686,7 @@ def _briefing_worker(cfg: dict, status: dict):
         if _unc_artikel and _ids_frei is None:
             status["feedly_removed"] = 0
             status["feedly_hinweis"] = (
-                f"Merkliste NICHT geleert — {len(_unc_artikel)} Artikel fehlen im Briefing "
+                f"{_ml_name} NICHT geleert — {len(_unc_artikel)} Artikel fehlen im Briefing "
                 f"und ließen sich nicht eindeutig zuordnen. Nach einem vollständigen Lauf "
                 f"wird aufgeräumt.")
         elif _ids_frei and any(_e.get("ok") for _e in results) and not _cancelled():
@@ -3656,9 +3695,12 @@ def _briefing_worker(cfg: dict, status: dict):
                 # Nur den Start-Schnappschuss abräumen — Nachzügler bleiben vorgemerkt.
                 if _bleiben:
                     status["feedly_hinweis"] = (
-                        f"{len(_bleiben)} Artikel bleiben in der Merkliste — sie haben es "
-                        f"nicht ins Briefing geschafft: {', '.join(_bleiben[:6])}")
-                _upd(step=f"📥 Entferne {len(_ids_frei)} erledigte Artikel aus der Feedly-Merkliste…",
+                        f"{len(_bleiben)} Artikel bleiben "
+                        + ("in der Merkliste" if _ml_name == "Merkliste" else f"im {_ml_name}")
+                        + f" — sie haben es nicht ins Briefing geschafft: {', '.join(_bleiben[:6])}")
+                _upd(step=(f"📥 Entferne {len(_ids_frei)} erledigte Artikel aus der Feedly-Merkliste…"
+                           if _ml_name == "Merkliste" else
+                           f"📥 Hake {len(_ids_frei)} erledigte Artikel im Feedfunk-Korb ab…"),
                      ratio=0.985)
                 _n_weg = _feedly_done.mark_done(_ids_frei, _pend.get("user_id") or "")
                 if _n_weg:
@@ -3762,7 +3804,7 @@ def _maybe_autostart_briefing(source: str):
         if (_pause.get("datum") or "") == datetime.date.today().isoformat():
             st.session_state["_podcast_inbox_last_msg"] = (
                 f"⏸️ Podcasts fertig ({source}) — Auto-Start ist heute pausiert. "
-                "Briefing bitte selbst starten, sobald Feedly ausgesucht ist.")
+                f"Briefing bitte selbst starten, sobald {globals().get('_QUELLE', 'Feedfunk')} ausgesucht ist.")
             return
     except Exception:
         pass
@@ -3774,7 +3816,7 @@ def _maybe_autostart_briefing(source: str):
         _kette_setzen("feedly")
         st.session_state["_podcast_inbox_last_msg"] = (
             f"🚀 Podcasts fertig ({source}) — warte auf den laufenden "
-            f"Feedly-Abruf, danach startet das Briefing…")
+            f"{globals().get('_QUELLE', 'Feedfunk')}-Abruf, danach startet das Briefing…")
         return
     import time as _t
     _frisch = bool(_fj and _fj.get("done") and not _fj.get("error") and _fj.get("applied")
@@ -3783,7 +3825,7 @@ def _maybe_autostart_briefing(source: str):
         st.session_state["_auto_feedly_pending"] = True
         _kette_setzen("feedly")
         st.session_state["_podcast_inbox_last_msg"] = (
-            f"🚀 Podcasts fertig ({source}) — hole jetzt die Feedly-Artikel, "
+            f"🚀 Podcasts fertig ({source}) — hole jetzt die {globals().get('_QUELLE', 'Feedfunk')}-Artikel, "
             f"danach startet das Briefing…")
         return
     st.session_state["_auto_run_briefing"] = True
@@ -4380,7 +4422,7 @@ def _fragment_pocket_casts():
     if _pcjob and not _pcjob.get("done"):
         st.info("🎧 Pocket Casts wird im Hintergrund geladen — Transkripte werden geprüft…")
         st.caption("Die Seite bleibt bedienbar: Einstellungen ändern, Links einfügen, "
-                   "Feedly holen — der Abruf läuft weiter.")
+                   f"{globals().get('_QUELLE', 'Feedfunk')} holen — der Abruf läuft weiter.")
         return
     if _pcjob and _pcjob.get("done") and not _pcjob.get("applied"):
         _pcjob["applied"] = True
@@ -7288,7 +7330,7 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
             for _t9 in _pw_stop[:6]:
                 st.caption(f"· Block {_t9['index'] + 1}: {_t9.get('marker') or _t9.get('reason', 'verdächtig kurz')}")
             st.markdown("**So geht's weiter:** neu anmelden, betroffene Blöcke löschen, "
-                        "Artikel frisch holen (📥 Feedly / TabClip), dann starten.")
+                        f"Artikel frisch holen (📥 {globals().get('_QUELLE', 'Feedfunk')} / TabClip), dann starten.")
             st.code("cd ~/Projects/apps/briefing-app && python3 feedly_fetch.py --login", language="bash")
         elif _cli_direct_genius_only:
             st.warning("Direkt-Modus (nur Kompaktfassung) läuft weiterhin über den bisherigen Weg — Häkchen abwählen für den Hintergrund-Lauf.")
@@ -7546,9 +7588,9 @@ with st.expander("🦉 Briefing mit Claude erstellen (kostenlos via Max-Abo) —
         if _job_done.get("cleanup"):
             st.caption(f"🗑️ {_job_done['cleanup']} alte Bibliothekseinträge aufgeräumt.")
         if _job_done.get("feedly_removed"):
-            st.caption(f"📥 {_job_done['feedly_removed']} verarbeitete Artikel aus der Feedly-Merkliste entfernt.")
+            st.caption(f"📥 {_job_done['feedly_removed']} verarbeitete Artikel {globals().get('_AUS_LISTE', 'aus dem Feedfunk-Korb')} entfernt.")
         if _job_done.get("feedly_error"):
-            st.caption(f"📥 Feedly-Merkliste nicht geleert ({_job_done['feedly_error']}) — "
+            st.caption(f"📥 {globals().get('_LISTE', 'Feedfunk-Korb')} nicht geleert ({_job_done['feedly_error']}) — "
                        "Artikel bleiben stehen, nichts verloren.")
         _tok = _job_done.get("tokens")
         if _tok:

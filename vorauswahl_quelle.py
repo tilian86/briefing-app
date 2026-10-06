@@ -1,4 +1,4 @@
-"""Feedfunk-Vorauswahl als zweite Quelle neben der Feedly-Merkliste.
+"""Feedfunk-Korb als Artikelquelle der Briefing-App (seit 06.10.2026 die einzige — Feedly ist aus).
 
 Florian hakt auf feedfunk.florian-s-thiel.workers.dev Meldungen an („Übernehmen“).
 Der Worker sammelt sie in einem Korb. Dieses Modul holt den Korb im GLEICHEN

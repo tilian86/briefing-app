@@ -380,7 +380,9 @@ def main():
                     "%d Artikel bleiben in der Merkliste — sie haben es nicht ins "
                     "Briefing geschafft: %s" % (len(_bleiben), ", ".join(_bleiben[:6])))
                 _log(status["feedly_hinweis"])
-            _log("Entferne %d erledigte Artikel aus der Feedly-Merkliste…" % len(_ids))
+            # 06.10.2026: ohne Feedly gehen die Ids an den Feedfunk-Korb (siehe mark_done)
+            _log("Hake %d erledigte Artikel ab (%s)…"
+                 % (len(_ids), getattr(_fl_done, "QUELLE_NAME", "Feedly")))
             _n_weg = _fl_done.mark_done(_ids, feedly_pending.get("user_id") or "")
             if _n_weg:
                 _fl_done.remove_pending(_ids)

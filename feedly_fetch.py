@@ -1,5 +1,10 @@
 """Feedly-Merkliste ("Read later") automatisch ins Briefing holen.
 
+06.10.2026: Feedfunk ersetzt Feedly (FEEDLY_AKTIV = False). Die Artikel kommen
+jetzt nur noch aus dem Feedfunk-Korb (vorauswahl_quelle.py); Volltext-Laden,
+Paywall-Pruefung und Zeitungs-Logins laufen unveraendert hier. Der Feedly-Teil
+unten bleibt als Reserve stehen.
+
 Florian kuratiert im Feedly: alles Interessante bekommt das Lesezeichen. Dieses
 Modul holt die Merkliste, laedt die Volltexte (auch hinter Paywall, ueber ein
 persistentes Browser-Profil mit seinen Zeitungs-Logins) und liefert sie im
@@ -95,6 +100,18 @@ def _sitzung_wiederherstellen(ctx) -> int:
     ctx._briefing_sitzung = True
     return len(cookies)
 FEEDLY_URL = "https://feedly.com/i/saved"
+
+# 06.10.2026: Feedfunk ersetzt Feedly. Die Artikel kommen nur noch aus dem
+# Feedfunk-Korb (vorauswahl_quelle), Erledigt-Meldungen gehen nur dorthin.
+# Kein Feedly-Browser, kein Feedly-Login mehr. Der Feedly-Code bleibt stehen —
+# auf True zurueck, und alles laeuft wieder wie vorher.
+FEEDLY_AKTIV = False
+QUELLE_NAME = "Feedly" if FEEDLY_AKTIV else "Feedfunk"
+
+# Zeitungen mit Abo-Login im Browser-Profil. Ohne Feedly wird der Login-Test vor
+# dem Abruf nur noch gebraucht, wenn im Korb ein Artikel von dort liegt.
+ABO_DOMAINS = ("gea.de", "swp.de", "tagblatt.de")
+
 BLOCK_SEPARATOR = "\n\nmmm\n\n"
 
 # Ab dieser Laenge gilt der im RSS mitgelieferte Text als vollwertig — dann
@@ -188,6 +205,28 @@ def _is_paywall_domain(url: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in PAYWALL_DOMAINS)
 
 
+def _ist_abo_domain(url: str) -> bool:
+    host = (urllib.parse.urlparse(url or "").hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in ABO_DOMAINS)
+
+
+def login_check_noetig() -> bool:
+    """Braucht der Abruf vorher den Login-Test? Mit Feedly immer. Ohne Feedly nur,
+    wenn im Feedfunk-Korb ein Artikel von GEA/SWP/Tagblatt liegt — sonst startet
+    fuer einen reinen Korb ohne Abo-Artikel gar kein Login-Browser.
+    Im Zweifel (Korb nicht lesbar) lieber testen: True."""
+    if FEEDLY_AKTIV:
+        return True
+    try:
+        import vorauswahl_quelle
+        items = vorauswahl_quelle.holen()
+        if vorauswahl_quelle.letzter_fehler:
+            return True
+        return any(_ist_abo_domain(i.get("url", "")) for i in items)
+    except Exception:
+        return True
+
+
 def _strip_html(raw: str) -> str:
     if not raw:
         return ""
@@ -229,7 +268,7 @@ def _launch(headless: bool = True):
             raise RuntimeError(browser_pfad.NACHINSTALL_HINWEIS) from exc
         if "ProcessSingleton" in text or "SingletonLock" in text or "already in use" in text.lower():
             raise RuntimeError(
-                "Das Browser-Profil ist gerade belegt — es läuft schon ein Feedly-Abruf "
+                "Das Browser-Profil ist gerade belegt — es läuft schon ein Artikel-Abruf "
                 "oder Login-Test. Bitte warten, bis der fertig ist, dann erneut versuchen."
             ) from exc
         raise
@@ -489,7 +528,7 @@ def _norm_url(url: str) -> str:
 
 def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
               skip_urls=None, skip_ids=None) -> dict:
-    """Holt Merkliste + Volltexte.
+    """Holt Merkliste + Volltexte (seit 06.10.2026 ohne Feedly: nur den Feedfunk-Korb).
 
     skip_urls / skip_ids: was schon im Briefing-Feld steht bzw. schon auf der
     Aufraeum-Liste vorgemerkt ist, wird uebersprungen — sonst landet derselbe
@@ -505,41 +544,65 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
             except Exception:
                 pass
 
-    p, ctx = _launch(headless=headless)
+    # 06.10.2026: Der Browser startet erst, wenn er wirklich gebraucht wird — mit
+    # Feedly sofort, mit Feedfunk erst für den ersten Artikel, dessen Feed-Text
+    # nicht reicht. Ein leerer Korb kommt so ganz ohne Browser aus.
+    p = ctx = page = None
+
+    def _seite():
+        nonlocal p, ctx, page
+        if page is None:
+            p, ctx = _launch(headless=headless)
+            page = _page(ctx)
+        return page
+
     try:
-        page = _page(ctx)
-        _open_feedly(page)
-        _zustand, _detail = _login_state(page)
-        if _zustand == "netz":
-            raise RuntimeError(f"Feedly ist gerade nicht erreichbar. {_detail}")
-        if _zustand != "ok":
-            raise RuntimeError(
-                "Nicht bei Feedly angemeldet. Einmalig einrichten:\n"
-                "    python3 feedly_fetch.py --login"
-            )
-
-        listing = list_saved(page, limit=limit)
-        items = listing["items"]
-        say(f"{len(items)} Artikel in der Merkliste.")
-        # 09.08.: Bei limit=100 fielen 20 aeltere Artikel unbemerkt hinten runter
-        # ("ranked=newest" holt die NEUESTEN zuerst) — deshalb Deckel auf 250 und
-        # eine laute Warnung, falls er doch erreicht wird.
-        if len(items) >= limit:
-            say(f"⚠️ Notbremse bei {limit} Einträgen gegriffen — das wäre höchst ungewöhnlich, bitte melden!")
-
-        # 05.10.: Zweite Quelle — was Florian auf der Feedfunk-Seite angehakt hat
-        # (entry_id "vw:…"). Steht derselbe Artikel schon in der Merkliste, gilt er
-        # als übersprungen (wird nach dem Briefing trotzdem im Korb abgehakt).
-        # Ein Netzproblem dort darf das Briefing nie stören: holen() liefert dann [].
         vw_doppelt = []
-        try:
+        vw_items = []
+        if FEEDLY_AKTIV:
+            _open_feedly(_seite())
+            _zustand, _detail = _login_state(page)
+            if _zustand == "netz":
+                raise RuntimeError(f"Feedly ist gerade nicht erreichbar. {_detail}")
+            if _zustand != "ok":
+                raise RuntimeError(
+                    "Nicht bei Feedly angemeldet. Einmalig einrichten:\n"
+                    "    python3 feedly_fetch.py --login"
+                )
+
+            listing = list_saved(page, limit=limit)
+            items = listing["items"]
+            user_id = listing["user_id"]
+            say(f"{len(items)} Artikel in der Merkliste.")
+            # 09.08.: Bei limit=100 fielen 20 aeltere Artikel unbemerkt hinten runter
+            # ("ranked=newest" holt die NEUESTEN zuerst) — deshalb Deckel auf 250 und
+            # eine laute Warnung, falls er doch erreicht wird.
+            if len(items) >= limit:
+                say(f"⚠️ Notbremse bei {limit} Einträgen gegriffen — das wäre höchst ungewöhnlich, bitte melden!")
+
+            # 05.10.: Zweite Quelle — was Florian auf der Feedfunk-Seite angehakt hat
+            # (entry_id "vw:…"). Steht derselbe Artikel schon in der Merkliste, gilt er
+            # als übersprungen (wird nach dem Briefing trotzdem im Korb abgehakt).
+            # Ein Netzproblem dort darf das Briefing nie stören: holen() liefert dann [].
+            try:
+                import vorauswahl_quelle
+                vw_items = vorauswahl_quelle.holen()
+                if vorauswahl_quelle.letzter_fehler:
+                    say(f"⚠️ Feedfunk-Vorauswahl übersprungen: {vorauswahl_quelle.letzter_fehler}")
+            except Exception as exc:
+                vw_items = []
+                say(f"⚠️ Feedfunk-Vorauswahl übersprungen ({exc.__class__.__name__})")
+        else:
+            # 06.10.2026: Feedfunk ist die einzige Quelle. Hier darf ein Fehler
+            # NICHT still [] werden — sonst sähe ein Netzproblem aus wie "Korb leer".
             import vorauswahl_quelle
-            vw_items = vorauswahl_quelle.holen()
+            if not vorauswahl_quelle.eingerichtet():
+                raise RuntimeError("Feedfunk ist nicht eingerichtet (~/.feedfunk/sync.json fehlt).")
+            items = vorauswahl_quelle.holen()
             if vorauswahl_quelle.letzter_fehler:
-                say(f"⚠️ Feedfunk-Vorauswahl übersprungen: {vorauswahl_quelle.letzter_fehler}")
-        except Exception as exc:
-            vw_items = []
-            say(f"⚠️ Feedfunk-Vorauswahl übersprungen ({exc.__class__.__name__})")
+                raise RuntimeError(f"{vorauswahl_quelle.letzter_fehler} — bitte gleich noch mal versuchen.")
+            user_id = ""
+            say(f"{len(items)} Artikel im Feedfunk-Korb.")
         if vw_items:
             _merk_urls = {_norm_url(i["url"]) for i in items}
             vw_neu = []
@@ -576,8 +639,9 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
                 item["source"] = "Feed"
             else:
                 say(f"[{idx}/{len(items)}] lade: {title}")
+                seite = _seite()   # Startfehler (Profil belegt …) sollen den Abruf abbrechen
                 try:
-                    item["text"] = _fetch_article_text(page, item["url"])
+                    item["text"] = _fetch_article_text(seite, item["url"])
                     item["source"] = "Seite"
                 except Exception as exc:
                     item["problem"] = f"Seite nicht ladbar ({exc.__class__.__name__})"
@@ -609,20 +673,22 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
         _zusatz = f", {len(ohne_zugang)} ohne Abo übersprungen" if ohne_zugang else ""
         say(f"Fertig: {len(ok)} vollständig, {len(problems)} problematisch{_zusatz}.")
         return {"ok": ok, "problems": problems, "skipped": skipped,
-                "ohne_zugang": ohne_zugang, "user_id": listing["user_id"]}
+                "ohne_zugang": ohne_zugang, "user_id": user_id}
     finally:
-        try:
-            _sitzung_sichern(ctx)
-        except Exception:
-            pass
-        try:
-            ctx.close()
-        except Exception:
-            pass
-        try:
-            p.stop()
-        except Exception:
-            pass
+        if ctx is not None:
+            try:
+                _sitzung_sichern(ctx)
+            except Exception:
+                pass
+            try:
+                ctx.close()
+            except Exception:
+                pass
+        if p is not None:
+            try:
+                p.stop()
+            except Exception:
+                pass
 
 
 def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
@@ -648,6 +714,13 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
             print(f"  ! Feedfunk-Korb nicht abgehakt: {exc}", file=sys.stderr)
     if not entry_ids:
         return removed_vw
+    if not FEEDLY_AKTIV:
+        # 06.10.2026: Feedly ist abgeschaltet. Alte Feedly-Ids (noch vorgemerkt aus
+        # der Zeit davor) gehen nirgends mehr hin — als erledigt zählen, damit sie
+        # nicht ewig auf der Aufräumliste stehen. Feedly selbst bleibt unberührt.
+        print(f"  · {len(entry_ids)} alte Feedly-Einträge nicht mehr abgehakt "
+              "(Feedly ist abgeschaltet).", file=sys.stderr)
+        return removed_vw + len(entry_ids)
 
     p, ctx = _launch(headless=headless)
     try:
@@ -756,7 +829,10 @@ def login_check_cached(max_alter_min: int = 180) -> list:
     try:
         daten = json.loads(open(LOGIN_CHECK_CACHE, encoding="utf-8").read())
         if (_t.time() - daten.get("stand", 0)) < max_alter_min * 60:
-            return daten.get("ergebnis") or []
+            erg = daten.get("ergebnis") or []
+            if not FEEDLY_AKTIV:   # alter Zwischenstand von vor der Umstellung
+                erg = [e for e in erg if e.get("name") != "Feedly"]
+            return erg
     except Exception:
         pass
     ergebnis = check_newspaper_logins()
@@ -784,13 +860,17 @@ LOGIN_ZIELE = {
 }
 
 
-def open_login_window(ziel: str = "feedly") -> None:
+def open_login_window(ziel: str = "") -> None:
     """Oeffnet das sichtbare Anmeldefenster und wartet, bis Florian es schliesst.
     Passwoerter tippt er selbst — die App speichert und sieht keine Zugangsdaten.
 
-    `ziel`: "feedly" | "gea" | "swp" oder eine komplette URL.
+    `ziel`: "feedly" | "gea" | "swp" oder eine komplette URL. Ohne Angabe: Feedly,
+    seit der Umstellung auf Feedfunk (06.10.2026) GEA.
     """
-    start = LOGIN_ZIELE.get((ziel or "").lower(), ziel if "://" in str(ziel) else FEEDLY_URL)
+    standard = "feedly" if FEEDLY_AKTIV else "gea"
+    ziel = ziel or standard
+    start = LOGIN_ZIELE.get((ziel or "").lower(),
+                            ziel if "://" in str(ziel) else LOGIN_ZIELE[standard])
     p, ctx = _launch(headless=False)
     try:
         page = _page(ctx)
@@ -841,7 +921,7 @@ def open_login_window(ziel: str = "feedly") -> None:
 
 
 def check_newspaper_logins(headless: bool = True) -> list:
-    """Prueft alle Anmeldungen: Feedly UND die Zeitungen.
+    """Prueft alle Anmeldungen: Feedly (nur wenn FEEDLY_AKTIV) UND die Zeitungen.
 
     Rueckgabe je Eintrag: {"name", "ok" (True/False/None), "detail", "url"}.
     ok=None heisst: Test nicht moeglich (Seite nicht ladbar o.ae.).
@@ -852,21 +932,23 @@ def check_newspaper_logins(headless: bool = True) -> list:
         page = _page(ctx)
 
         # 1) Feedly — ohne das laeuft gar nichts (14.08. von Florian vermisst).
-        feedly = {"name": "Feedly", "ok": None, "detail": "", "url": FEEDLY_URL}
-        try:
-            _open_feedly(page)
-            zustand, detail = _login_state(page)
-            if zustand == "ok":
-                feedly["ok"] = True
-                feedly["detail"] = "angemeldet"
-            elif zustand == "anonym":
-                feedly["ok"] = False
-                feedly["detail"] = "nicht angemeldet — Merkliste nicht abrufbar"
-            else:
-                feedly["detail"] = detail[:80]
-        except Exception as exc:
-            feedly["detail"] = f"nicht prüfbar ({exc.__class__.__name__})"
-        results.append(feedly)
+        # 06.10.2026: Mit Feedfunk entfaellt dieser Teil (FEEDLY_AKTIV = False).
+        if FEEDLY_AKTIV:
+            feedly = {"name": "Feedly", "ok": None, "detail": "", "url": FEEDLY_URL}
+            try:
+                _open_feedly(page)
+                zustand, detail = _login_state(page)
+                if zustand == "ok":
+                    feedly["ok"] = True
+                    feedly["detail"] = "angemeldet"
+                elif zustand == "anonym":
+                    feedly["ok"] = False
+                    feedly["detail"] = "nicht angemeldet — Merkliste nicht abrufbar"
+                else:
+                    feedly["detail"] = detail[:80]
+            except Exception as exc:
+                feedly["detail"] = f"nicht prüfbar ({exc.__class__.__name__})"
+            results.append(feedly)
 
         for name, start_url in NEWSPAPER_PROBES:
             eintrag = {"name": name, "ok": None, "detail": "", "url": ""}
@@ -1055,14 +1137,16 @@ def split_free_and_paywall(items):
 
 def _cli_login() -> int:
     print("Sichtbares Fenster öffnet sich. Bitte anmelden bei:")
-    print("  1. feedly.com")
-    print("  2. gea.de")
-    print("  3. swp.de / tagblatt.de")
+    if FEEDLY_AKTIV:
+        print("  · feedly.com")
+    print("  · gea.de")
+    print("  · swp.de / tagblatt.de")
     print("Danach das Fenster einfach schließen.\n")
     p, ctx = _launch(headless=False)
     try:
         page = _page(ctx)
-        page.goto(FEEDLY_URL, wait_until="domcontentloaded", timeout=60000)
+        page.goto(FEEDLY_URL if FEEDLY_AKTIV else LOGIN_ZIELE["gea"],
+                  wait_until="domcontentloaded", timeout=60000)
         print("Warte, bis du das Fenster schließt …")
         try:
             # 30.08.: timeout=0 hiess "ewig warten". Blieb das Fenster offen
