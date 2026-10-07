@@ -1772,10 +1772,10 @@ _DEDUP_CONFIRM_PROMPT = """Du bekommst mehrere CLUSTER von Nachrichtenbeiträgen
 
 STRENG SEIN: Nur als Dublette werten, wenn es sicher derselbe konkrete Vorgang ist (z.B. zweimal Bericht über dieselbe Obduktion, dieselbe Pressekonferenz, denselben Gerichtstermin, denselben Anschlag, dasselbe Unglück). Wenn ZWEI Quellen über DASSELBE konkrete Ereignis berichten (gleicher Prozess, gleicher Anschlag, gleicher Unfall — erkennbar an gleicher Person/gleichem Ort/gleichem Tag/gleicher Tat), ist es eine Dublette — AUCH wenn Schlagzeile, Wortwahl oder Schwerpunkt verschieden sind. KEINE Dublette dagegen: verschiedene Ereignisse zum gleichen Thema, andere Personen/Orte/Zahlen, Hintergrund vs. Aktuelles, eigenständiger Folgebericht. Im Zweifel: KEINE Dublette.
 
-Bei echter Dublette: behalte den VOLLSTÄNDIGSTEN/informativsten Beitrag (keep), markiere die anderen zum Entfernen (drop).
+Bei echter Dublette: behalte den VOLLSTÄNDIGSTEN/informativsten Beitrag (keep), markiere NUR seine echten Dubletten zum Entfernen (drop). Ein Cluster kann groß sein und Beiträge zu ganz verschiedenen Ereignissen enthalten — die gehören in KEIN drop, sie bleiben einfach stehen. Enthält ein Cluster MEHRERE voneinander unabhängige Dubletten (z. B. zweimal Parkgebühren UND zweimal Kita-Jahr), gib jede als eigene Gruppe in "groups" an.
 
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Vorrede, kein Markdown:
-{"clusters": [{"id": 1, "is_duplicate": true, "keep": 3, "drop": [7], "reason": "zweimal dieselbe Obduktion"}, {"id": 2, "is_duplicate": false, "keep": null, "drop": [], "reason": "verschiedene Blickwinkel"}]}
+{"clusters": [{"id": 1, "is_duplicate": true, "keep": 3, "drop": [7], "reason": "zweimal dieselbe Obduktion"}, {"id": 2, "is_duplicate": false, "keep": null, "drop": [], "reason": "verschiedene Blickwinkel"}, {"id": 3, "is_duplicate": true, "groups": [{"keep": 12, "drop": [15]}, {"keep": 20, "drop": [31]}], "reason": "zweimal Parkgebühren, zweimal Kita-Jahr; Rest verschiedene Ereignisse"}]}
 Die Zahlen in keep/drop sind die ITEM-INDIZES aus dem Input (die Zahl in eckigen Klammern)."""
 
 
@@ -1843,10 +1843,24 @@ def llm_confirm_duplicate_clusters(clusters, model="sonnet", cli_path=None, time
                 drop.append(int(x))
             except (TypeError, ValueError):
                 continue
+        groups = []
+        for g in (c.get("groups") or []):
+            if not isinstance(g, dict):
+                continue
+            try:
+                gk = int(g.get("keep"))
+                gd = [int(x) for x in (g.get("drop") or [])]
+            except (TypeError, ValueError):
+                continue
+            if gd:
+                groups.append({"keep": gk, "drop": gd})
+        if not groups and keep is not None and drop:
+            groups = [{"keep": keep, "drop": drop}]
         out[cid] = {
             "is_duplicate": bool(c.get("is_duplicate")),
-            "keep": keep,
-            "drop": drop,
+            "keep": keep if keep is not None else (groups[0]["keep"] if groups else None),
+            "drop": drop or [d for g in groups for d in g["drop"]],
+            "groups": groups,
             "reason": str(c.get("reason", ""))[:200],
         }
     return out
@@ -13366,14 +13380,22 @@ def _merge_duplicate_story_items(items, cli_path=None, progress_callback=None):
 
     to_remove = set()
     merge_notes = []
+    # 07.10.2026: Bisher wurde bei „is_duplicate" der GANZE Kandidaten-Cluster in
+    # einen Beitrag gekippt und bei 16.000 Zeichen abgeschnitten. Die Cluster
+    # entstehen aber per Kettenähnlichkeit und sind bei Lokalzeitungen groß —
+    # nachts am 07.10. landeten so 106 Artikel in 13 Beiträgen, obwohl Opus nur
+    # einzelne Paare als doppelt nannte. Jetzt: nur was Opus in drop nennt.
+    _paare = []
     for ci, grp in enumerate(candidate_clusters, 1):
         v = verdict.get(ci) or {}
         if not v.get("is_duplicate"):
             continue
-        keep = v.get("keep")
-        if keep not in grp:
-            keep = max(grp, key=lambda i: len(items[i].get("body") or ""))
-        others = [i for i in grp if i != keep]
+        for g in (v.get("groups") or []):
+            _paare.append((grp, g.get("keep"), g.get("drop") or [], v))
+    for grp, keep, drop, v in _paare:
+        if keep not in grp or keep in to_remove:
+            continue
+        others = [i for i in drop if i in grp and i != keep and i not in to_remove]
         if not others:
             continue
         merged_body = items[keep].get("body") or ""
@@ -13384,7 +13406,7 @@ def _merge_duplicate_story_items(items, cli_path=None, progress_callback=None):
                 + (items[o].get("body") or "")
             )
         merged_label = _dedup_source_labels([items[keep].get("label", "?")] + [items[o].get("label", "?") for o in others])
-        items[keep] = {**items[keep], "body": merged_body[:16000], "label": merged_label}
+        items[keep] = {**items[keep], "body": merged_body[:30000], "label": merged_label}
         to_remove.update(others)
         merge_notes.append(f"{merged_label}: {v.get('reason', '')[:120]}")
 
@@ -14984,7 +15006,10 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         # Gemischte Themen (Podcast + News zum selben Ereignis) bleiben bewusst Artikel.
         _kinds = [items[m_ - 1].get("kind") for m_ in t["members"]]
         _stype = "podcast" if (_kinds and all(k == "podcast" for k in _kinds)) else "article"
-        sections.append({"type": _stype, "content": md, "source_label": _label})
+        # _quellen (1-basierte items-Nummern): damit der Plausi-Check bei großen
+        # Briefings jedem Beitrag nur seine eigenen Quellen mitgeben kann (07.10.).
+        sections.append({"type": _stype, "content": md, "source_label": _label,
+                         "_quellen": list(t["members"])})
 
     # 🎙️ Verbatim-Podcasts: Original-Zusammenfassungen 1:1 anhängen (type=podcast →
     # sortiert ans Ende, wird als eigener Podcast-Block vorgelesen, unverändert).
@@ -16311,15 +16336,20 @@ def run_briefing_via_claude_cli_chunked(
     content_repaired = 0
     if content_check and all_sections:
         _src_lines = []
+        _src_vorspann = ""
         if weather_text and str(weather_text).strip():
-            _src_lines.append(f"--- QUELLE W (DWD, weather) ---\n{str(weather_text).strip()[:2000]}")
+            _src_vorspann = f"--- QUELLE W (DWD, weather) ---\n{str(weather_text).strip()[:2000]}"
+            _src_lines.append(_src_vorspann)
+        _src_items = []
         for _si, _sit in enumerate(items, 1):
-            _src_lines.append(f"--- QUELLE {_si} ({_sit.get('label', '?')}, {_sit.get('kind', 'article')}) ---\n{(_sit.get('body') or '')[:7000]}")
+            _src_items.append(f"--- QUELLE {_si} ({_sit.get('label', '?')}, {_sit.get('kind', 'article')}) ---\n{(_sit.get('body') or '')[:7000]}")
+        _src_lines.extend(_src_items)
         _report("Plausibilitäts-Check: Claude prüft jeden Beitrag gegen die Quellen…", 0.88)
         try:
             content_check_data = run_content_check_via_claude_cli(
                 handoff_text="\n\n".join(_src_lines),
                 briefing_sections=all_sections,
+                quellen=_src_items, quellen_vorspann=_src_vorspann,
                 model=_CLI_JUDGE_MODEL, cli_path=cli, timeout_seconds=900,
                 progress_callback=(lambda s, r: _report(s, 0.88 + 0.05 * max(0.0, min(1.0, float(r))))) if progress_callback else None,
             )
@@ -16352,6 +16382,7 @@ def run_briefing_via_claude_cli_chunked(
                     handoff_text="\n\n".join(_src_lines),
                     briefing_sections=all_sections,
                     output_lint=None, content_check=content_check_data,
+                    quellen=_src_items, quellen_vorspann=_src_vorspann,
                     model=_CLI_JUDGE_MODEL, cli_path=cli, timeout_seconds=900,
                     progress_callback=(lambda s, r: _report(s, 0.93 + 0.04 * max(0.0, min(1.0, float(r))))) if progress_callback else None,
                 )
@@ -17565,6 +17596,122 @@ def correct_podcast_concern(summary: str, transcript: str, concern: str,
             "note": f"{aehnlich:.0%} des Textes unverändert."}
 
 
+_PLAUSI_MAX_ZEICHEN = 1_200_000     # ~400k Tokens je Aufruf, deutlich unter 1 Mio.
+_PLAUSI_PORTION_BEITRAEGE = 60      # hält die JSON-Antwort je Portion überschaubar
+
+
+def _plausi_in_portionen(checkable_sections, language_only_sections, quellen, vorspann, *,
+                         model, timeout_seconds, progress_callback, cli_path, max_zeichen):
+    """Plausi-Check in Portionen (siehe run_content_check_via_claude_cli).
+
+    Die Beitragsnummern bleiben die des Gesamt-Checks, damit Auto-Repair und
+    Selbsttest dieselben `section_index`-Werte sehen wie bisher.
+    """
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _nummern(sec):
+        return sorted({n for n in (sec.get("_quellen") or [])
+                       if isinstance(n, int) and 0 < n <= len(quellen)})
+
+    portionen = []          # je Portion: (globale Nummern, Sections, Quellen-Nummern)
+    glob, secs, qset, laenge = [], [], set(), len(vorspann)
+    ohne = 0
+    for gi, sec in enumerate(checkable_sections, start=1):
+        nums = _nummern(sec)
+        if not nums:
+            ohne += 1
+            continue
+        zuwachs = len(sec.get("content") or "") + 100 + sum(
+            len(quellen[n - 1]) for n in nums if n not in qset)
+        if secs and (laenge + zuwachs > max_zeichen or len(secs) >= _PLAUSI_PORTION_BEITRAEGE):
+            portionen.append((glob, secs, sorted(qset)))
+            glob, secs, qset, laenge = [], [], set(), len(vorspann)
+            zuwachs = len(sec.get("content") or "") + 100 + sum(len(quellen[n - 1]) for n in nums)
+        glob.append(gi)
+        secs.append(sec)
+        qset.update(nums)
+        laenge += zuwachs
+    if secs:
+        portionen.append((glob, secs, sorted(qset)))
+    if ohne:
+        print(f"[plausi] {ohne} Beitrag/Beiträge ohne Quellenzuordnung — in Portionen nicht prüfbar.",
+              file=sys.stderr)
+    if not portionen:
+        return {"ok": False, "error": "Keine Beiträge mit Quellenzuordnung für den Portions-Check.",
+                "enabled": True, "mode": "warn", "checked": 0, "warnings": 0,
+                "notices": 0, "items": [], "raw_response": ""}
+    print(f"[plausi] Zu groß für einen Durchgang — prüfe {sum(len(p[1]) for p in portionen)} "
+          f"Beiträge in {len(portionen)} Portionen.", file=sys.stderr)
+
+    fertig = [0]
+
+    def _eine(nr):
+        g, s, q = portionen[nr]
+        handoff = "\n\n".join(([vorspann] if vorspann else []) + [quellen[n - 1] for n in q])
+        # Die Tippfehler-Suche in Top-3/Essenz/Recap nur einmal, in Portion 1.
+        r = run_content_check_via_claude_cli(
+            handoff, s + (list(language_only_sections) if nr == 0 else []),
+            model=model, timeout_seconds=timeout_seconds, cli_path=cli_path)
+        fertig[0] += 1
+        if progress_callback:
+            try:
+                progress_callback(f"Plausibilitäts-Check: Portion {fertig[0]}/{len(portionen)} fertig",
+                                  0.05 + 0.85 * fertig[0] / len(portionen))
+            except Exception:
+                pass
+        return r
+
+    t0 = _time.time()
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        ergebnisse = list(pool.map(_eine, range(len(portionen))))
+
+    items, typos, raws, fehler = [], [], [], []
+    warnings = notices = ok_count = checked = 0
+    for (g, s, _q), r in zip(portionen, ergebnisse):
+        if not r.get("ok"):
+            fehler.append(str(r.get("error"))[:150])
+            continue
+        checked += len(s)
+        warnings += int(r.get("warnings") or 0)
+        notices += int(r.get("notices") or 0)
+        ok_count += int(r.get("ok_count") or 0)
+        typos.extend(r.get("typos") or [])
+        raws.append(r.get("raw_response") or "")
+        for it in r.get("items") or []:
+            it = dict(it)
+            try:
+                idx = int(it.get("section_index"))
+            except (TypeError, ValueError):
+                idx = 0
+            it["section_index"] = g[idx - 1] if 1 <= idx <= len(g) else None
+            items.append(it)
+    if fehler:
+        print(f"[plausi] {len(fehler)} von {len(portionen)} Portionen fehlgeschlagen: "
+              + " | ".join(fehler), file=sys.stderr)
+    if not checked:
+        return {"ok": False, "error": "Alle Portionen fehlgeschlagen: " + " | ".join(fehler)[:400],
+                "enabled": True, "mode": "warn", "checked": 0, "warnings": 0,
+                "notices": 0, "items": [], "raw_response": "\n\n".join(raws)}
+    return {
+        "ok": True,
+        "error": None,
+        "enabled": True,
+        "mode": "warn",
+        "model": model,
+        "checked": checked,
+        "warnings": warnings,
+        "notices": notices,
+        "ok_count": ok_count,
+        "items": items,
+        "typos": typos,
+        "raw_response": "\n\n".join(raws),
+        "elapsed_seconds": _time.time() - t0,
+        "portionen": len(portionen),
+        "portionen_fehlgeschlagen": len(fehler),
+    }
+
+
 def run_content_check_via_claude_cli(
     handoff_text: str,
     briefing_sections: List[dict],
@@ -17573,6 +17720,9 @@ def run_content_check_via_claude_cli(
     timeout_seconds: int = 1200,
     progress_callback: Optional[Callable[[str, float], None]] = None,
     cli_path: Optional[str] = None,
+    quellen: Optional[List[str]] = None,
+    quellen_vorspann: str = "",
+    max_zeichen: int = _PLAUSI_MAX_ZEICHEN,
 ) -> dict:
     """Inhaltlicher Plausibilitäts-Check eines fertigen Briefings via Claude CLI.
 
@@ -17580,6 +17730,12 @@ def run_content_check_via_claude_cli(
     und lässt für jeden Beitrag prüfen, ob die Zusammenfassung faktisch
     zur Quelle passt. Output ist kompatibel zum API-Pfad-`content_check`-Dict
     (gleiche Felder: enabled, mode, checked, warnings, notices, ok, items).
+
+    quellen: die Quellenblöcke einzeln (Index = items-Nummer − 1). Wird das
+    Ganze größer als max_zeichen, prüft er in Portionen — jede Portion bekommt
+    nur die Quellen ihrer Beiträge (Section-Feld `_quellen`). 07.10.2026: Mit
+    309 Artikeln + 56 Podcasts waren es ~1,03 Mio. Tokens, der Check lief gar
+    nicht, Faktentreue blieb ungeprüft.
 
     Returns dict mit zusätzlich {ok, error, raw_response, elapsed_seconds}.
     """
@@ -17648,6 +17804,12 @@ def run_content_check_via_claude_cli(
         f"--- {s.get('source_label') or 'Block'} ---\n{(s.get('content') or '').strip()}\n"
         for s in language_only_sections
     )
+
+    if quellen and len(handoff_text) + len(briefing_block) + len(language_block) > max_zeichen:
+        return _plausi_in_portionen(checkable_sections, language_only_sections, quellen,
+                                    quellen_vorspann, model=model, timeout_seconds=timeout_seconds,
+                                    progress_callback=progress_callback, cli_path=cli,
+                                    max_zeichen=max_zeichen)
 
     prompt_input = (
         "═══════════════════════════════════════════════════════════\n"
@@ -17975,8 +18137,13 @@ def run_briefing_repair_via_claude_cli(
     timeout_seconds: int = 900,
     progress_callback: Optional[Callable[[str, float], None]] = None,
     cli_path: Optional[str] = None,
+    quellen: Optional[List[str]] = None,
+    quellen_vorspann: str = "",
 ) -> dict:
     """Repariert Beiträge mit Lint- oder Content-Warnungen via Claude CLI.
+
+    quellen: wie beim Plausi-Check — ist handoff_text zu groß für einen Aufruf,
+    bekommt Claude nur die Quellen der betroffenen Beiträge (Section-Feld `_quellen`).
 
     Sammelt alle betroffenen Sections + ihre Befunde, schickt einen fokussierten
     Repair-Auftrag an Claude. Antwort ist ein JSON mit reparierten Beiträgen,
@@ -18072,6 +18239,15 @@ def run_briefing_repair_via_claude_cli(
                 "repaired_indices": [], "sections": briefing_sections,
                 "raw_response": "", "elapsed_seconds": 0.0,
                 "skipped_reason": "keine Sections gemappt"}
+
+    if quellen and len(handoff_text) > _PLAUSI_MAX_ZEICHEN:
+        _nums = sorted({n for p_ in affected_payload
+                        for n in (checkable_sections[p_["section_index"] - 1].get("_quellen") or [])
+                        if isinstance(n, int) and 0 < n <= len(quellen)})
+        handoff_text = "\n\n".join(([quellen_vorspann] if quellen_vorspann else [])
+                                    + [quellen[n - 1] for n in _nums])[:_PLAUSI_MAX_ZEICHEN]
+        print(f"[plausi] Auto-Repair bekommt nur die {len(_nums)} Quellen der betroffenen Beiträge.",
+              file=sys.stderr)
 
     prompt_input = (
         "═══════════════════════════════════════════════════════════\n"
