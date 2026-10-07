@@ -16894,6 +16894,19 @@ Diese Blöcke bekommen KEINEN Eintrag in `items`.
 """
 
 
+_BEUGUNGS_ENDUNGEN = {"", "e", "n", "en", "er", "es", "em", "ern", "s", "ns", "t", "et", "st", "est",
+                      "te", "ten", "ter", "tet"}
+
+
+def _nur_beugung(wrong: str, right: str) -> bool:
+    """True, wenn sich zwei Wortformen nur in einer deutschen Endung unterscheiden."""
+    a, b = wrong.lower(), right.lower()
+    p = 0
+    while p < min(len(a), len(b)) and a[p] == b[p]:
+        p += 1
+    return p >= 2 and a[p:] in _BEUGUNGS_ENDUNGEN and b[p:] in _BEUGUNGS_ENDUNGEN
+
+
 def _sanitize_typo_suggestions(raw_typos, briefing_text: str) -> List[dict]:
     """Filtert Tippfehler-Vorschläge auf das, was nachweislich sicher ist.
 
@@ -16952,6 +16965,20 @@ def apply_typo_fixes(sections: List[dict], typos: List[dict]) -> int:
     # korrigieren. Bewusst eine feste Endungsliste statt \w* — sonst würde ein
     # Tippfehler auch echte Wörter treffen, die zufällig so anfangen.
     endings = "|".join(("es", "en", "er", "em", "ns", "s", "e", "n"))
+
+    def _muster(t):
+        return r"(?<!\w)" + re.escape(t["falsch"]) + r"(" + endings + r")?(?!\w)"
+
+    # 07.10.2026: Reine Beugungs-Wechsel („Wochenende → Wochenenden“) sind
+    # Grammatik im Satz — richtig nur an der einen Stelle, die das Modell sah.
+    # Die Ersetzung gilt aber im GANZEN Briefing: aus einem richtigen „zwei
+    # Wochenenden“ wurden sechsmal „am Wochenenden“. Solche Vorschläge nur,
+    # wenn die Form im ganzen Briefing genau einmal vorkommt.
+    def _anzahl(t):
+        return sum(len(re.findall(_muster(t), s_.get(f_) or ""))
+                   for s_ in sections for f_ in ("content", "title")
+                   if isinstance(s_.get(f_), str))
+    typos = [t for t in typos if not (_nur_beugung(t["falsch"], t["richtig"]) and _anzahl(t) > 1)]
 
     replaced = 0
     for section in sections:
