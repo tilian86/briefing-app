@@ -11331,7 +11331,7 @@ ESSENZ
 VERABSCHIEDUNG
 ### Bis zum nächsten Mal
 
-Klugen, weniger bekannten Zitat (echte Quelle, kein Kalenderspruch) + 1-2 Sätze Einordnung was du heute damit anfangen kannst + persönlicher Gruß passend zur Tageszeit (siehe TAGESZEIT unten). Max 90 Wörter.
+Klugen, weniger bekannten Zitat (echte Quelle, kein Kalenderspruch) + 1-2 Sätze Einordnung was du heute damit anfangen kannst + persönlicher Gruß passend zur Tageszeit (siehe TAGESZEIT unten). Max 90 Wörter Den Hörer durchgehend duzen (du/dein), nie „Sie“.
 
 Ende des Briefings.
 
@@ -11726,7 +11726,9 @@ def _briefing_greeting(now) -> str:
 
 def _tageszeit_label(hour: int) -> str:
     if hour < 6:
-        return "Nacht (nach Mitternacht)"
+        # 07.10.2026: Nachts gebaute Briefings hört man morgens (WhatsApp-Runde 07:00) —
+        # sonst endet es mit „Schlafen Sie gut“.
+        return "Früher Morgen (nachts gebaut, gehört wird am Morgen — kein Gute-Nacht-Gruß)"
     if hour < 10:
         return "Früher Morgen"
     if hour < 12:
@@ -13241,7 +13243,7 @@ Weiter geht's.
 3) VERABSCHIEDUNG
 ### Bis zum nächsten Mal
 
-Kluges, weniger bekanntes Zitat (echte Quelle, kein Kalenderspruch) + 1-2 Sätze Einordnung + persönlicher Gruß passend zur Tageszeit. Max 90 Wörter.
+Kluges, weniger bekanntes Zitat (echte Quelle, kein Kalenderspruch) + 1-2 Sätze Einordnung + persönlicher Gruß passend zur Tageszeit. Max 90 Wörter Den Hörer durchgehend duzen (du/dein), nie „Sie“.
 
 Ende des Briefings.
 
