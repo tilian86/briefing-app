@@ -2969,6 +2969,8 @@ def _pc_preview_worker(job: dict, kind: str):
         import pocketcasts_fetch as _P
         if kind == "auswahl":
             job["items"], job["status"] = _P.preview_selection()
+        elif kind == "hoerfunk":
+            job["items"], job["status"] = _P.preview_hoerfunk()
         else:
             job["items"], job["status"] = _P.preview_new_releases()
     except Exception as exc:
@@ -4430,6 +4432,10 @@ def _fragment_pocket_casts():
             st.session_state["_pc_preview"] = _pcjob.get("items") or []
         elif _pcjob.get("error"):
             st.session_state["_podcast_inbox_last_msg"] = f"🎧 Abruf fehlgeschlagen: {str(_pcjob['error'])[:120]}"
+        elif _pcjob.get("kind") == "hoerfunk":
+            st.session_state["_podcast_inbox_last_msg"] = (
+                "📻 In Hörfunk ist gerade nichts fürs Briefing vorgemerkt (Folge nach oben wischen)."
+                if _pcjob.get("status") == "leer" else "📻 Hörfunk nicht erreichbar — später nochmal.")
         elif _pcjob.get("status") == "leer":
             st.session_state["_podcast_inbox_last_msg"] = "🎧 In deiner Pocket-Casts-Liste ist gerade nichts Neues offen."
         else:
@@ -4458,7 +4464,7 @@ def _fragment_pocket_casts():
             {"titel": (f"{_t.get('podcast_title')}: {_t['title']}"
                        if _t.get("podcast_title") else _t["title"])[:80],
              "episode": _t.get("episode"), "podcast": _t.get("podcast"), "fertig": False}
-            for _t in _items if _t.get("episode") and _t.get("podcast")])
+            for _t in _items if _t.get("episode") and _t.get("podcast") and not _t.get("hoerfunk_id")])
         _jobs = st.session_state.get("_round_jobs") or []
         for _t in _items:
             _pt = _t.get("podcast_title") or ""
@@ -4470,7 +4476,7 @@ def _fragment_pocket_casts():
             # markieren wäre falsch — eine gescheiterte Folge gälte als erledigt
             # und würde nie wieder angeboten.
             _jobs.append({"guid": None, "title": _lbl, "path": None, "raw": _blk,
-                          "episode": _t.get("episode"),
+                          "episode": _t.get("episode"), "hoerfunk_id": _t.get("hoerfunk_id"),
                           "fut": st.session_state["_sum_pool"].submit(summarize_podcast_transcript_via_cli, _blk)})
         st.session_state["_round_jobs"] = _jobs
 
@@ -4529,6 +4535,17 @@ def _fragment_pocket_casts():
 
     _pc_preview = st.session_state.get("_pc_preview")
     if not _pc_preview:
+        # 📻 Hörfunk (07.10.2026): was Florian im eigenen Player nach oben gewischt hat.
+        # Hörfunk liefert das Transkript gleich mit; nach dem Zusammenfassen bekommt die
+        # Folge dort 📻 und verlässt die Vormerkliste (Ernte-Schleife, hoerfunk_verbaut).
+        if st.button("📻 Aus Hörfunk laden (fürs Briefing vorgemerkt)", key="hoerfunk_briefing_btn",
+                     use_container_width=True, type="primary",
+                     help="Holt die Folgen, die du in Hörfunk nach oben gewischt hast, samt Transkript. Kostet kein Limit."):
+            import threading as _hf_threading
+            _job = {"done": False, "items": None, "status": None, "error": None, "applied": False, "kind": "hoerfunk"}
+            st.session_state["_pc_job"] = _job
+            _hf_threading.Thread(target=_pc_preview_worker, args=(_job, "hoerfunk"), daemon=True).start()
+            st.rerun(scope="app")
         # "Meine Auswahl" liest aus, was auf dem Handy stehen geblieben ist —
         # unabhaengig vom Alter. "New Releases" bleibt der schnelle Weg fuer
         # frisch Erschienenes; die Auswahl findet auch aeltere Folgen, die
@@ -4949,6 +4966,12 @@ def _round_jobs_collector():
                     _pcf_ok.summarize_selection_mark([_j["episode"]])
                 except Exception:
                     pass
+            if _j.get("hoerfunk_id"):
+                try:
+                    import pocketcasts_fetch as _pcf_hf
+                    _pcf_hf.hoerfunk_verbaut([_j["hoerfunk_id"]])
+                except Exception:
+                    pass  # nicht schlimm: die Folge bleibt in Hörfunk vorgemerkt
             if _j.get("guid"):
                 _d7 = st.session_state.get("podcast_inbox_data") or {}
                 _meta7 = [x for x in (_d7.get("episodes") or []) if x.get("guid") == _j["guid"]]

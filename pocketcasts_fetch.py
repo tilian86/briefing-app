@@ -604,6 +604,57 @@ def preview_new_releases(progress=None):
     return items, "ok"
 
 
+# ── 📻 Hörfunk (eigener Podcast-Player auf dem Funk-Server, seit 07.10.2026) ──
+# Florian wischt dort Folgen nach oben = „ins Briefing“. Hörfunk holt die Transkripte
+# selbst (Feed, Pocket Casts, nachts Whisper am Mac) und liefert sie hier mit.
+HOERFUNK_URL = os.environ.get("HOERFUNK_URL", "https://hoerfunk.46-225-133-113.sslip.io")
+_HOERFUNK_GEHEIMNIS = os.path.expanduser("~/.config/hoerfunk/secret")
+
+
+def _hoerfunk(pfad: str, daten=None, timeout: int = 60):
+    import json
+    with open(_HOERFUNK_GEHEIMNIS) as fh:
+        geheim = fh.read().strip()
+    req = urllib.request.Request(HOERFUNK_URL + pfad,
+                                 data=json.dumps(daten).encode() if daten is not None else None,
+                                 method="POST" if daten is not None else "GET",
+                                 headers={"Authorization": "Bearer " + geheim, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read() or b"{}")
+
+
+def preview_hoerfunk(progress=None):
+    """Wie preview_new_releases, nur aus Hörfunks Briefing-Vormerkliste. items tragen
+    zusätzlich hoerfunk_id. Ohne Hörfunk-Transkript: Pocket-Casts-Weg als Rückfall."""
+    try:
+        folgen = _hoerfunk("/api/briefing/vorgemerkt").get("folgen") or []
+    except Exception:
+        return [], "hoerfunk_fehler"
+    items = []
+    for i, f in enumerate(folgen):
+        title = f.get("titel") or "?"
+        if progress:
+            try:
+                progress(i + 1, len(folgen), title)
+            except Exception:
+                pass
+        text = f.get("transkript")
+        if not text and f.get("pc_podcast") and f.get("pc_uuid"):
+            text, _err = fetch_transcript(f["pc_podcast"], f["pc_uuid"], title=title)
+        items.append({"title": title, "podcast_title": f.get("podcast_titel") or "",
+                      "podcast": f.get("pc_podcast"), "episode": f.get("pc_uuid") or f"hoerfunk:{f['id']}",
+                      "hoerfunk_id": f["id"], "text": text, "has_transcript": bool(text)})
+    return items, ("ok" if items else "leer")
+
+
+def hoerfunk_verbaut(ids, datum: str = None) -> int:
+    """Meldet Hörfunk: steckt im Briefing (📻) → raus aus der Vormerkliste."""
+    d = {"ids": [int(x) for x in ids]}
+    if datum:
+        d["datum"] = datum
+    return int((_hoerfunk("/api/briefing/verbaut", d) or {}).get("n") or 0)
+
+
 # 11.08.: Endpunkt abgetastet — "update_episode_archive" (Einzahl) gibt 404,
 # richtig ist die MEHRZAHL. Der 404 liess das Archivieren scheitern.
 _API_ARCHIVE_URL = "https://api.pocketcasts.com/sync/update_episodes_archive"
