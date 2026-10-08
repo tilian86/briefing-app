@@ -17629,6 +17629,30 @@ _PLAUSI_MAX_ZEICHEN = 1_200_000     # ~400k Tokens je Aufruf, deutlich unter 1 M
 _PLAUSI_PORTION_BEITRAEGE = 60      # hält die JSON-Antwort je Portion überschaubar
 
 
+def _plausi_pruefbare_sections(briefing_sections: List[dict]) -> List[dict]:
+    """Die Beiträge, die Plausi-Check und Auto-Repair 1-basiert durchnummerieren.
+
+    Beide MÜSSEN dieselbe Liste benutzen: Der Repair nimmt den `section_index`
+    aus dem Check und greift damit in seine eigene Liste. 08.10.2026: Der Repair
+    filterte `_verbatim` nicht heraus — stand ein Verbatim-Podcast vor einem
+    geprüften Beitrag, schrieb er den falschen Beitrag mit fremden Befunden um.
+    """
+    # Recap/Essenz/Verabschiedung sind synthetische Meta-Blöcke ohne klar
+    # identifizierbare Quelle — kein sinnvoller Check.
+    return [
+        s for s in briefing_sections
+        if s.get("type") != "transition"
+        and not s.get("_recap")
+        and not s.get("_essenz")
+        and not s.get("_verabschiedung")
+        and not s.get("_preview")
+        and not s.get("_ressort_header")
+        and not s.get("_special")
+        and not s.get("_verbatim")   # Verbatim-Podcasts: unverändert übernommen → Check gegen
+                                     # sich selbst ist sinnlos und kostet vollen Opus-Input.
+    ]
+
+
 def _plausi_in_portionen(checkable_sections, language_only_sections, quellen, vorspann, *,
                          model, timeout_seconds, progress_callback, cli_path, max_zeichen):
     """Plausi-Check in Portionen (siehe run_content_check_via_claude_cli).
@@ -17788,20 +17812,7 @@ def run_content_check_via_claude_cli(
                 "enabled": True, "mode": "warn", "checked": 0, "warnings": 0,
                 "notices": 0, "items": [], "raw_response": ""}
 
-    # Prüfbare Sections filtern (Recap/Essenz/Verabschiedung sind synthetische
-    # Meta-Blöcke ohne klar identifizierbare Quelle — kein sinnvoller Check).
-    checkable_sections = [
-        s for s in briefing_sections
-        if s.get("type") != "transition"
-        and not s.get("_recap")
-        and not s.get("_essenz")
-        and not s.get("_verabschiedung")
-        and not s.get("_preview")
-        and not s.get("_ressort_header")
-        and not s.get("_special")
-        and not s.get("_verbatim")   # Verbatim-Podcasts: unverändert übernommen → Check gegen
-                                     # sich selbst ist sinnlos und kostet vollen Opus-Input.
-    ]
+    checkable_sections = _plausi_pruefbare_sections(briefing_sections)
     if not checkable_sections:
         return {"ok": True, "error": None,
                 "enabled": True, "mode": "warn", "checked": 0, "warnings": 0,
@@ -18196,31 +18207,30 @@ def run_briefing_repair_via_claude_cli(
                 "repaired_count": 0, "repaired_indices": [],
                 "sections": briefing_sections, "raw_response": ""}
 
-    # Filter prüfbare Sections (gleiches Filter wie Content-Check)
-    checkable_sections = [
-        s for s in briefing_sections
-        if s.get("type") != "transition"
-        and not s.get("_recap")
-        and not s.get("_essenz")
-        and not s.get("_verabschiedung")
-        and not s.get("_preview")
-        and not s.get("_ressort_header")
-        and not s.get("_special")
-    ]
+    # Dieselbe Liste wie der Content-Check, sonst zeigt dessen section_index daneben.
+    checkable_sections = _plausi_pruefbare_sections(briefing_sections)
 
     # Befunde pro 1-basiertem Index sammeln
     issues_by_idx: Dict[int, Dict[str, list]] = {}
 
     if output_lint and output_lint.get("items"):
+        # output_lint zählt 0-basiert über ALLE Sections (inkl. Übergänge, Verbatim-
+        # Podcasts, Recap …), der Repair 1-basiert über die prüfbaren → per Identität
+        # umrechnen. Lint-Befunde zu nicht prüfbaren Sections fallen weg.
+        _pos_in_checkable = {id(s): i for i, s in enumerate(checkable_sections, start=1)}
         for item in output_lint["items"]:
             sev = item.get("severity") or "notice"
             if sev not in ("warning", "warn"):
                 continue
-            sec_idx = item.get("section_index")
-            if sec_idx is None:
+            try:
+                sec_idx = int(item.get("section_index"))
+            except (TypeError, ValueError):
                 continue
-            # output_lint nutzt 0-basierten Index → +1 für die Konvention im Repair
-            one_idx = int(sec_idx) + 1
+            if not 0 <= sec_idx < len(briefing_sections):
+                continue   # −1 = Vollständigkeits-Befund ohne einzelnen Beitrag
+            one_idx = _pos_in_checkable.get(id(briefing_sections[sec_idx]))
+            if one_idx is None:
+                continue
             entry = issues_by_idx.setdefault(one_idx, {"lint": [], "content": []})
             msg = item.get("message", "")
             label = item.get("label", "")
