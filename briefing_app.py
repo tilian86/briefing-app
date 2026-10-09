@@ -4955,7 +4955,8 @@ def _round_jobs_collector():
                 _pc = st.session_state.get("_podcast_concerns") or []
                 _pc.append({"title": _j.get("title", "Podcast"), "concerns": _r["concerns"],
                             "summary": _r.get("summary") or "",
-                            "transcript": _r.get("transcript") or ""})
+                            "transcript": _r.get("transcript") or "",
+                            "hoerfunk_id": _j.get("hoerfunk_id")})
                 st.session_state["_podcast_concerns"] = _pc
             if _j.get("path"):
                 mark_ttml_imported([_j["path"]])
@@ -4969,7 +4970,13 @@ def _round_jobs_collector():
             if _j.get("hoerfunk_id"):
                 try:
                     import pocketcasts_fetch as _pcf_hf
-                    _pcf_hf.hoerfunk_verbaut([_j["hoerfunk_id"]])
+                    # 09.10.: Briefing-Text mitschicken (schon faktengeprüft, genau so
+                    # landet er im Podcast-Feld) — Hörfunk zeigt ihn bei der Folge an.
+                    try:
+                        _pcf_hf.hoerfunk_verbaut([_j["hoerfunk_id"]],
+                                                 texte={_j["hoerfunk_id"]: _r.get("summary") or ""})
+                    except TypeError:   # Modul noch im alten Stand geladen
+                        _pcf_hf.hoerfunk_verbaut([_j["hoerfunk_id"]])
                 except Exception:
                     pass  # nicht schlimm: die Folge bleibt in Hörfunk vorgemerkt
             if _j.get("guid"):
@@ -5230,6 +5237,14 @@ if _pconc:
                         _alt_feld.replace(_ziel["summary"], _res["text"], 1)
                     _c_weg = _ziel["concerns"][_cfj["ci"]] if _cfj["ci"] < len(_ziel["concerns"]) else None
                     _ziel["summary"] = _res["text"]
+                    if _ziel.get("hoerfunk_id"):
+                        # 09.10.: Hörfunk hat den Text schon — korrigierte Fassung nachreichen.
+                        try:
+                            import pocketcasts_fetch as _pcf_hfk
+                            _pcf_hfk.hoerfunk_verbaut([_ziel["hoerfunk_id"]],
+                                                      texte={_ziel["hoerfunk_id"]: _res["text"]})
+                        except Exception:
+                            pass
                     _ziel["concerns"] = [x for x in _ziel["concerns"] if x != _c_weg]
                     st.session_state["_podcast_concerns"] = [x for x in _pconc if x.get("concerns")]
                     st.session_state["_conc_fix_msg"] = (

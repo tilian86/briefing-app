@@ -647,11 +647,41 @@ def preview_hoerfunk(progress=None):
     return items, ("ok" if items else "leer")
 
 
-def hoerfunk_verbaut(ids, datum: str = None) -> int:
-    """Meldet Hörfunk: steckt im Briefing (📻) → raus aus der Vormerkliste."""
+# Technische Marker, die nur der Briefing-Bau braucht (eigene Zeile oder am Textende).
+_HF_MARKER_ZEILEN = re.compile(
+    r"^[ \t]*(?:Ende der Podcastzusammenfassung\.?(?:[ \t]*Dies war der Podcast\b[^\n]*)?"
+    r"|Weiter geht['’]s\.?|(?:Nächster|Letzter) Beitrag\.[ \t]*Beitrag \d+ von \d+\.?"
+    r"|Beitrag \d+ von \d+\.?|Ende des Briefings\.?|m{3,}|Artikel Ende|<<<BRIEFING_SPLIT>>>)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE)
+_HF_MARKER_ENDE = re.compile(
+    r"\s*Ende der Podcastzusammenfassung\.?(?:\s*Dies war der Podcast\b[^\n]*)?\s*$", re.IGNORECASE)
+
+
+def hoerfunk_text(summary: str) -> str:
+    """Podcast-Zusammenfassung so, wie Hörfunk sie zeigt: Markdown (###, fett) bleibt,
+    Endmarker und andere Bau-Marker fliegen raus."""
+    t = _HF_MARKER_ENDE.sub("", _HF_MARKER_ZEILEN.sub("", summary or ""))
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
+def hoerfunk_verbaut(ids, datum: str = None, texte: dict = None) -> int:
+    """Meldet Hörfunk: steckt im Briefing (📻) → raus aus der Vormerkliste.
+
+    texte (09.10.2026): {hoerfunk_id: Zusammenfassung} — Hörfunk zeigt den Briefing-Text
+    bei der Folge an. Fehlt ein Text oder ist er leer, fehlt nur diese id im Feld."""
     d = {"ids": [int(x) for x in ids]}
     if datum:
         d["datum"] = datum
+    t = {}
+    for k, v in (texte or {}).items():
+        try:
+            s = hoerfunk_text(v)
+            if s:
+                t[str(int(k))] = s
+        except Exception:
+            continue
+    if t:
+        d["texte"] = t
     return int((_hoerfunk("/api/briefing/verbaut", d) or {}).get("n") or 0)
 
 
