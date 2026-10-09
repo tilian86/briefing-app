@@ -20,11 +20,13 @@ im URL-Feld steht (das Feld liegt gesichert im Entwurf); der headless-Lauf
 erst nach dem erfolgreichen Bau, weil er nichts zwischenspeichert.
 """
 
+import html
 import json
 import os
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 from email.utils import parsedate_to_datetime
 
@@ -104,9 +106,8 @@ def _als_text(html_roh: str) -> str:
     t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html_roh or "")
     t = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</h[1-6]>", "\n", t)
     t = re.sub(r"<[^>]+>", " ", t)
-    for roh, hin in (("&nbsp;", " "), ("&amp;", "&"), ("&quot;", '"'),
-                     ("&#39;", "'"), ("&lt;", "<"), ("&gt;", ">"), ("&#8217;", "’")):
-        t = t.replace(roh, hin)
+    # 09.10.: alle Entities aufloesen — vorher blieben „&#228;“ & Co. stehen
+    t = html.unescape(t).replace("\xa0", " ")
     t = re.sub(r"[ \t]+", " ", t)
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 
@@ -128,13 +129,56 @@ def feed_lesen(url: str, timeout: int = 25) -> list:
             datum = parsedate_to_datetime(_cdata("pubDate", block)).strftime("%Y-%m-%d")
         except Exception:
             pass
-        beitraege.append({"titel": _cdata("title", block) or "(ohne Titel)",
+        beitraege.append({"titel": html.unescape(_cdata("title", block)) or "(ohne Titel)",
                           "link": link, "datum": datum, "text": volltext,
                           "zeichen": len(volltext)})
     return beitraege
 
 
 # ── Was ist neu? ────────────────────────────────────────────────────────────
+def _link_norm(url: str) -> str:
+    s = urllib.parse.urlsplit((url or "").strip())
+    return (s.netloc.lower() + s.path.rstrip("/")) if s.netloc else (url or "").strip()
+
+
+def newsletter_fuer(url: str):
+    """Eingerichteter Newsletter, zu dem dieser Link gehoert (gleicher Host wie
+    sein Feed) — sonst None. Gilt auch fuer pausierte und von Hand eingefuegte."""
+    host = urllib.parse.urlsplit((url or "").strip()).netloc.lower()
+    if not host:
+        return None
+    for nl in load_config():
+        if urllib.parse.urlsplit(nl.get("feed") or "").netloc.lower() == host:
+            return nl
+    return None
+
+
+def volltexte(urls, timeout: int = 20) -> dict:
+    """{link: {"name", "titel", "text"}} fuer alle Newsletter-Links in `urls`.
+
+    09.10.: Florian will Newsletter nicht wie einen Zeitungsartikel verdichtet,
+    sondern ausfuehrlich mit allen Empfehlungen. Der Volltext kommt aus dem Feed
+    (content:encoded) — die Webseite liefert oft nur den Anfang plus Abo-Kasten.
+    Steht eine Ausgabe nicht mehr im Feed, bleibt "text" leer (dann zaehlt der
+    normale Seitenabruf)."""
+    gruppen = {}
+    for u in urls or []:
+        nl = newsletter_fuer(u)
+        if nl:
+            gruppen.setdefault(nl["feed"], (nl, []))[1].append(u)
+    erg = {}
+    for feed, (nl, links) in gruppen.items():
+        try:
+            nach_link = {_link_norm(b["link"]): b for b in feed_lesen(feed, timeout=timeout)}
+        except Exception:
+            nach_link = {}
+        for u in links:
+            b = nach_link.get(_link_norm(u)) or {}
+            erg[u] = {"name": nl.get("name") or "Newsletter",
+                      "titel": b.get("titel") or "", "text": b.get("text") or ""}
+    return erg
+
+
 def neue_ausgaben(max_alter_tage: int = 21, pro_newsletter: int = 3,
                   progress=None, timeout: int = 25) -> dict:
     """Noch nicht eingespeiste Ausgaben aller aktiven Newsletter.

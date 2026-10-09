@@ -14770,6 +14770,23 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
                   file=sys.stderr)
         topics = entbuendelt
 
+    # 📰 Newsletter (09.10.) ebenfalls nie bündeln: eine Ausgabe = ein Beitrag.
+    _mit_nl = []
+    for t in topics:
+        nls = [m_ for m_ in t["members"] if items[m_ - 1].get("kind") == "newsletter"]
+        if not nls:
+            _mit_nl.append(t)
+            continue
+        rest = [m_ for m_ in t["members"] if m_ not in nls]
+        if rest:
+            _mit_nl.append({**t, "members": rest})
+        for m_ in nls:
+            _ausg = re.search(r"(?m)^NEWSLETTER-AUSGABE:\s*(.+)$", items[m_ - 1].get("body") or "")
+            _nm = items[m_ - 1].get("label") or "Newsletter"
+            _mit_nl.append({"title": (f"{_nm}: {_ausg.group(1).strip()}" if _ausg else _nm)[:120],
+                            "members": [m_], "weight": max(3, int(t.get("weight") or 3))})
+    topics = _mit_nl
+
     # Sammelthemen aufteilen. Ein Beitrag, der acht Meldungen bündelt, wird
     # zwangsläufig zur Aufzählung — egal wie das Budget aussieht. Ab sechs
     # Quellen entstehen daraus mehrere Beiträge mit je eigenem Budget.
@@ -14860,7 +14877,14 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         _ist_podcast = any(items[m_ - 1].get("kind") == "podcast" for m_ in t["members"])
         if podcast_mode == "soft" and _ist_podcast:
             wmin, wmax = max(wmin, 220), max(wmax, 340)
+        _ist_newsletter = any(items[m_ - 1].get("kind") == "newsletter" for m_ in t["members"])
+        if _ist_newsletter:
+            _nl_min, _nl_max = ((150, 260) if ultra_compact else
+                                ((240, 400) if compact_mode else (380, 650)))
+            wmin, wmax = max(wmin, _nl_min), max(wmax, _nl_max)
         prompt = _TOPIC_SYNTH_PROMPT.format(topic_title=t["title"], word_min=wmin, word_max=wmax)
+        if _ist_newsletter:
+            prompt += _NEWSLETTER_REGEL.format(wmin=wmin)
         if podcast_mode == "soft" and _ist_podcast:
             # Ohne diese Ausnahme greift unten „bei einer Quelle nah am Minimum,
             # 2-4 Sätze" — und nach der Entbündelung ist JEDER Podcast ein
@@ -14873,11 +14897,14 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
                        "Ein oder zwei Sätze sind KEIN zulässiges Ergebnis — wer die Folge nicht gehört "
                        "hat, muss danach wissen, was drinstand. Reicht das Material dafür nicht aus, "
                        "schreibe stattdessen nur: ZU_DUENN")
-        prompt += (f"\n\nHARTE OBERGRENZE: HÖCHSTENS {wmax} Wörter — das ist eine feste Grenze, kein Ziel. "
-                   "Lieber deutlich darunter. Der Magazin-Stil ändert Ton und Dramaturgie, NICHT die Länge. "
-                   "Bei Themen mit nur einer Quelle bleib nah am Minimum. Ein einzelner Strandfund oder eine "
-                   "Kuriosität bekommt 2-4 Sätze, egal wie ausführlich die Quelle ist.")
-        if "_wmin" in t:
+        if _ist_newsletter:
+            prompt += f"\n\nHARTE OBERGRENZE: HÖCHSTENS {wmax} Wörter."
+        else:
+            prompt += (f"\n\nHARTE OBERGRENZE: HÖCHSTENS {wmax} Wörter — das ist eine feste Grenze, kein Ziel. "
+                       "Lieber deutlich darunter. Der Magazin-Stil ändert Ton und Dramaturgie, NICHT die Länge. "
+                       "Bei Themen mit nur einer Quelle bleib nah am Minimum. Ein einzelner Strandfund oder eine "
+                       "Kuriosität bekommt 2-4 Sätze, egal wie ausführlich die Quelle ist.")
+        if "_wmin" in t and not _ist_newsletter:
             # Gewichts-Zahl ja, aber KEINE Label-Wörter wie "Randnotiz"/"Schwerpunkt" —
             # das Modell echot sie sonst in den Text (Leak 06.07.: "Nur eine Randnotiz…").
             prompt += (f"\n\nGEWICHTUNG intern: Tragweite {t.get('weight', 3)}/5. "
@@ -14891,7 +14918,8 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         src_parts = []
         for m_ in t["members"]:
             it = items[m_ - 1]
-            src_parts.append(f"--- QUELLE {m_} ({it.get('label', '?')}, {it.get('kind', 'article')}) ---\n\n{(it.get('body') or '')[:6500]}")
+            _cap = _NEWSLETTER_MAX_ZEICHEN if it.get("kind") == "newsletter" else 6500
+            src_parts.append(f"--- QUELLE {m_} ({it.get('label', '?')}, {it.get('kind', 'article')}) ---\n\n{(it.get('body') or '')[:_cap]}")
         pl = prompt + "\n\n=== QUELLEN ZU DIESEM THEMA ===\n\n" + "\n\n".join(src_parts)
         # MODELL-MIX: Mehrquellen-Verwebung, schwere Themen (Gewicht ≥4) und Web-Recherche
         # brauchen Opus. Einzelquellen-Themen mit geringem Gewicht sind Umschreiben/Verdichten
@@ -14900,7 +14928,7 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         # würde der Mix bei Florians Default (Web an) nie greifen. Opus nur für die
         # Fälle, wo es zählt: Mehrquellen-Verwebung oder schwere Themen.
         _weight = int(t.get("weight") or 3)
-        _use_opus = n_src >= 2 or _weight >= 4
+        _use_opus = n_src >= 2 or _weight >= 4 or _ist_newsletter
         _model = _CLI_JUDGE_MODEL if _use_opus else "sonnet"
         t["_model_used"] = "opus" if _use_opus else "sonnet"
         c = [cli, "--print", "--output-format", "text", "--model", cli_modell(_model),
@@ -15609,7 +15637,7 @@ def _collect_briefing_raw_items(urls_text, paywall_text, podcast_text, include_w
     """Sammelt alle Rohdaten als flache Item-Liste für den chunked CLI-Pfad.
 
     Returns: (weather_text_or_None, items) wobei items = Liste von dicts:
-      {"kind": "article"|"paywall"|"podcast", "label": str, "body": str}
+      {"kind": "article"|"paywall"|"podcast"|"newsletter", "label": str, "body": str}
     Reihenfolge: Artikel (Eingabe-Reihenfolge) → Paywall → Podcasts.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15633,6 +15661,17 @@ def _collect_briefing_raw_items(urls_text, paywall_text, podcast_text, include_w
     weak_fetches = []  # URLs, die kaum/keinen Inhalt lieferten (Fetch fehlgeschlagen / Cookie-Wall)
 
     valid_urls, _, _ = _extract_article_urls_internal(urls_text or "")
+    # 📰 09.10.: Newsletter (Hotel Matze & Co.) sind kein Zeitungsartikel —
+    # Florian will den Gedanken des Autors UND alle Empfehlungen. Eigene Art
+    # "newsletter": Volltext aus dem Feed, kein 6000-Zeichen-Schnitt (der fraß
+    # die High Fives am Ende), in der Synthese eigener, längerer Beitrag.
+    _nl_texte = {}
+    if valid_urls:
+        try:
+            import newsletter_fetch as _nlf
+            _nl_texte = _nlf.volltexte(valid_urls)
+        except Exception as _nlex:
+            print(f"[newsletter] Feed-Volltext übersprungen: {_nlex}", file=sys.stderr)
     if valid_urls:
         payload_map = {}
         with ThreadPoolExecutor(max_workers=_article_fetch_workers(len(valid_urls))) as pool:
@@ -15649,6 +15688,21 @@ def _collect_briefing_raw_items(urls_text, paywall_text, podcast_text, include_w
                     pass
         for url in valid_urls:
             p = payload_map.get(url)
+            _nl = _nl_texte.get(url)
+            if _nl is not None:
+                _seite = ((p or {}).get("source_text") or "").strip()
+                _nltext = (_nl.get("text") or "").strip()
+                if len(_nltext) < max(400, len(_seite) // 2):
+                    _nltext = _seite  # Ausgabe nicht mehr im Feed → Seitenabruf
+                if len(_nltext) >= 180:
+                    items.append({
+                        "kind": "newsletter",
+                        "label": _nl.get("name") or "Newsletter",
+                        "body": (f"QUELLE: {_nl.get('name') or 'Newsletter'}\n"
+                                 f"NEWSLETTER-AUSGABE: {_nl.get('titel') or ''}\nURL: {url}\n\n"
+                                 f"{_nltext[:_NEWSLETTER_MAX_ZEICHEN]}"),
+                    })
+                    continue
             if not p:
                 weak_fetches.append({"url": url, "chars": 0, "preview": "(kein Inhalt geladen)"})
                 print(f"[fetch-weak] Fetch fehlgeschlagen: {url}", file=sys.stderr)
@@ -15704,6 +15758,16 @@ def _collect_briefing_raw_items(urls_text, paywall_text, podcast_text, include_w
 
     return weather_text, items, weak_fetches
 
+
+_NEWSLETTER_MAX_ZEICHEN = 24000  # ganze Ausgabe inkl. Empfehlungen (Hotel Matze ~6-8k)
+
+_NEWSLETTER_REGEL = """
+
+NEWSLETTER-REGEL (bindend): Diese Quelle ist ein persönlicher Newsletter (Kolumne plus Empfehlungen), KEIN Nachrichtenartikel. Schreibe MINDESTENS {wmin} Wörter — die Kürze-Hinweise weiter unten gelten hier NICHT.
+1. Zuerst der Gedanke des Autors: sein Thema, seine Haltung, ein, zwei prägnante Bilder aus dem Text — klar als seine Sicht erkennbar („Matze erzählt…“, „schreibt er“).
+2. Dann JEDE Empfehlung einzeln und vollständig: jedes Buch, jeder Film, jede Serie, Doku, Podcast-Folge, Musik, Veranstaltung, Ort oder Tipp mit genauem Titel bzw. Namen (plus Autor, Regisseur, Plattform, Datum oder Ort, falls genannt) und ein, zwei Sätzen, WARUM er es empfiehlt. Keine Empfehlung weglassen oder mit anderen zusammenfassen — sie sind der Kern.
+3. Hinweise auf seine eigene neue Podcast-Folge (wer zu Gast ist, worum es geht) und ein Zitat am Ende gehören dazu.
+Gesprochen und fließend, gern als gesprochene Aufzählung („Erste Empfehlung: …“). Bezahlte Werbung, Rabattcodes, Abo- und Spendenhinweise weglassen."""
 
 _SMART_ARTICLE_BUDGETS = {5: (220, 320), 4: (160, 240), 3: (110, 170), 2: (70, 110), 1: (40, 70)}
 
@@ -15785,7 +15849,8 @@ def _build_chunk_handoff(now, compact_mode, items, weather_text=None, ultra_comp
         parts.append("─" * 50 + "\nWETTER (als Section mit \"_weather\": true)\n" + "─" * 50 + "\n")
         parts.append(weather_text.strip() + "\n\n")
     for i, it in enumerate(items, start=1):
-        kind_label = {"article": "ARTIKEL", "paywall": "PAYWALL-TEXT", "podcast": "PODCAST"}.get(it["kind"], "ARTIKEL")
+        kind_label = {"article": "ARTIKEL", "paywall": "PAYWALL-TEXT", "podcast": "PODCAST",
+                      "newsletter": "NEWSLETTER (Kolumne + ALLE Empfehlungen erhalten)"}.get(it["kind"], "ARTIKEL")
         parts.append("─" * 50 + f"\n{kind_label} {i}\n" + "─" * 50 + "\n")
         _is_pod = it.get("kind") == "podcast"
         if _is_pod and podcast_mode == "verbatim":
@@ -16344,7 +16409,7 @@ def run_briefing_via_claude_cli_chunked(
             _src_lines.append(_src_vorspann)
         _src_items = []
         for _si, _sit in enumerate(items, 1):
-            _src_items.append(f"--- QUELLE {_si} ({_sit.get('label', '?')}, {_sit.get('kind', 'article')}) ---\n{(_sit.get('body') or '')[:7000]}")
+            _src_items.append(f"--- QUELLE {_si} ({_sit.get('label', '?')}, {_sit.get('kind', 'article')}) ---\n{(_sit.get('body') or '')[:(_NEWSLETTER_MAX_ZEICHEN if _sit.get('kind') == 'newsletter' else 7000)]}")
         _src_lines.extend(_src_items)
         _report("Plausibilitäts-Check: Claude prüft jeden Beitrag gegen die Quellen…", 0.88)
         try:
