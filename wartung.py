@@ -138,7 +138,12 @@ def main() -> int:
         _log("Nichts zu tun.")
         return 0
 
+    # 10.10.2026: Am 16.09. und 23.09. endete das Protokoll nach „Start“ ohne
+    # Fehlermeldung. Diese Zeilen zeigen beim nächsten Mal, wo es hängt.
+    _log("Prüfe Wochenkontingent…")
     frei = _kontingent_frei()
+    _log(f"Wochenkontingent: {frei}% frei" if frei >= 0
+         else "Wochenkontingent unbekannt — Wartung läuft trotzdem.")
     if 0 <= frei < 20:
         _log(f"Nur {frei}% Wochenkontingent frei — Wartung verschoben.")
         return 0
@@ -193,7 +198,16 @@ def main() -> int:
     return 0
 
 
+def _abbruch(signum, _frame):
+    # Ohne das verschwindet ein von außen beendeter Lauf spurlos aus dem Protokoll.
+    _log(f"Von außen beendet (Signal {signum}) — Mac schlafen gelegt oder neu gestartet?")
+    sys.exit(128 + signum)
+
+
 if __name__ == "__main__":
+    import signal
+    for _sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(_sig, _abbruch)
     try:
         sys.exit(main())
     except Exception:
