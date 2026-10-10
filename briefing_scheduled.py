@@ -313,6 +313,13 @@ def main():
                 if tx and tx[0].strip() in ("Audio-Briefing", ""):
                     tx[0] = ttl
                     open(txtp, "w", encoding="utf-8").write("\n".join(tx))
+                    # 10.10.2026: Spiegel-Kopie mitziehen wie in der App. Ohne das
+                    # stand dort weiter "Audio-Briefing" — Morgenfunk liest den
+                    # Titel aus dem Spiegel und fand den Eintrag im Reader nie.
+                    mirp = os.path.expanduser(
+                        "~/.briefing_meta_mirror/Texte/" + os.path.basename(txtp))
+                    if os.path.exists(mirp):
+                        open(mirp, "w", encoding="utf-8").write("\n".join(tx))
             except Exception:
                 pass
             try:
