@@ -26,6 +26,10 @@ KONFIG = os.path.expanduser("~/.feedfunk/sync.json")
 OFFEN_ERLEDIGT = os.path.expanduser("~/.feedfunk/erledigt_offen.json")
 PREFIX = "vw:"
 TIMEOUT = 8
+# Feeds, die Florian nur zum Selberlesen hat — nie ins Briefing, auch wenn dort
+# versehentlich ein Haken sitzt (10.10.2026: ein MyTopDeals-Deal landete im Briefing).
+# Solche Einträge gehen gleich wieder aus dem Korb.
+NIE_INS_BRIEFING = ("mytopdeals",)
 
 letzter_fehler = ""
 
@@ -108,10 +112,15 @@ def holen() -> list:
         return []
     schon_erledigt = set(offen)
     items = []
+    nur_lesen = []
     for x in daten.get("auswahl") or []:
         aid = str(x.get("id") or "")
         url = str(x.get("url") or "")
         if not aid or not url or aid in schon_erledigt:
+            continue
+        herkunft = (url + " " + str(x.get("feed") or "")).lower()
+        if any(k in herkunft for k in NIE_INS_BRIEFING):
+            nur_lesen.append(aid)
             continue
         pub = x.get("published") or 0
         try:
@@ -131,6 +140,8 @@ def holen() -> list:
             "source": "",
             "problem": "",
         })
+    if nur_lesen:
+        erledigt(nur_lesen)
     return items
 
 
