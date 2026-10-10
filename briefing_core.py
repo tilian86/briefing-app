@@ -17738,7 +17738,10 @@ def _plausi_in_portionen(checkable_sections, language_only_sections, quellen, vo
     for gi, sec in enumerate(checkable_sections, start=1):
         nums = _nummern(sec)
         if not nums:
-            ohne += 1
+            # 10.10.2026: Der Wetter-Block hat nie Quellen — nicht als Lücke melden,
+            # sonst steht in jedem Bau-Log „1 Beitrag ohne Quellenzuordnung".
+            if not sec.get("_weather"):
+                ohne += 1
             continue
         zuwachs = len(sec.get("content") or "") + 100 + sum(
             len(quellen[n - 1]) for n in nums if n not in qset)
