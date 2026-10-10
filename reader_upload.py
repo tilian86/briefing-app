@@ -283,14 +283,26 @@ def _do_upload(file_path: str, expect_title: str, timeout_s: int, t0: float) -> 
         # Import bestätigen: Der Dialog hat einen zweiten "Import"-Button. Da jetzt
         # mehrere existieren (Library-Knopf + Dialog-Bestätigung), den LETZTEN
         # sichtbaren klicken — das ist die Dialog-Bestätigung.
-        try:
-            imp = page.get_by_role("button", name="Import", exact=True)
-            for j in range(imp.count() - 1, -1, -1):
-                if imp.nth(j).is_visible():
-                    imp.nth(j).click(timeout=5000)
-                    break
-        except Exception:
-            pass
+        # 10.10.2026: Der Bestätigungsknopf heißt jetzt "Upload" — der
+        # Library-Knopf "Import" ist hinter dem Dialog unsichtbar, also nimmt
+        # die Schleife erst "Import", dann "Upload", je den letzten sichtbaren.
+        geklickt = False
+        for _name in ("Import", "Upload"):
+            try:
+                imp = page.get_by_role("button", name=_name, exact=True)
+                for j in range(imp.count() - 1, -1, -1):
+                    if imp.nth(j).is_visible():
+                        imp.nth(j).click(timeout=5000)
+                        geklickt = True
+                        break
+            except Exception:
+                pass
+            if geklickt:
+                break
+        if not geklickt:
+            return {"ok": False, "error": "Bestätigungsknopf im Upload-Dialog nicht gefunden "
+                    "(weder 'Import' noch 'Upload') — ElevenReader hat den Dialog umgebaut.",
+                    "elapsed_seconds": time.time() - t0}
         # Erfolg heisst: der Eintrag steht in der BIBLIOTHEK. Nicht irgendwo
         # auf der Seite — 13.09.: der alte Test suchte den Titel per
         # wait_for_selector im gerade offenen Hochlade-Dialog, und DER zeigt
