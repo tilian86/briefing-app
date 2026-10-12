@@ -26,7 +26,6 @@ __pycache__/
 # Laufzeit-Zustand, Caches und Berichte (nie ins Repo)
 .briefing_*.json
 .headless_running.json
-.pocketcasts_fetched.json
 .wartung.log
 WARTUNGSBERICHT.md
 .start_*.sh

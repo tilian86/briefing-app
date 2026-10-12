@@ -26,7 +26,7 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
 LOG = os.path.join(APP_DIR, ".wartung.log")
 BERICHT = os.path.join(APP_DIR, "WARTUNGSBERICHT.md")
-MODULE = ("briefing_core", "briefing_app", "feedly_fetch", "pocketcasts_fetch",
+MODULE = ("briefing_core", "briefing_app", "feedly_fetch", "hoerfunk_quelle",
           "reader_upload", "briefing_scheduled", "fehlerbuch", "browser_pfad", "wa_runde")
 
 # Was der Wartungslauf anfassen darf — und was ausdrücklich nicht.

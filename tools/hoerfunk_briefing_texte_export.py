@@ -33,7 +33,7 @@ from pathlib import Path
 APP = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(APP))
 import podcast_verbaut as pv  # noqa: E402
-from pocketcasts_fetch import hoerfunk_text  # noqa: E402
+from hoerfunk_quelle import hoerfunk_text  # noqa: E402
 
 try:  # exakt wie die App trennen und Korrekturen prüfen
     from briefing_core import split_podcast_summaries, _verify_podcast_fixes, _loads_llm_json  # noqa: E402
@@ -178,7 +178,8 @@ def entwurf_kandidaten():
 
 
 def pc_uuids():
-    """„Podcast: Folge“[:80] → Pocket-Casts-Episode (Aufräum-Liste der App)."""
+    """„Podcast: Folge“[:80] → Pocket-Casts-Episode (Aufräum-Liste der App).
+    Die Liste gibt es seit 12.10.2026 nicht mehr (Pocket Casts ausgebaut) → dann leer."""
     try:
         d = json.loads((APP / ".briefing_pc_archive_frage.json").read_text(encoding="utf-8"))
         return {e["titel"]: e["episode"] for e in d if e.get("titel") and e.get("episode")}

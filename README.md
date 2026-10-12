@@ -1,7 +1,7 @@
 # Audio Briefing
 
 A self-hosted news-digest pipeline. It collects regional and national news from
-RSS feeds, a Feedly read-later list, newsletters and podcast transcripts,
+RSS feeds, a reading basket, newsletters and podcast transcripts,
 condenses them with large language models and renders the result as a PDF, as
 a text/ePub edition for text-to-speech listening, and as a short reading
 edition that goes out to readers via a WhatsApp broadcast.
@@ -14,7 +14,7 @@ Germany. UI, prompts and code comments are in German.
 | Step | How |
 |---|---|
 | Collect | Reading basket of the companion RSS reader Feedfunk (`vorauswahl_quelle.py`; the old Feedly read-later path in `feedly_fetch.py` is switched off via `FEEDLY_AKTIV`), RSS and newsletter feeds (`newsletter_fetch.py`), full-text extraction with trafilatura/readability, paywalled sites via a persistent Playwright profile with the user's own subscriptions |
-| Podcasts | Transcripts from Pocket Casts and Podcasting 2.0 feed transcripts (`pocketcasts_fetch.py`), or local transcription with mlx-whisper on Apple Silicon (`local_transcribe.py`) |
+| Podcasts | Single source: the queue of the author's own podcast player Hörfunk (episodes flagged "for the briefing", transcripts delivered with them) via `hoerfunk_quelle.py`. Pocket Casts and Apple Podcasts were removed on 2026-10-12 |
 | Condense | Two modes: *synthesis* (weaves all sources on one topic into one piece) and *classic* (one piece per source). Duplicate detection, section classification, three length levels |
 | Quality | Plausibility check against the sources plus automatic repair pass before the briefing is released |
 | Render | PDF (reportlab), ePub/TXT upload to ElevenReader for audio (`reader_upload.py`), a compact WhatsApp reading edition, an optional weekly meta-briefing (`wochenbriefing_lauf.py`) |
@@ -36,8 +36,7 @@ briefing_core.py       Pipeline: fetching, condensing, quality check, rendering
 feedly_fetch.py        Full text + paywall check (Playwright); Feedly path off
 vorauswahl_quelle.py   Feedfunk basket: fetch + mark done
 newsletter_fetch.py    Newsletter feeds
-pocketcasts_fetch.py   Podcast transcripts (Pocket Casts, feed transcripts)
-local_transcribe.py    Local Whisper transcription
+hoerfunk_quelle.py     Podcast queue + transcripts (Hörfunk, the only podcast source)
 reader_upload.py       ePub build + ElevenReader upload
 wochenbriefing_lauf.py Weekly meta-briefing
 briefing_schedule*.py  Scheduled headless runs (launchd)

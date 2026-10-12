@@ -50,32 +50,10 @@ from briefing_core import (
     llm_confirm_duplicate_clusters,
     summarize_podcast_transcript_via_cli,
     preprocess_podcast_text,
-    list_apple_podcast_transcripts,
-    apple_ttml_to_text,
-    fetch_new_podcast_episodes,
-    podcast_inbox_cache_save,
-    podcast_inbox_cache_load,
-    podcast_listen_list_add,
-    podcast_listen_list,
-    podcast_listen_list_remove,
-    podcast_inbox_archived_list,
-    podcast_inbox_unarchive,
-    podcast_inbox_selection_save,
-    podcast_inbox_selection_load,
     split_special_topics,
     combine_podcast_field,
     suggest_missing_topics_via_cli,
     append_special_topic,
-    attach_inbox_translations,
-    find_cached_ttml_for,
-    download_feed_transcript,
-    resolve_apple_episode_url,
-    open_in_apple_podcasts,
-    podcast_inbox_mark,
-    wait_for_new_apple_ttml,
-    list_unimported_ttml,
-    mark_ttml_imported,
-    apple_container_accessible,
     _extract_article_urls_internal,
     repair_briefing_content_issues,
     rerun_briefing_sorting,
@@ -85,7 +63,6 @@ from briefing_core import (
     run_content_check_via_claude_cli,
     apply_typo_fixes,
     _clean_ui_text,
-    load_podcast_feeds_from_opml,
     run_direct_genius_via_claude_cli,
     run_genius_summary_via_claude_cli,
     run_meta_briefing_via_claude_cli,
@@ -175,11 +152,10 @@ def _wachhalter_stop(proc) -> None:
 
 
 def _podcast_arbeit_offen() -> bool:
-    """Läuft noch irgendeine Podcast-Arbeit? (Runde, Hintergrund-Jobs, Whisper)
+    """Läuft noch irgendeine Podcast-Arbeit? (Hintergrund-Zusammenfassungen)
     24.08.: Zentraler Baustein der Auto-Kette — gezündet wird erst, wenn
     NICHTS mehr läuft, egal in welcher Reihenfolge die Aufgaben fertig werden."""
-    return bool(st.session_state.get("apple_round") or st.session_state.get("_round_jobs")
-                or st.session_state.get("whisper_running") or st.session_state.get("whisper_queue"))
+    return bool(st.session_state.get("_round_jobs"))
 
 
 def _kette_loeschen() -> None:
@@ -2409,7 +2385,7 @@ def _jump_to_end(field_key: str, aria_label: str):
 
 
 # ── 🛟 Feld-Wiederherstellung ───────────────────────────────────────────────
-# 05.08.: Klickt man in einem FRAGMENT (Pocket Casts, Episoden-Inbox), laeuft nur
+# 05.08.: Klickt man in einem FRAGMENT (Hörfunk-Auswahl), laeuft nur
 # dieses neu — die Textfelder ausserhalb werden nicht gerendert, und Streamlit
 # raeumt deren Widget-Zustand ab. Das Podcast-Feld stand danach leer da, obwohl
 # 18 Folgen drin waren. Die Entwurfs-Schutzschaltung verhinderte den Datenverlust
@@ -2807,43 +2783,6 @@ if not st.session_state.get("_kette_geprueft"):
 _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
 
 
-PC_ARCHIVE_FRAGE = _APP_DIR / ".briefing_pc_archive_frage.json"
-
-
-_PC_ARCHIVE_FRAGE_TAGE = 30
-
-
-def _pc_archive_frage_lesen() -> list:
-    """Offene Aufraeum-Kandidaten. Was laenger als 30 Tage liegt, faellt still
-    raus — die Folge ist dann laengst gehoert oder vom Handy verschwunden."""
-    try:
-        eintraege = json.loads(PC_ARCHIVE_FRAGE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    grenze = (datetime.datetime.now()
-              - datetime.timedelta(days=_PC_ARCHIVE_FRAGE_TAGE)).isoformat()
-    return [e for e in eintraege
-            if isinstance(e, dict) and (e.get("seit") or grenze) >= grenze]
-
-
-def _pc_archive_frage_schreiben(eintraege) -> None:
-    jetzt = datetime.datetime.now().isoformat(timespec="minutes")
-    for e in eintraege:
-        e.setdefault("seit", jetzt)
-    try:
-        PC_ARCHIVE_FRAGE.write_text(json.dumps(eintraege, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _pc_archive_frage_ergaenzen(neue) -> None:
-    """Neue Runde DAZULEGEN. 22.09.: Bisher ersetzte jede Runde die Liste — eine
-    unbeantwortete Frage verschwand, sobald die naechste Runde startete."""
-    ids = {e.get("episode") for e in neue}
-    alte = [e for e in _pc_archive_frage_lesen() if e.get("episode") not in ids]
-    _pc_archive_frage_schreiben(alte + list(neue))
-
-
 PODCAST_ROUND_LOG = _APP_DIR / ".briefing_podcast_round.json"
 
 
@@ -2960,19 +2899,14 @@ def _conc_fix_worker(job: dict, summary: str, transcript: str, concern):
         job["done"] = True
 
 
-def _pc_preview_worker(job: dict, kind: str):
-    """Pocket-Casts-Vorschau im HINTERGRUND. Kein st.* im Thread.
+def _hf_preview_worker(job: dict):
+    """Hörfunk-Vorschau im HINTERGRUND. Kein st.* im Thread.
     05.08.: Vorher lief das im Vordergrund — ein Klick woanders (Florian stellte
     den Podcast-Modus um) loeste einen Neuaufbau aus und brach den Abruf ab."""
     _wach = _wachhalter_start()
     try:
-        import pocketcasts_fetch as _P
-        if kind == "auswahl":
-            job["items"], job["status"] = _P.preview_selection()
-        elif kind == "hoerfunk":
-            job["items"], job["status"] = _P.preview_hoerfunk()
-        else:
-            job["items"], job["status"] = _P.preview_new_releases()
+        import hoerfunk_quelle as _H
+        job["items"], job["status"] = _H.preview_hoerfunk()
     except Exception as exc:
         job["error"] = str(exc)
         job["status"] = "error"
@@ -3774,15 +3708,6 @@ def _meta_worker(cfg, status):
         _u(done=True, failed=True, step=f"❌ Unerwartet: {str(exc)[:120]}")
 
 
-def _bg_feed_summarize(_ep):
-    """Worker-Thread für den 🚀-Kombi-Knopf: Feed-Transkript laden + zusammenfassen.
-    Gibt dasselbe Ergebnis-Format wie summarize_podcast_transcript_via_cli zurück."""
-    _txt = download_feed_transcript(_ep["transcript_url"], _ep.get("transcript_type"))
-    if not _txt or len(_txt) < 500:
-        return {"ok": False, "error": "Transkript-Download leer"}
-    return summarize_podcast_transcript_via_cli(f"Podcast: {_ep['feed']} — Episode: {_ep['title']}\n\n{_txt}")
-
-
 def _maybe_autostart_briefing(source: str):
     """🚀 Auto-Start — EINE Regel: gezündet wird erst, wenn NICHTS mehr läuft.
 
@@ -3835,683 +3760,84 @@ def _maybe_autostart_briefing(source: str):
     st.session_state["_podcast_inbox_last_msg"] = f"🚀 Podcasts fertig ({source}) — das Briefing startet automatisch…"
 
 
-# ── 📡 Episoden-Inbox: neue Folgen aus den OPML-Feeds (Pocket-Casts-Ersatz, optional) ──
-st.markdown('<div id="nav-inbox" style="position:relative; top:-64px;"></div>', unsafe_allow_html=True)
+# ── 📻 Hörfunk: die EINZIGE Podcast-Quelle (seit 12.10.2026) ──
+# Was Florian im eigenen Player (Hörfunk) nach oben gewischt hat, steht hier samt
+# Transkript zur Auswahl. Pocket Casts und Apple Podcasts sind ausgebaut. Das fertige
+# Briefing hört er weiterhin in ElevenReader — Hörfunk ist nur die Quelle.
 # 🧩 Fragment: Klicks hier laden nur DIESEN Block neu, nicht die ganze Seite (03.08.).
-@st.fragment
-def _fragment_episoden_inbox():
-    # 30.08.: Diese Liste war der groesste Brocken der ganzen Seite — 60 Zeilen
-    # à ~14 Elemente ≈ 840 DOM-Knoten von insgesamt 7.487, und Streamlit baut den
-    # Inhalt eines zugeklappten st.expander TROTZDEM bei jedem Aufbau komplett.
-    # Jetzt wird er nur gebaut, wenn er offen ist.
-    #
-    # Zwei Sicherungen:
-    #  · Laeuft eine Runde (Apple/Whisper/Hintergrund-Jobs), bleibt der Block
-    #    offen — sonst waere der Fortschritt unsichtbar.
-    #  · Beim Zuklappen wirft Streamlit die Haekchen weg. Die Auswahl liegt auf
-    #    Platte; die Saat-Marke wird zurueckgesetzt, damit sie beim Aufklappen
-    #    wieder geladen wird.
-    _ib_arbeit = bool(st.session_state.get("apple_round")
-                      or st.session_state.get("_round_jobs")
-                      or st.session_state.get("whisper_running")
-                      or st.session_state.get("whisper_queue"))
-    # 30.08. (2): Erst hielt laufende Arbeit den Block ZWANGSWEISE offen — damit
-    # war er fuer Florian nicht mehr zuklappbar, sein Klick wurde ueberstimmt.
-    # Jetzt entscheidet immer er. Laeuft waehrenddessen etwas, steht dort eine
-    # Zeile mit dem Stand statt der ganzen Liste.
-    _ib_titel = "📡 Episoden-Inbox — neue Folgen aus deinen Feeds"
-    if _ib_arbeit:
-        _ib_titel += "  ·  🔄 Runde läuft"
-    _ib_box, _ib_offen = _lazy_expander(_ib_titel, "episoden_inbox")
-    if not _ib_offen:
-        st.session_state.pop("_ibx_sel_seeded", None)
-        if _ib_arbeit:
-            _n_offen = len(st.session_state.get("_round_jobs") or [])
-            _n_whisper = len(st.session_state.get("whisper_queue") or [])
-            _teile = ([f"{_n_offen} Zusammenfassung(en) laufen"] if _n_offen else []) \
-                     + ([f"{_n_whisper} in der Whisper-Schlange"] if _n_whisper else []) \
-                     + (["Apple-Runde aktiv"] if st.session_state.get("apple_round") else [])
-            st.caption("🔄 " + (" · ".join(_teile) if _teile else "Runde läuft")
-                       + " — zum Mitverfolgen oben aufklappen.")
-        return
-    with _ib_box:
-        st.caption("Zeigt NUR neue Folgen im gewählten Zeitfenster — nie den Back-Katalog. Archiviertes bleibt dauerhaft weg. 📄 = Transkript im Feed (null Klicks nötig) · 🍎 = einmal in Apple Podcasts antippen, dann unten abholen. Der Pocket-Casts-Weg übers Einwurf-Feld bleibt wie gehabt.")
-        _ib_c1, _ib_c2 = st.columns([2, 3])
-        with _ib_c1:
-            # Grössere Fenster sind gefahrlos: archivierte Folgen bleiben dauerhaft
-            # ausgefiltert, ein weites Fenster kostet also nur EINMAL mehr Sortierarbeit.
-            # Danach erscheinen wieder nur echte Neuzugänge — dafür rutschen selten
-            # sendende Podcasts (Dwarkesh & Co.) nicht mehr durch.
-            _ib_days = st.selectbox("Zeitfenster", [1, 2, 3, 7, 14, 30, 60], index=2,
-                                    key="podcast_inbox_days",
-                                    format_func=lambda d: "letzte 24 Stunden" if d == 1 else f"letzte {d} Tage",
-                                    help="Ab 30 Tagen einmalig deutlich mehr Folgen (~480 statt ~66) — "
-                                         "einmal durchsortieren, danach ist wieder Normalbetrieb. "
-                                         "Pro Podcast werden höchstens 6 Folgen gezeigt.")
-        with _ib_c2:
-            st.write("")
-            if st.button("🔄 Neue Episoden laden", key="podcast_inbox_fetch", use_container_width=True):
-                with st.spinner("Prüfe alle Feeds (parallel, ~15-30s) — englische Titel werden fürs Anzeigen übersetzt…"):
-                    st.session_state["podcast_inbox_data"] = fetch_new_podcast_episodes(days=int(_ib_days))
-                    try:
-                        attach_inbox_translations(st.session_state["podcast_inbox_data"].get("episodes") or [])
-                    except Exception:
-                        pass
-                    podcast_inbox_cache_save(st.session_state["podcast_inbox_data"])
-        if st.session_state.get("podcast_inbox_data") is None:
-            # Frische Session (Browserwechsel/Neustart): letzten Stand von Platte holen —
-            # die Liste bleibt, bis ein neuer Fetch sie ersetzt; Erledigtes ist rausgefiltert.
-            _ib_cached = podcast_inbox_cache_load()
-            if _ib_cached and _ib_cached.get("episodes"):
-                st.session_state["podcast_inbox_data"] = _ib_cached
-        _ib = st.session_state.get("podcast_inbox_data") or {}
-        if _ib.get("cached_at"):
-            try:
-                _ca_dt = datetime.datetime.fromisoformat(_ib["cached_at"])
-                _ca_min = int((datetime.datetime.now(_ca_dt.tzinfo) - _ca_dt).total_seconds() // 60)
-                _ca_lbl = f"vor {_ca_min} Min" if _ca_min < 120 else f"vor {_ca_min // 60} Std"
-                st.caption(f"📥 Stand vom letzten Laden ({_ca_lbl}) — 🔄 drücken für frische Folgen.")
-            except Exception:
-                pass
-        _ib_eps = _ib.get("episodes") or []
-        if _ib.get("errors"):
-            st.caption(f"⚠️ {len(_ib['errors'])} Feed(s) nicht erreichbar (u.a. {_ib['errors'][0][:50]}…)")
-        if _ib_eps:
-            if "_apple_ok_cached" not in st.session_state:
-                st.session_state["_apple_ok_cached"] = apple_container_accessible()
-            _apple_ok = st.session_state["_apple_ok_cached"]
-
-            def _inbox_done(_g):
-                # NUR bei wirklich eingefügtem Transkript aufrufen: markiert erledigt
-                # UND nimmt die Folge sofort aus der angezeigten Liste (Florians Regel).
-                _d0 = st.session_state.get("podcast_inbox_data") or {}
-                _meta0 = [x for x in (_d0.get("episodes") or []) if x.get("guid") == _g]
-                podcast_inbox_mark([_g], "summarized", eps_meta=_meta0)
-                podcast_inbox_mark([_g], "archived", eps_meta=_meta0)
-                _d0["episodes"] = [x for x in (_d0.get("episodes") or []) if x.get("guid") != _g]
-                st.session_state["podcast_inbox_data"] = _d0
-
-            _n_auto = sum(1 for e in _ib_eps if e.get("transcript_url"))
-            st.caption(f"**{len(_ib_eps)} neue Folgen** aus {_ib.get('n_feeds', '?')} Feeds — davon {_n_auto} mit 📄 Feed-Transkript (vollautomatisch).")
-            if "_ibx_sel_all_apply" in st.session_state:
-                _apply_v = bool(st.session_state.pop("_ibx_sel_all_apply"))
-                for _e0 in _ib_eps[:60]:
-                    st.session_state[f"ibx_{_e0['guid']}"] = _apply_v
-                st.session_state["_ibx_sel_all_prev"] = _apply_v
-            if not st.session_state.get("_ibx_sel_seeded"):
-                # Gespeicherte Auswahl wiederherstellen (überlebt Reload/Deploy) —
-                # nur einmal pro Session, damit bewusstes Abwählen nicht überschrieben wird.
-                for _g0 in podcast_inbox_selection_load():
-                    st.session_state.setdefault(f"ibx_{_g0}", True)
-                st.session_state["_ibx_sel_seeded"] = True
-            _ll_guids = {_x["guid"] for _x in podcast_listen_list()}
-            for _e in _ib_eps[:60]:
-                _cols = st.columns([0.8, 1.1, 8.5, 2.2, 0.8, 0.8])
-                with _cols[0]:
-                    st.checkbox(" ", key=f"ibx_{_e['guid']}", label_visibility="collapsed")
-                with _cols[1]:
-                    if _e.get("image"):
-                        try:
-                            st.image(_e["image"], width=52)
-                        except Exception:
-                            st.markdown("🎙️")
-                    else:
-                        st.markdown("🎙️")
-                with _cols[2]:
-                    _badge = "📄" if _e.get("transcript_url") else "🍎"
-                    _done = " · ✅ schon zusammengefasst" if _e.get("summarized") else ""
-                    if _e["guid"] in _ll_guids:
-                        _done += " · 🎧 gemerkt"
-                    _age = f"vor {_e['age_h']}h" if _e["age_h"] < 48 else f"vor {_e['age_h'] // 24}d"
-                    _dm = _e.get("duration_min")
-                    if _dm:
-                        _age += " · ⏱️ " + (f"{_dm // 60} Std {_dm % 60:02d}" if _dm >= 60 else f"{_dm} Min")
-                    _desc_html = ""
-                    if _e.get("desc"):
-                        _desc_html = f"  \n<small style='opacity:.65'>{html.escape(_e['desc'])}</small>"
-                    _title_disp = _e.get("title_de") or _e["title"]
-                    _desc_disp = _e.get("desc_de") or _e.get("desc")
-                    if _desc_disp and _e.get("desc_de"):
-                        _desc_html = f"  \n<small style='opacity:.65'>{html.escape(_desc_disp)}</small>"
-                    st.markdown(
-                        f"{_badge} **{html.escape(_title_disp)}**  \n"
-                        f"<small>{html.escape(_e['feed'])} · {_age}{_done}</small>{_desc_html}",
-                        unsafe_allow_html=True,
-                    )
-                    if _e.get("title_de"):
-                        with st.popover("🇬🇧 Original", use_container_width=False):
-                            st.markdown(f"**{html.escape(_e['title'])}**")
-                            if _e.get("desc"):
-                                st.caption(_e["desc"])
-                with _cols[3]:
-                    if not _e.get("transcript_url") and not _apple_ok:
-                        st.caption("🎙️ via ✨ (lokal)")
-                    elif not _e.get("transcript_url"):
-                        if st.button("🍎 holen", key=f"ibo_{_e['guid']}", use_container_width=True,
-                                     disabled=bool(st.session_state.get("apple_round")),
-                                     help="Startet eine EINZEL-Runde nur für diese Folge (Anzeige: Folge 1/1). Für alle angehakten 🍎-Folgen: unten Apple-Runde starten. Gesperrt, solange schon eine Runde läuft."):
-                            st.session_state["apple_round"] = {"eps": [_e], "idx": 0, "opened": None, "collected": []}
-                            st.rerun()
-                with _cols[4]:
-                    _on_ll = _e["guid"] in _ll_guids
-                    if st.button("✔️🎧" if _on_ll else "🎧", key=f"iblisten_{_e['guid']}",
-                                 help=("Steht auf der Anhören-Merkliste — Klick nimmt sie wieder runter." if _on_ll
-                                       else "Zum Anhören merken (für Pocket Casts) — nur ein Merkzettel: die Folge bleibt hier in der Inbox, zusammenfassen geht weiterhin.")):
-                        if _on_ll:
-                            podcast_listen_list_remove([_e["guid"]])
-                            st.session_state["_podcast_inbox_last_msg"] = f"🎧 Von der Merkliste genommen: {_e['title'][:60]}"
-                        else:
-                            podcast_listen_list_add(_e)
-                            st.session_state["_podcast_inbox_last_msg"] = f"🎧 Gemerkt fürs Anhören: {_e['title'][:60]} — bleibt in der Inbox."
-                        st.rerun()
-                with _cols[5]:
-                    if st.button("🗑️", key=f"ibarch_{_e['guid']}",
-                                 help="Archivieren wie in Pocket Casts — verschwindet sofort und taucht in der Inbox nie wieder auf. Rückholbar übers 🗂️-Archiv unten."):
-                        podcast_inbox_mark([_e["guid"]], "archived", eps_meta=[_e])
-                        _d9 = st.session_state.get("podcast_inbox_data") or {}
-                        _d9["episodes"] = [x for x in (_d9.get("episodes") or []) if x.get("guid") != _e["guid"]]
-                        st.session_state["podcast_inbox_data"] = _d9
-                        st.rerun()
-
-            _sel_all_bottom = st.checkbox(f"Alle auswählen ({len(_ib_eps[:60])})", key="ibx_select_all_bottom",
-                                          help="Wie das Kästchen oben — nur bequem hier unten bei den Knöpfen.")
-            if bool(_sel_all_bottom) != bool(st.session_state.get("_ibx_sel_all_bottom_prev", False)):
-                st.session_state["_ibx_sel_all_bottom_prev"] = bool(_sel_all_bottom)
-                st.session_state["_ibx_sel_all_apply"] = bool(_sel_all_bottom)
-                st.rerun()
-            _round_active0 = bool(st.session_state.get("apple_round"))
-            _sel_eps0 = [e for e in _ib_eps[:60] if st.session_state.get(f"ibx_{e['guid']}")]
-            _auto0 = [e for e in _sel_eps0 if e.get("transcript_url")]
-            _apple0 = [e for e in _sel_eps0 if not e.get("transcript_url")] if _apple_ok else []
-            if st.button(f"🚀 Alles verarbeiten — {len(_auto0)} 📄 im Hintergrund + {len(_apple0)} 🍎 in der Runde", key="ibx_process_all",
-                         use_container_width=True, type="primary", disabled=(not _sel_eps0) or _round_active0,
-                         help="EIN Klick für die ganze Auswahl: Folgen mit Feed-Transkript laufen sofort im Hintergrund (2 parallel, Ergebnisse erscheinen automatisch unten), parallel startet für die 🍎-Folgen die Apple-Runde. Mit 🚀-Häkchen unten startet danach sogar das Briefing von selbst."):
-                if st.session_state.get("_sum_pool") is None:
-                    from concurrent.futures import ThreadPoolExecutor as _SumPool3
-                    st.session_state["_sum_pool"] = _SumPool3(max_workers=2)
-                _jobs0 = st.session_state.get("_round_jobs") or []
-                for _fe in _auto0:
-                    _jobs0.append({"guid": _fe["guid"], "title": _fe["title"], "path": None,
-                                   "fut": st.session_state["_sum_pool"].submit(_bg_feed_summarize, dict(_fe))})
-                st.session_state["_round_jobs"] = _jobs0
-                _msg0 = f"🚀 {len(_auto0)} 📄-Folge(n) laufen im Hintergrund."
-                if _apple0:
-                    st.session_state["apple_round"] = {"eps": _apple0, "idx": 0, "opened": None, "collected": []}
-                    _msg0 += f" Die 🍎-Runde ({len(_apple0)}) startet jetzt."
-                st.session_state["_podcast_inbox_last_msg"] = _msg0
-                st.rerun()
-            _act1, _act2, _act3 = st.columns(3)
-            _sel_guids = [e["guid"] for e in _ib_eps[:60] if st.session_state.get(f"ibx_{e['guid']}")]
-            if st.session_state.get("_ibx_sel_persisted") != _sel_guids:
-                podcast_inbox_selection_save(_sel_guids)
-                st.session_state["_ibx_sel_persisted"] = _sel_guids
-            with _act1:
-                if st.button(f"✨ Ausgewählte zusammenfassen ({len(_sel_guids)})", key="ibx_summarize",
-                             use_container_width=True, disabled=not _sel_guids):
-                    _sel_eps = [e for e in _ib_eps if e["guid"] in _sel_guids]
-                    _auto = [e for e in _sel_eps if e.get("transcript_url")]
-                    _manual = [e for e in _sel_eps if not e.get("transcript_url")]
-                    _sums, _errs = [], []
-                    _pr = st.progress(0)
-                    _stt = st.empty()
-
-                    def _process_auto(_ea):
-                        # Läuft im Worker-Thread: NUR Netz/Subprozess, kein st.*!
-                        _txta = download_feed_transcript(_ea["transcript_url"], _ea.get("transcript_type"))
-                        if not _txta or len(_txta) < 500:
-                            return (_ea, None, "Transkript-Download leer")
-                        _ra = summarize_podcast_transcript_via_cli(f"Podcast: {_ea['feed']} — Episode: {_ea['title']}\n\n{_txta}")
-                        if _ra.get("ok"):
-                            return (_ea, _ra["summary"], None)
-                        return (_ea, None, str(_ra.get("error", "?"))[:120])
-
-                    if _auto:
-                        from concurrent.futures import ThreadPoolExecutor as _AutoPool, as_completed as _auto_done
-                        _stt.caption(f"0/{len(_auto)} fertig — zwei Folgen laufen parallel…")
-                        _dn = 0
-                        with _AutoPool(max_workers=2) as _apx:
-                            _afuts = {_apx.submit(_process_auto, _ea): _ea for _ea in _auto}
-                            for _fa in _auto_done(_afuts):
-                                try:
-                                    _ea, _suma, _erra = _fa.result()
-                                except Exception as _exa9:
-                                    _ea, _suma, _erra = _afuts[_fa], None, str(_exa9)[:120]
-                                _dn += 1
-                                if _suma:
-                                    _sums.append(_suma)
-                                    _inbox_done(_ea["guid"])
-                                else:
-                                    _errs.append(f"{_ea['title'][:40]}: {_erra}")
-                                _pr.progress(_dn / len(_auto))
-                                _stt.caption(f"{_dn}/{len(_auto)} fertig — zuletzt: {_ea['title'][:45]}")
-                    _pr.empty()
-                    _stt.empty()
-                    if _manual and _apple_ok:
-                        _errs.append(f"{len(_manual)} 🍎-Folge(n) übersprungen — dafür die 🍎 Apple-Runde nutzen (fertige Apple-Transkripte, viel schneller als lokal).")
-                        _manual = []
-                    if _manual:
-                        # NIE automatisch whispern — in die Warteschlange, die Frage-UI übernimmt.
-                        _wq8 = st.session_state.get("whisper_queue") or []
-                        _known8 = {x.get("guid") for x in _wq8}
-                        _wq8 += [m for m in _manual if m["guid"] not in _known8]
-                        st.session_state["whisper_queue"] = _wq8
-                    if _sums:
-                        st.session_state["podcast_text_pending_value"] = combine_podcast_field(
-                            st.session_state.get("podcast_text"), _sums)
-                        st.session_state["_podcast_inbox_last_msg"] = f"✅ {len(_sums)} Folge(n) zusammengefasst und unten angefügt."
-                    if _errs:
-                        st.session_state["_podcast_inbox_errors"] = _errs
-                    _maybe_autostart_briefing("✨-Zusammenfassen")
-                    st.rerun()
-            with _act2:
-                if st.button(f"🗑️ Ausgewählte archivieren ({len(_sel_guids)})", key="ibx_archive",
-                             use_container_width=True, disabled=not _sel_guids):
-                    podcast_inbox_mark(_sel_guids, "archived", eps_meta=[e for e in _ib_eps if e["guid"] in _sel_guids])
-                    _d = st.session_state.get("podcast_inbox_data") or {}
-                    _d["episodes"] = [e for e in (_d.get("episodes") or []) if e["guid"] not in _sel_guids]
-                    st.session_state["podcast_inbox_data"] = _d
-                    st.rerun()
-            with _act3:
-                if st.button("🗑️ ALLE hier archivieren", key="ibx_archive_all", use_container_width=True,
-                             help="Markiert alle aktuell angezeigten Folgen als erledigt — wie Aufräumen in Pocket Casts."):
-                    podcast_inbox_mark([e["guid"] for e in _ib_eps], "archived", eps_meta=list(_ib_eps))
-                    st.session_state["podcast_inbox_data"] = {"episodes": [], "n_feeds": _ib.get("n_feeds"), "errors": []}
-                    st.rerun()
-            _sel_apple = [e for e in _ib_eps[:60] if e["guid"] in _sel_guids and not e.get("transcript_url")] if _apple_ok else []
-            _nachlese = list_unimported_ttml(max_age_h=48) if _apple_ok else []
-            if not _apple_ok:
-                st.caption("ℹ️ 🍎-Folgen laufen über die LOKALE Transkription (einfach anhaken + ✨ — dauert ~5 Min pro Podcast-Stunde, völlig automatisch). Der Apple-Transkript-Weg ist für den Hintergrunddienst von macOS gesperrt.")
-                with st.expander("🍎 Apple-Weg trotzdem freischalten (optional)", expanded=False):
-                    st.markdown("Systemeinstellungen → **Datenschutz & Sicherheit** → **Voller Festplattenzugriff** → ➕ → mit **⌘⇧G** diesen Pfad einfügen:\n```\n/Library/Developer/CommandLineTools/usr/bin/python3\n```\nDann aktivieren und die Briefing-App neu starten (Knopf unten in der App oder beim nächsten Mac-Start automatisch). Danach erscheinen hier 🍎-Runde und Nachlese.")
-            _act4, _act5 = st.columns(2)
-            with _act4:
-                _round_active = bool(st.session_state.get("apple_round"))
-                if st.button(f"🍎 Apple-Runde starten ({len(_sel_apple)})", key="ibx_apple_round",
-                             use_container_width=True, disabled=(not _sel_apple) or _round_active,
-                             help="Öffnet die ausgewählten 🍎-Folgen NACHEINANDER in Apple Podcasts — du tippst dort jeweils nur aufs Transkript, die App merkt es, öffnet sofort die nächste Folge und fasst am Ende alles in einem Rutsch zusammen. Kein Zeitdruck: pro Folge kannst du auch überspringen oder sie in die lokale Warteschlange legen."):
-                    st.session_state["apple_round"] = {"eps": _sel_apple, "idx": 0, "opened": None, "collected": []}
-                    st.rerun()
-            with _act5:
-                if st.button(f"🥡 Nachlese: {len(_nachlese)} angesehene(s) Transkript(e) einsammeln", key="ibx_nachlese",
-                             use_container_width=True, disabled=not _nachlese,
-                             help="Sammelt alle Transkripte ein, die du in den letzten 48h in Apple Podcasts angesehen hast und die noch nicht importiert wurden — fasst sie zusammen und hängt sie unten an. Perfekt, wenn du Transkripte angeschaut hast, während die App nicht zugehört hat."):
-                    _box2 = st.empty()
-                    _nsums, _nerrs = [], []
-
-                    def _process_nl(_np):
-                        try:
-                            _ntxt = apple_ttml_to_text(_np)
-                        except Exception as _nex:
-                            return (_np, None, f"TTML unlesbar: {str(_nex)[:80]}")
-                        _nr = summarize_podcast_transcript_via_cli(_ntxt)
-                        if _nr.get("ok"):
-                            return (_np, _nr["summary"], None)
-                        return (_np, None, str(_nr.get("error", "?"))[:120])
-
-                    from concurrent.futures import ThreadPoolExecutor as _NlPool, as_completed as _nl_done
-                    _box2.info(f"🥡 0/{len(_nachlese)} fertig — zwei parallel…")
-                    _ndn = 0
-                    with _NlPool(max_workers=2) as _npx:
-                        _nfuts = {_npx.submit(_process_nl, _np9): _np9 for _np9 in _nachlese}
-                        for _nf in _nl_done(_nfuts):
-                            try:
-                                _np9, _sumn, _errn = _nf.result()
-                            except Exception as _nex2:
-                                _np9, _sumn, _errn = _nfuts[_nf], None, str(_nex2)[:120]
-                            _ndn += 1
-                            if _sumn:
-                                _nsums.append(_sumn)
-                                mark_ttml_imported([_np9])
-                            else:
-                                _nerrs.append(_errn)
-                            _box2.info(f"🥡 {_ndn}/{len(_nachlese)} fertig…")
-                    _box2.empty()
-                    if _nsums:
-                        st.session_state["podcast_text_pending_value"] = combine_podcast_field(
-                            st.session_state.get("podcast_text"), _nsums)
-                        st.session_state["_podcast_inbox_last_msg"] = f"🥡✅ Nachlese: {len(_nsums)} Transkript(e) zusammengefasst und unten angefügt."
-                    if _nerrs:
-                        st.session_state["_podcast_inbox_errors"] = _nerrs
-                    st.rerun()
-
-            # ---- 🍎 Apple-Runde: reaktive Schrittmaschine — kein Countdown, DU entscheidest ----
-            _ar = st.session_state.get("apple_round")
-            if _ar:
-                _ar_eps = _ar.get("eps") or []
-                _ar_i = int(_ar.get("idx") or 0)
-                if _ar_i >= len(_ar_eps):
-                    # Runde fertig — die Zusammenfassungen laufen längst im Hintergrund;
-                    # der Kollektor unten fügt sie ein, sobald sie fertig sind.
-                    _n_open = len(st.session_state.get("_round_jobs") or [])
-                    _wq_n = len(st.session_state.get("whisper_queue") or [])
-                    _msg9 = "🍎 Runde fertig."
-                    if _n_open:
-                        _msg9 += f" {_n_open} Zusammenfassung(en) laufen im Hintergrund und erscheinen unten automatisch."
-                    if _wq_n:
-                        _msg9 += f" {_wq_n} Folge(n) warten in der Whisper-Frage unten."
-                    st.session_state["_podcast_inbox_last_msg"] = _msg9
-                    st.session_state["apple_round"] = None
-                    st.rerun()
-                else:
-                    _cur = _ar_eps[_ar_i]
-                    if _ar.get("_cache_checked_idx") != _ar_i:
-                        # Liegt das Transkript SCHON im Apple-Cache (früher mal angesehen)?
-                        # Dann sofort greifen — ohne Öffnen, ohne Warten.
-                        _ar["_cache_checked_idx"] = _ar_i
-                        _cached9 = find_cached_ttml_for(_cur.get("feed", ""), _cur.get("title", ""))
-                        if _ar.pop("_manual_check", None) and not _cached9:
-                            st.toast("🔄 Geprüft — Apple hat für diese Folge (noch) nichts abgelegt. Bei Kurzfolgen: 🎙️ lokal dauert nur 1-2 Min.")
-                        if _cached9 and _cached9 not in set(st.session_state.get("_round_paths") or []):
-                            _sp9 = set(st.session_state.get("_round_paths") or [])
-                            _sp9.add(_cached9)
-                            st.session_state["_round_paths"] = list(_sp9)
-                            try:
-                                _txtc = apple_ttml_to_text(_cached9)
-                                if st.session_state.get("_sum_pool") is None:
-                                    from concurrent.futures import ThreadPoolExecutor as _SumPool2
-                                    st.session_state["_sum_pool"] = _SumPool2(max_workers=2)
-                                _futc = st.session_state["_sum_pool"].submit(
-                                    summarize_podcast_transcript_via_cli,
-                                    f"Podcast: {_cur['feed']} — Episode: {_cur['title']}\n\n{_txtc}")
-                                _jobsc = st.session_state.get("_round_jobs") or []
-                                _jobsc.append({"guid": _cur["guid"], "title": _cur["title"], "path": _cached9, "fut": _futc})
-                                st.session_state["_round_jobs"] = _jobsc
-                                st.session_state["_podcast_inbox_last_msg"] = f"⚡ {_cur['title'][:50]}: Transkript lag schon im Cache — läuft im Hintergrund."
-                            except Exception as _cex9:
-                                st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [f"{_cur['title'][:40]}: TTML unlesbar ({str(_cex9)[:80]})"]
-                            _ar["idx"] = _ar_i + 1
-                            _ar["opened"] = None
-                            st.session_state["apple_round"] = _ar
-                            st.rerun()
-                    if not _ar.get("opened"):
-                        _aurl = resolve_apple_episode_url(_cur["feed"], _cur["title"])
-                        _ar["open_failed"] = not (_aurl and open_in_apple_podcasts(_aurl))
-                        _ar["opened"] = datetime.datetime.now().timestamp()
-                        st.session_state["apple_round"] = _ar
-                        st.rerun()
-                    _wait_s = int(datetime.datetime.now().timestamp() - float(_ar["opened"]))
-                    if _ar.get("open_failed"):
-                        st.warning(f"🍎 Folge {_ar_i + 1}/{len(_ar_eps)}: **{_cur['title'][:60]}** ließ sich nicht automatisch öffnen — in Apple Podcasts manuell suchen und aufs Transkript tippen, oder unten entscheiden.")
-                    else:
-                        st.info(f"🍎 Folge {_ar_i + 1}/{len(_ar_eps)}: **{_cur['title'][:60]}** — in Apple Podcasts aufs Transkript tippen, ich erkenne es automatisch. (Warte seit {_wait_s}s, kein Zeitlimit.)")
-                    if _wait_s > 45:
-                        st.caption("💡 Transkript offen, aber nichts passiert? Apple speichert manchmal erst beim SCHLIESSEN der Transkript-Ansicht — einmal zurück tippen und kurz warten, oder unten „🔄 Jetzt prüfen“. Bei Kurzfolgen ist 🎙️ (lokal, 1-2 Min) oft am schnellsten.")
-                    _rc1, _rc2, _rc3, _rc4 = st.columns(4)
-                    with _rc1:
-                        if st.button("⏭️ Überspringen", key=f"ar_skip_{_ar_i}", use_container_width=True,
-                                     help="Weiter zur nächsten Folge — diese bleibt unangetastet in der Liste (z.B. später per Nachlese holen)."):
-                            _ar["idx"] = _ar_i + 1
-                            _ar["opened"] = None
-                            st.session_state["apple_round"] = _ar
-                            st.rerun()
-                    with _rc2:
-                        if st.button("🎙️ Whisper-Warteschlange", key=f"ar_wq_{_ar_i}", use_container_width=True,
-                                     help="Kein Transkript bei Apple (bei ganz frischen Folgen normal)? Kommt in die lokale Warteschlange — NACH der Runde entscheidest du, ob sofort transkribiert wird oder ob wir auf Apple warten."):
-                            _wq0 = st.session_state.get("whisper_queue") or []
-                            if _cur["guid"] not in [x.get("guid") for x in _wq0]:
-                                _wq0.append(_cur)
-                            st.session_state["whisper_queue"] = _wq0
-                            _ar["idx"] = _ar_i + 1
-                            _ar["opened"] = None
-                            st.session_state["apple_round"] = _ar
-                            st.rerun()
-                    with _rc3:
-                        if st.button("🔄 Jetzt prüfen", key=f"ar_check_{_ar_i}", use_container_width=True,
-                                     help="Sofort nachsehen: erst im Apple-Cache (Titel-Abgleich), dann nach frisch geschriebenen Transkript-Dateien — falls die automatische Erkennung hakt."):
-                            _ar["_cache_checked_idx"] = None
-                            _ar["_manual_check"] = True
-                            st.session_state["apple_round"] = _ar
-                            st.rerun()
-                    with _rc4:
-                        if st.button("⏹️ Runde beenden", key=f"ar_stop_{_ar_i}", use_container_width=True,
-                                     help="Restliche Folgen abbrechen — bereits erkannte Transkripte werden noch zusammengefasst."):
-                            _ar["eps"] = _ar_eps[:_ar_i]
-                            _ar["idx"] = len(_ar["eps"])
-                            st.session_state["apple_round"] = _ar
-                            st.rerun()
-                    # Kurzer Horch-Schritt (4s), dann sofort neu rendern — so bleiben die Knöpfe klickbar.
-                    _hit = wait_for_new_apple_ttml(float(_ar["opened"]) - 2, timeout_s=4)
-                    _seen_paths = set(st.session_state.get("_round_paths") or [])
-                    if _hit and _hit not in _seen_paths:
-                        # Sofort im Hintergrund zusammenfassen (2 parallel) — die Runde läuft
-                        # ohne Wartezeit weiter, Ergebnisse sammelt der Kollektor unten ein.
-                        _seen_paths.add(_hit)
-                        st.session_state["_round_paths"] = list(_seen_paths)
-                        try:
-                            _txtj = apple_ttml_to_text(_hit)
-                            if st.session_state.get("_sum_pool") is None:
-                                from concurrent.futures import ThreadPoolExecutor as _SumPool
-                                st.session_state["_sum_pool"] = _SumPool(max_workers=2)
-                            _futj = st.session_state["_sum_pool"].submit(
-                                summarize_podcast_transcript_via_cli,
-                                f"Podcast: {_cur['feed']} — Episode: {_cur['title']}\n\n{_txtj}")
-                            _jobs9 = st.session_state.get("_round_jobs") or []
-                            _jobs9.append({"guid": _cur["guid"], "title": _cur["title"], "path": _hit, "fut": _futj})
-                            st.session_state["_round_jobs"] = _jobs9
-                        except Exception as _jex:
-                            st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [f"{_cur['title'][:40]}: TTML unlesbar ({str(_jex)[:80]})"]
-                        _ar["idx"] = _ar_i + 1
-                        _ar["opened"] = None
-                        st.session_state["apple_round"] = _ar
-                        if _ar["idx"] >= len(_ar_eps):
-                            try:
-                                subprocess.Popen(["open", "http://localhost:8501"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            except Exception:
-                                pass
-                    st.rerun()
-
-            # ---- 🎙️ Whisper-Warteschlange: fragt erst, läuft dann Folge für Folge (stoppbar) ----
-            _wq = st.session_state.get("whisper_queue") or []
-            if _wq and not st.session_state.get("apple_round"):
-                if not st.session_state.get("whisper_running"):
-                    st.warning("🎙️ Ohne Apple-Transkript: " + " · ".join(_e9["title"][:38] for _e9 in _wq[:4]) + (" …" if len(_wq) > 4 else ""))
-                    _qc1, _qc2 = st.columns(2)
-                    with _qc1:
-                        if st.button(f"🎙️ Jetzt lokal transkribieren ({len(_wq)})", key="wq_start", use_container_width=True,
-                                     help="Whisper auf dem M1 — grob 5 Min pro Podcast-Stunde. Jederzeit stoppbar, endet dann nach der laufenden Folge."):
-                            st.session_state["whisper_running"] = True
-                            st.rerun()
-                    with _qc2:
-                        if st.button("⏳ Später — beim nächsten Lauf per Apple mitnehmen", key="wq_later", use_container_width=True,
-                                     help="Folgen bleiben unangetastet in der Liste. Apple liefert Transkripte meist wenige Stunden nach Erscheinen — dann klappt die 🍎-Runde."):
-                            st.session_state["whisper_queue"] = []
-                            st.session_state["_podcast_inbox_last_msg"] = f"⏳ Okay — {len(_wq)} Folge(n) bleiben in der Liste, beim nächsten Mal einfach wieder mit in die 🍎-Runde nehmen."
-                            st.rerun()
-                else:
-                    # Eine Folge pro Durchlauf — nur so greift der Stopp-Klick zwischen zwei Folgen.
-                    _we = _wq[0]
-                    _sc1, _sc2 = st.columns([1, 2])
-                    with _sc1:
-                        if st.button("⏹️ Stopp", key="wq_stop", use_container_width=True,
-                                     help="Die laufende Folge wird noch fertig transkribiert und eingefügt, danach pausiert die Warteschlange."):
-                            st.session_state["whisper_running"] = False
-                            st.rerun()
-                    with _sc2:
-                        st.caption(f"Whisper läuft — noch {len(_wq)} Folge(n) in der Warteschlange. Stopp greift nach der laufenden Folge.")
-                    _wbox = st.empty()
-                    _werr = None
-                    if not _we.get("audio_url"):
-                        _werr = f"{_we['title'][:40]}: keine Audio-URL im Feed."
-                    else:
-                        try:
-                            from local_transcribe import transcribe_audio_url as _lta9
-                        except ImportError:
-                            _lta9 = None
-                            _werr = "Lokale Transkription nicht installiert (pip3 install --user mlx-whisper)."
-                            st.session_state["whisper_running"] = False
-                        if _lta9:
-                            _wbox.info(f"🎙️ Transkribiere: {_we['title'][:45]}… (M1, ~5 Min pro Podcast-Stunde)")
-                            _wt = _lta9(_we["audio_url"], progress_callback=lambda _m, _t=_we: _wbox.info(f"🎙️ {_t['title'][:35]}: {_m}"))
-                            if not _wt.get("ok"):
-                                _werr = f"{_we['title'][:40]}: {str(_wt.get('error', '?'))[:90]}"
-                            else:
-                                _wbox.info(f"✨ Fasse zusammen: {_we['title'][:45]}… (~1-3 Min)")
-                                _wr = summarize_podcast_transcript_via_cli(f"Podcast: {_we['feed']} — Episode: {_we['title']}\n\n{_wt['text']}")
-                                if _wr.get("ok"):
-                                    st.session_state["podcast_text_pending_value"] = combine_podcast_field(
-                                        st.session_state.get("podcast_text"), [_wr["summary"]])
-                                    _inbox_done(_we["guid"])
-                                    st.session_state["_wq_ok_count"] = int(st.session_state.get("_wq_ok_count") or 0) + 1
-                                else:
-                                    _werr = f"{_we['title'][:40]}: {str(_wr.get('error', '?'))[:90]}"
-                    _wbox.empty()
-                    if _werr:
-                        st.session_state["_podcast_inbox_errors"] = (st.session_state.get("_podcast_inbox_errors") or []) + [_werr]
-                    st.session_state["whisper_queue"] = _wq[1:]
-                    if not _wq[1:]:
-                        st.session_state["whisper_running"] = False
-                        _nok = int(st.session_state.get("_wq_ok_count") or 0)
-                        if _nok:
-                            st.session_state["_podcast_inbox_last_msg"] = f"🎙️✅ Whisper fertig: {_nok} Folge(n) lokal transkribiert, zusammengefasst und unten angefügt."
-                        st.session_state["_wq_ok_count"] = 0
-                        _maybe_autostart_briefing("Whisper")
-                    st.rerun()
-        elif st.session_state.get("podcast_inbox_data") is not None:
-            st.caption("Keine neuen Folgen im Zeitfenster (oder alles schon archiviert). 👍")
-
-        # 🎧 Anhören-Merkliste: was du beim Durchgehen fürs Hören markiert hast —
-        # deine Einkaufsliste für Pocket Casts. Unabhängig vom Zeitfenster, bleibt bis ✅.
-        _ll = podcast_listen_list()
-        if _ll:
-            st.markdown("---")
-            st.markdown(f"**🎧 Anhören-Merkliste ({len(_ll)})** — beim nächsten Pocket-Casts-Besuch eintragen:")
-            for _le in _ll:
-                _lc1, _lc2 = st.columns([12, 1])
-                with _lc1:
-                    _ld = (_le.get("published") or "")[:10]
-                    st.markdown(f"<small>{html.escape(_le.get('feed', '?'))}</small> — **{html.escape(_le.get('title', '?'))}**" + (f" <small>({_ld})</small>" if _ld else ""), unsafe_allow_html=True)
-                with _lc2:
-                    if st.button("✅", key=f"lldone_{_le['guid']}", help="Erledigt — in Pocket Casts eingetragen, von der Merkliste nehmen."):
-                        podcast_listen_list_remove([_le["guid"]])
-                        st.rerun()
-            _render_copy_to_clipboard_button(
-                "📋 Merkliste kopieren",
-                "\n".join(f"{_le.get('feed', '?')} — {_le.get('title', '?')}" for _le in _ll),
-                key="listen_list_copy",
-            )
-
-        # 🗂️ Archiv: chronologisch, mit Ein-Klick-Wiederherstellung (versehentliche 🗑️).
-        _arch_list, _arch_old = podcast_inbox_archived_list(limit=30)
-        if _arch_list or _arch_old:
-            with st.expander(f"🗂️ Archiv — zuletzt archivierte Folgen ({len(_arch_list)})", expanded=False):
-                for _ae9 in _arch_list:
-                    _ac1, _ac2 = st.columns([12, 1])
-                    with _ac1:
-                        try:
-                            _ad9 = datetime.datetime.fromisoformat(_ae9["archived"]).strftime("%d.%m. %H:%M")
-                        except Exception:
-                            _ad9 = "?"
-                        st.markdown(f"<small>{_ad9} · {html.escape(_ae9.get('feed', '?'))}</small> — **{html.escape(_ae9.get('title', '?'))}**", unsafe_allow_html=True)
-                    with _ac2:
-                        if st.button("↩️", key=f"unarch_{_ae9['guid']}", help="Zurück in die Inbox holen."):
-                            podcast_inbox_unarchive([_ae9["guid"]])
-                            _dr = st.session_state.get("podcast_inbox_data") or {"episodes": []}
-                            if _ae9["guid"] not in [x.get("guid") for x in (_dr.get("episodes") or [])]:
-                                _ep_back = {k: v for k, v in _ae9.items() if k != "archived"}
-                                _dr.setdefault("episodes", []).insert(0, _ep_back)
-                                st.session_state["podcast_inbox_data"] = _dr
-                            st.session_state["_podcast_inbox_last_msg"] = f"↩️ Zurückgeholt: {_ae9.get('title', '?')[:60]}"
-                            st.rerun()
-                if _arch_old:
-                    st.caption(f"Dazu {_arch_old} ältere Einträge aus der Zeit vor dem Archiv-Umbau — von denen sind nur Fingerabdrücke gespeichert, keine Titel. Sie bleiben einfach dauerhaft ausgeblendet.")
-
-_fragment_episoden_inbox()
-
-# 🧩 Fragment: Klicks hier laden nur DIESEN Block neu, nicht die ganze Seite (03.08.).
-def _fragment_pocket_casts():
-    # 🎧 Läuft ein Abruf im Hintergrund? Dann nur Status zeigen (Knöpfe aus).
-    _pcjob = st.session_state.get("_pc_job")
-    if _pcjob and not _pcjob.get("done"):
-        st.info("🎧 Pocket Casts wird im Hintergrund geladen — Transkripte werden geprüft…")
+def _fragment_hoerfunk():
+    # 📻 Läuft ein Abruf im Hintergrund? Dann nur Status zeigen (Knöpfe aus).
+    _hfjob = st.session_state.get("_hf_job")
+    if _hfjob and not _hfjob.get("done"):
+        st.info("📻 Hörfunk wird im Hintergrund abgefragt…")
         st.caption("Die Seite bleibt bedienbar: Einstellungen ändern, Links einfügen, "
                    f"{globals().get('_QUELLE', 'Feedfunk')} holen — der Abruf läuft weiter.")
         return
-    if _pcjob and _pcjob.get("done") and not _pcjob.get("applied"):
-        _pcjob["applied"] = True
-        if _pcjob.get("status") == "ok":
-            st.session_state["_pc_preview"] = _pcjob.get("items") or []
-        elif _pcjob.get("error"):
-            st.session_state["_podcast_inbox_last_msg"] = f"🎧 Abruf fehlgeschlagen: {str(_pcjob['error'])[:120]}"
-        elif _pcjob.get("kind") == "hoerfunk":
+    if _hfjob and _hfjob.get("done") and not _hfjob.get("applied"):
+        _hfjob["applied"] = True
+        if _hfjob.get("status") == "ok":
+            st.session_state["_hf_preview"] = _hfjob.get("items") or []
+        elif _hfjob.get("error"):
+            st.session_state["_podcast_inbox_last_msg"] = f"📻 Abruf fehlgeschlagen: {str(_hfjob['error'])[:120]}"
+        else:
             st.session_state["_podcast_inbox_last_msg"] = (
                 "📻 In Hörfunk ist gerade nichts fürs Briefing vorgemerkt (Folge nach oben wischen)."
-                if _pcjob.get("status") == "leer" else "📻 Hörfunk nicht erreichbar — später nochmal.")
-        elif _pcjob.get("status") == "leer":
-            st.session_state["_podcast_inbox_last_msg"] = "🎧 In deiner Pocket-Casts-Liste ist gerade nichts Neues offen."
-        else:
-            st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Pocket-Casts-Login — anmelden unter „🔐 Pocket-Casts-Anmeldung“."
+                if _hfjob.get("status") == "leer" else "📻 Hörfunk nicht erreichbar — später nochmal.")
         st.rerun(scope="app")
 
-    st.markdown("### 🎧 Pocket Casts — meine kuratierten Folgen")
-    st.caption("Der Weg, den du am häufigsten nutzt. Prüfen kostet kein Limit — "
-               "nur das Zusammenfassen der Folgen, die du anhakst.")
-    # 🎧 Pocket Casts — ZWEI-SCHRITT: erst PRÜFEN (welche Folgen ein Transkript haben,
-    # kostet KEIN Limit — nur HTTP), dann farbcodiert AUSWÄHLEN und nur die Ausgewählten
-    # zusammenfassen (Limit nur dafür). Verhindert, dass Ungewolltes automatisch reinrutscht.
+    st.markdown("### 📻 Hörfunk — meine vorgemerkten Folgen")
+    st.caption("Die einzige Podcast-Quelle: Folgen, die du in Hörfunk nach oben gewischt hast, samt Transkript. "
+               "Prüfen kostet kein Limit — nur das Zusammenfassen der Folgen, die du anhakst.")
+    # 📻 ZWEI-SCHRITT: erst PRÜFEN (welche Folgen ein Transkript haben, kostet KEIN Limit —
+    # nur HTTP), dann farbcodiert AUSWÄHLEN und nur die Ausgewählten zusammenfassen
+    # (Limit nur dafür). Verhindert, dass Ungewolltes automatisch reinrutscht.
     st.markdown("---")
-    st.caption("🎧 **Pocket Casts:** prüft deine Liste „All Together“ (am Handy kuratiert, letzte 50 Tage) und zeigt farbcodiert, "
-               "welche ein Transkript haben — du wählst, was zusammengefasst wird. **Prüfen kostet kein Limit**, nur das Zusammenfassen.")
 
-    def _pc_submit_and_summarize(_items):
+    def _hf_submit_and_summarize(_items):
         """Ausgewählte Transkripte in den Hintergrund-Pool geben (gleiche Maschinerie
-        wie Roh-Box/Apple-Runde — Ergebnisse erscheinen automatisch im Podcast-Feld)."""
+        wie die Roh-Box — Ergebnisse erscheinen automatisch im Podcast-Feld)."""
         if st.session_state.get("_sum_pool") is None:
-            from concurrent.futures import ThreadPoolExecutor as _PcPool
-            st.session_state["_sum_pool"] = _PcPool(max_workers=2)
-        # 🗂 Jede eingereichte Folge wird Aufraeum-Kandidat („aus Pocket Casts
-        # entfernen?") — egal ob ueber Vorschau oder „alle direkt holen".
-        _pc_archive_frage_ergaenzen([
-            {"titel": (f"{_t.get('podcast_title')}: {_t['title']}"
-                       if _t.get("podcast_title") else _t["title"])[:80],
-             "episode": _t.get("episode"), "podcast": _t.get("podcast"), "fertig": False}
-            for _t in _items if _t.get("episode") and _t.get("podcast") and not _t.get("hoerfunk_id")])
+            from concurrent.futures import ThreadPoolExecutor as _HfPool
+            st.session_state["_sum_pool"] = _HfPool(max_workers=2)
         _jobs = st.session_state.get("_round_jobs") or []
         for _t in _items:
             _pt = _t.get("podcast_title") or ""
             _hdr = (f"Podcast: {_pt} — Episode: {_t['title']}" if _pt else f"Podcast: {_t['title']}")
             _blk = f"{_hdr}\n\n{_t['text']}"
             _lbl = (f"{_pt}: {_t['title']}" if _pt else _t["title"])[:60]
-            # episode-uuid mitgeben: erst NACH erfolgreicher Zusammenfassung wird
-            # sie als geholt vermerkt (siehe Ernte-Schleife). Beim Abschicken zu
-            # markieren wäre falsch — eine gescheiterte Folge gälte als erledigt
-            # und würde nie wieder angeboten.
+            # hoerfunk_id mitgeben: erst NACH erfolgreicher Zusammenfassung meldet die
+            # Ernte-Schleife die Folge als verbaut (📻, raus aus der Vormerkliste). Beim
+            # Abschicken zu melden wäre falsch — eine gescheiterte Folge gälte als
+            # erledigt und würde nie wieder angeboten.
             _jobs.append({"guid": None, "title": _lbl, "path": None, "raw": _blk,
-                          "episode": _t.get("episode"), "hoerfunk_id": _t.get("hoerfunk_id"),
+                          "hoerfunk_id": _t.get("hoerfunk_id"),
                           "fut": st.session_state["_sum_pool"].submit(summarize_podcast_transcript_via_cli, _blk)})
         st.session_state["_round_jobs"] = _jobs
 
-    def _pc_norm(_s):
+    def _hf_norm(_s):
         """Titel vergleichbar machen — Satzzeichen und Abstaende sind unzuverlässig."""
         return re.sub(r"[^a-z0-9äöüß]+", " ", (_s or "").lower()).strip()
 
-    def _pc_in_field(_title, _episode=None):
+    def _hf_in_field(_title):
         """Steckt die Folge schon im Briefing?
 
-        Drei Wege, weil keiner allein reicht:
-          1. Episoden-Kennung im Gedaechtnis (exakt, ueberlebt den Feld-Reset)
-          2. normalisierter Titel im Podcast-Feld (Satzzeichen ignorieren —
+        Zwei Wege, weil keiner allein reicht:
+          1. normalisierter Titel im Podcast-Feld (Satzzeichen ignorieren —
              "tagesschau 20:00 Uhr, 27.0" fand "tagesschau - 20:00 Uhr, …" nicht)
-          3. normalisierter Titel im zuletzt erzeugten Briefingtext
+          2. normalisierter Titel im zuletzt erzeugten Briefingtext
         """
-        if _episode:
-            try:
-                import pocketcasts_fetch as _pcf_chk
-                if _episode in _pcf_chk._load_fetched():
-                    return "schon geholt"
-            except Exception:
-                pass
-        _n = _pc_norm(_title)[:40]
+        _n = _hf_norm(_title)[:40]
         if not _n:
             return ""
-        if _n in _pc_norm(st.session_state.get("podcast_text", "")):
+        if _n in _hf_norm(st.session_state.get("podcast_text", "")):
             return "schon im Feld"
         # 05.08.: Das Feld wird nach jedem Lauf geleert — stand die Folge im
         # letzten Briefing, hiess es trotzdem irrefuehrend "schon im Feld".
-        if _n in _pc_norm(_pc_recent_briefings_text()):
+        if _n in _hf_norm(_hf_recent_briefings_text()):
             return "war im letzten Briefing"
         return ""
 
-    def _pc_recent_briefings_text(_n_files: int = 3) -> str:
+    def _hf_recent_briefings_text(_n_files: int = 3) -> str:
         """Text der zuletzt erzeugten Briefings (Vorlese-Fassung).
 
         Das Podcast-Eingabefeld wird nach dem Lauf geleert — was dort stand, ist
@@ -4519,7 +3845,7 @@ def _fragment_pocket_casts():
         wirklich schon vertont wurde. Gecacht, damit das nicht bei jedem
         Neuzeichnen von der Platte liest.
         """
-        _cache = st.session_state.get("_pc_recent_txt_cache")
+        _cache = st.session_state.get("_hf_recent_txt_cache")
         _jetzt = datetime.datetime.now().timestamp()
         if _cache and (_jetzt - _cache[0]) < 300:
             return _cache[1]
@@ -4530,152 +3856,45 @@ def _fragment_pocket_casts():
             _txt = "\n".join(f.read_text(encoding="utf-8", errors="ignore") for f in _files)
         except Exception:
             _txt = ""
-        st.session_state["_pc_recent_txt_cache"] = (_jetzt, _txt)
+        st.session_state["_hf_recent_txt_cache"] = (_jetzt, _txt)
         return _txt
 
-    _pc_preview = st.session_state.get("_pc_preview")
-    if not _pc_preview:
-        # 📻 Hörfunk (07.10.2026): was Florian im eigenen Player nach oben gewischt hat.
-        # Hörfunk liefert das Transkript gleich mit; nach dem Zusammenfassen bekommt die
-        # Folge dort 📻 und verlässt die Vormerkliste (Ernte-Schleife, hoerfunk_verbaut).
+    _hf_preview = st.session_state.get("_hf_preview")
+    if not _hf_preview:
+        # 📻 Was Florian im eigenen Player nach oben gewischt hat. Hörfunk liefert das
+        # Transkript gleich mit; nach dem Zusammenfassen bekommt die Folge dort 📻 und
+        # verlässt die Vormerkliste (Ernte-Schleife, hoerfunk_verbaut).
         if st.button("📻 Aus Hörfunk laden (fürs Briefing vorgemerkt)", key="hoerfunk_briefing_btn",
                      use_container_width=True, type="primary",
                      help="Holt die Folgen, die du in Hörfunk nach oben gewischt hast, samt Transkript. Kostet kein Limit."):
             import threading as _hf_threading
-            _job = {"done": False, "items": None, "status": None, "error": None, "applied": False, "kind": "hoerfunk"}
-            st.session_state["_pc_job"] = _job
-            _hf_threading.Thread(target=_pc_preview_worker, args=(_job, "hoerfunk"), daemon=True).start()
-            st.rerun(scope="app")
-        # "Meine Auswahl" liest aus, was auf dem Handy stehen geblieben ist —
-        # unabhaengig vom Alter. "New Releases" bleibt der schnelle Weg fuer
-        # frisch Erschienenes; die Auswahl findet auch aeltere Folgen, die
-        # Pocket Casts serverseitig nicht mehr als "neu" ausliefert.
-        import pocketcasts_fetch as _pcf0
-        if os.path.getmtime(_pcf0.__file__) > getattr(_pcf0, "_GELADEN_UM", 0):
-            # Laufende App mit altem Modulstand: Korrekturen ohne Neustart laden.
-            import importlib as _pc_il
-            _pcf0 = _pc_il.reload(_pcf0)
-        # 28.09.2026: Pocket Casts blockt den unsichtbaren Browser. Anmeldung jetzt
-        # über die offizielle Schnittstelle — Florian tippt E-Mail und Passwort
-        # selbst ein; gespeichert werden nur die Schlüssel, nie das Passwort.
-        _pc_login = _pcf0.api_status()
-        with st.expander("🔐 Pocket-Casts-Anmeldung" + (f" — 🟢 {_pc_login['email']}" if _pc_login["angemeldet"]
-                                                       else " — ⚪ nicht angemeldet"),
-                         expanded=not _pc_login["angemeldet"]):
-            if _pc_login["angemeldet"]:
-                st.caption("Angemeldet — der Zugang erneuert sich von selbst. Neu anmelden nur, "
-                           "wenn Pocket Casts nichts mehr liefert.")
-            else:
-                st.caption(f"{_pc_login['hinweis']}. Einmal anmelden reicht — das Passwort geht "
-                           "nur an Pocket Casts und wird nicht gespeichert.")
-            with st.form("pc_login_form", clear_on_submit=True):
-                _pc_mail = st.text_input("E-Mail", value=_pc_login.get("email") or "")
-                _pc_pw = st.text_input("Passwort", type="password")
-                _pc_go = st.form_submit_button("Anmelden", use_container_width=True)
-            if _pc_go:
-                try:
-                    _pc_r = _pcf0.api_login(_pc_mail, _pc_pw)
-                    st.session_state["_podcast_inbox_last_msg"] = f"🎧 Pocket Casts: angemeldet als {_pc_r['email']}."
-                    st.rerun(scope="app")
-                except RuntimeError as _pc_exc:
-                    st.error(str(_pc_exc))
-            if _pc_login["angemeldet"] and st.button("Abmelden", key="pc_logout_btn"):
-                _pcf0.api_abmelden()
-                st.rerun(scope="app")
-        _deep_saved = _pcf0.load_deep_podcasts()
-        with st.expander(f"⭐ Rückkatalog durchsuchen für… ({len(_deep_saved)} Podcast(s))", expanded=False):
-            st.caption("Pocket Casts rechnet seine Filter auf dem Handy aus — von außen ist nur die "
-                       "aktuelle Liste exakt abrufbar. Für selten sendende Podcasts, die dadurch "
-                       "durchrutschen, wird zusätzlich der Rückkatalog nach offenen Folgen durchsucht.")
-            _feed_names = sorted({f["name"] for f in load_podcast_feeds_from_opml()})
-            _deep_pick = st.multiselect("Podcasts", options=_feed_names, default=
-                                        [d for d in _deep_saved if d in _feed_names],
-                                        key="pc_deep_podcasts",
-                                        label_visibility="collapsed")
-            if st.button("Merken", key="pc_deep_save"):
-                _pcf0.save_deep_podcasts(_deep_pick)
-                st.success(f"{len(_deep_pick)} Podcast(s) gemerkt.")
-
-        if st.button("⭐ Meine Pocket-Casts-Auswahl laden", key="pocketcasts_curated_btn",
-                     use_container_width=True, type="primary",
-                     help="Aktuelles aus Pocket Casts' eigener Liste (exakt) plus den "
-                          "Rückkatalog der oben gemerkten Podcasts. Kostet kein Limit."):
-            import threading as _pc_threading
             _job = {"done": False, "items": None, "status": None, "error": None, "applied": False}
-            st.session_state["_pc_job"] = _job
-            _pc_threading.Thread(target=_pc_preview_worker, args=(_job, "auswahl"), daemon=True).start()
+            st.session_state["_hf_job"] = _job
+            _hf_threading.Thread(target=_hf_preview_worker, args=(_job,), daemon=True).start()
             st.rerun(scope="app")
-
-        _pcb1, _pcb2 = st.columns([3, 2])
-        with _pcb1:
-            if st.button("🎧 Pocket Casts prüfen", key="pocketcasts_preview_btn", use_container_width=True):
-                import threading as _pc_threading2
-                _job = {"done": False, "items": None, "status": None, "error": None, "applied": False}
-                st.session_state["_pc_job"] = _job
-                _pc_threading2.Thread(target=_pc_preview_worker, args=(_job, "neu"), daemon=True).start()
-                st.rerun(scope="app")
-        with _pcb2:
-            if st.button("⚡ alle direkt holen", key="pocketcasts_direct_btn", use_container_width=True,
-                         help="Ohne Vorschau: holt + fasst alle noch nicht im Feld befindlichen sofort zusammen (hands-off)."):
-                try:
-                    import pocketcasts_fetch as _pcf
-                    with st.spinner("🎧 Holen + zusammenfassen…"):
-                        _items, _pst = _pcf.preview_new_releases()
-                except Exception:
-                    _items, _pst = [], "error"
-                if _pst == "ok":
-                    _avail = [it for it in _items if it.get("has_transcript") and not _pc_in_field(it.get("title"), it.get("episode"))]
-                    _pc_submit_and_summarize(_avail)
-                    # Markiert wird erst nach erfolgreicher Zusammenfassung
-                    # (Ernte-Schleife) — sonst gilt eine gescheiterte Folge als
-                    # erledigt und wird nie wieder angeboten.
-                    st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_avail)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
-                else:
-                    st.session_state["_podcast_inbox_last_msg"] = "🎧 Kein Login / keine Folgen."
-                st.rerun()
     else:
-        _new = [it for it in _pc_preview if it["has_transcript"] and not _pc_in_field(it["title"], it.get("episode"))]
-        _inf = [it for it in _pc_preview if it["has_transcript"] and _pc_in_field(it["title"], it.get("episode"))]
-        _non = [it for it in _pc_preview if not it["has_transcript"]]
-        st.markdown(f"**🎧 {len(_pc_preview)} Folgen geprüft** — 🟢 {len(_new)} neu · ⚪ {len(_inf)} schon abgedeckt · ⏭️ {len(_non)} ohne Transkript")
-        # 🗂 Schon abgedeckte Folgen (⚪) liegen sonst ewig in der Pocket-Casts-Liste
-        # und tauchen bei jedem Pruefen wieder auf — Florian (22.09.): „die sollten
-        # ja dann nicht doppelt reinkommen". Die Behalten-Liste bleibt draussen.
-        import pocketcasts_fetch as _pcf_inf
-        _inf_weg = [it for it in _inf if it.get("episode") and it.get("podcast")
-                    and not _pcf_inf.auf_behalten_liste(it.get("podcast_title") or it["title"])]
-        if _inf_weg and st.button(f"🗂 {len(_inf_weg)} schon abgedeckte Folge(n) aus Pocket Casts entfernen",
-                                  key="pc_inf_archive_btn", use_container_width=True,
-                                  help="Nimmt sie aus deiner Liste am Handy — sie stecken schon im Briefing."):
-            try:
-                _n_inf = _pcf_inf.archive_episodes(_inf_weg)
-                _weg_ids = {it["episode"] for it in _inf_weg}
-                st.session_state["_pc_preview"] = [it for it in _pc_preview
-                                                   if it.get("episode") not in _weg_ids]
-                st.session_state["_podcast_inbox_last_msg"] = (
-                    f"🗂 {_n_inf} schon abgedeckte Folge(n) in Pocket Casts archiviert.")
-                st.rerun(scope="app")
-            except Exception as _iex:
-                st.error(f"Archivieren fehlgeschlagen: {str(_iex)[:120]} — deine Liste ist unverändert.")
+        _new = [it for it in _hf_preview if it["has_transcript"] and not _hf_in_field(it["title"])]
+        _inf = [it for it in _hf_preview if it["has_transcript"] and _hf_in_field(it["title"])]
+        _non = [it for it in _hf_preview if not it["has_transcript"]]
+        st.markdown(f"**📻 {len(_hf_preview)} Folgen geprüft** — 🟢 {len(_new)} neu · ⚪ {len(_inf)} schon abgedeckt · ⏭️ {len(_non)} ohne Transkript")
         st.caption("🟢 ist vorausgewählt. Hake ab/an, was zusammengefasst werden soll — nur das kostet Limit. "
-                   "⏭️ hat kein Transkript. ⚪ heißt: steckt schon im Feld ODER war in einem der letzten drei "
+                   "⏭️ hat (noch) kein Transkript in Hörfunk. ⚪ heißt: steckt schon im Feld ODER war in einem der letzten drei "
                    "Briefings — anhaken geht trotzdem, wenn du sie nochmal willst.")
         _sel_idx = []
-        for _i, _it in enumerate(_pc_preview):
+        for _i, _it in enumerate(_hf_preview):
             _lbl = ((f"**{_it['podcast_title']}** — {_it['title']}") if _it.get("podcast_title") else _it["title"])[:90]
             if not _it["has_transcript"]:
                 st.caption(f"⏭️ {_lbl} · _kein Transkript_")
             else:
-                _already = _pc_in_field(_it["title"], _it.get("episode"))
+                _already = _hf_in_field(_it["title"])
                 _icon = "⚪" if _already else "🟢"
                 if st.checkbox(f"{_icon} {_lbl}" + (f" · _{_already}_" if _already else ""),
-                               value=(not _already), key=f"pcsel_{_it.get('episode') or _i}"):
+                               value=(not _already), key=f"hfsel_{_it.get('hoerfunk_id') or _i}"):
                     _sel_idx.append(_i)
-        _pcg1, _pcg2 = st.columns([3, 1])
-        with _pcg1:
-            if _sel_idx and st.button(f"✂️ {len(_sel_idx)} holen & zusammenfassen", key="pc_go_btn", type="primary", use_container_width=True):
-                import pocketcasts_fetch as _pcf
-                _chosen = [_pc_preview[i] for i in _sel_idx]
+        _hfg1, _hfg2 = st.columns([3, 1])
+        with _hfg1:
+            if _sel_idx and st.button(f"✂️ {len(_sel_idx)} holen & zusammenfassen", key="hf_go_btn", type="primary", use_container_width=True):
+                _chosen = [_hf_preview[i] for i in _sel_idx]
                 # Neue Runde: Protokoll frisch anlegen, alle Beteiligten eintragen —
                 # so ist hinterher lueckenlos sichtbar, was aus jeder Folge wurde.
                 _round_log_reset()
@@ -4683,107 +3902,34 @@ def _fragment_pocket_casts():
                     _n9 = (f"{_t9.get('podcast_title')}: {_t9['title']}"
                            if _t9.get("podcast_title") else _t9["title"])[:70]
                     _round_log_write({"titel": _n9, "status": "laeuft"})
-                for _t9 in _pc_preview:
+                for _t9 in _hf_preview:
                     if not _t9.get("has_transcript"):
                         _n9 = (f"{_t9.get('podcast_title')}: {_t9['title']}"
                                if _t9.get("podcast_title") else _t9["title"])[:70]
                         _round_log_write({"titel": _n9, "status": "kein_transkript"})
-                _pc_submit_and_summarize(_chosen)
-                # Markierung erfolgt nach Erfolg, nicht beim Abschicken.
-                for _k, _it9 in enumerate(_pc_preview):
-                    st.session_state.pop(f"pcsel_{_it9.get('episode') or _k}", None)
-                st.session_state.pop("_pc_preview", None)
-                st.session_state["_podcast_inbox_last_msg"] = f"🎧 {len(_chosen)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
+                _hf_submit_and_summarize(_chosen)
+                # Melden an Hörfunk erfolgt nach Erfolg, nicht beim Abschicken.
+                for _k, _it9 in enumerate(_hf_preview):
+                    st.session_state.pop(f"hfsel_{_it9.get('hoerfunk_id') or _k}", None)
+                st.session_state.pop("_hf_preview", None)
+                st.session_state["_podcast_inbox_last_msg"] = f"📻 {len(_chosen)} Transkript(e) laufen im Hintergrund (erscheinen unten)."
                 st.rerun()
-        with _pcg2:
-            if st.button("Verwerfen", key="pc_discard_btn", use_container_width=True):
-                for _k, _it9 in enumerate(_pc_preview):
-                    st.session_state.pop(f"pcsel_{_it9.get('episode') or _k}", None)
-                st.session_state.pop("_pc_preview", None)
+        with _hfg2:
+            if st.button("Verwerfen", key="hf_discard_btn", use_container_width=True):
+                for _k, _it9 in enumerate(_hf_preview):
+                    st.session_state.pop(f"hfsel_{_it9.get('hoerfunk_id') or _k}", None)
+                st.session_state.pop("_hf_preview", None)
                 st.rerun()
 
-_pcj_now = st.session_state.get("_pc_job")
-_pc_job_active = bool(_pcj_now) and not _pcj_now.get("done")
+_hfj_now = st.session_state.get("_hf_job")
+_hf_job_active = bool(_hfj_now) and not _hfj_now.get("done")
 # Laeuft ein Abruf, frischt sich NUR dieser Block alle 2s auf — der Rest der
 # Seite bleibt bedienbar (und ein Klick woanders bricht nichts mehr ab).
-st.fragment(_fragment_pocket_casts, run_every=(2 if _pc_job_active else None))()
-
-# ── 🗂 Pocket Casts aufraeumen: welche zusammengefassten Folgen sollen raus? ──
-# Florians Wunsch (10.08.): Manche Folgen will er trotz Zusammenfassung noch
-# selbst hoeren — deshalb FRAGEN statt automatisch archivieren. Haken = raus.
-# 22.09.: Der Block ist DAUERHAFT da und sammelt ueber Runden hinweg („nie
-# gesehen … sollte dauerhaft offen bleiben und nicht immer verschwinden"):
-# kein Aufklapper, keine Ueberschreibung durch die naechste Runde. Ein Eintrag
-# geht erst, wenn Florian ihn entfernt oder behaelt — oder nach 30 Tagen.
-@st.fragment
-def _fragment_pc_archive_frage():
-    _kand = _pc_archive_frage_lesen()
-    _fertige = [e for e in _kand if e.get("fertig")]
-    _laufend = len(_kand) - len(_fertige)
-    _laufend_txt = f" ({_laufend} werden gerade zusammengefasst.)" if _laufend else ""
-    st.markdown("**🗂 Pocket Casts aufräumen**")
-    if not _fertige:
-        st.caption("Nichts offen — zusammengefasste Folgen sammeln sich hier, bis du sie "
-                   "aus Pocket Casts nimmst oder behältst." + _laufend_txt)
-        return
-    import pocketcasts_fetch as _pcf_keep
-    _behalten_liste = _pcf_keep.load_behalten()
-    st.caption("Haken = kommt aus deiner Pocket-Casts-Liste. Haken weg = bleibt drin und "
-               "verschwindet hier. 🔒 Behalten-Liste kommt von selbst ohne Haken." + _laufend_txt)
-    _ausgewaehlt = []
-    for _e in _fertige:
-        _bleibt = _pcf_keep.auf_behalten_liste(_e.get("titel", ""), _behalten_liste)
-        # Schluessel = Folgen-UUID: ein Listenplatz-Schluessel haette einen alten
-        # Haken auf eine ANDERE Folge uebertragen, sobald sich die Liste verschiebt.
-        if st.checkbox((_e.get("titel") or "?") + ("\u3000🔒" if _bleibt else ""),
-                       value=not _bleibt,
-                       key=f"pcarch_{_e.get('episode') or _e.get('titel')}"):
-            _ausgewaehlt.append(_e)
-    _c1, _c2 = st.columns([2, 1])
-    with _c1:
-        if st.button(f"🗂 {len(_ausgewaehlt)} Folge(n) aus Pocket Casts entfernen",
-                     key="pcarch_go", type="primary", use_container_width=True,
-                     disabled=not _ausgewaehlt):
-            try:
-                _n = _pcf_keep.archive_episodes(_ausgewaehlt)
-                # Entfernte UND behaltene sind beantwortet — nur Laufende bleiben.
-                _pc_archive_frage_schreiben([e for e in _kand if not e.get("fertig")])
-                st.session_state["_podcast_inbox_last_msg"] = (
-                    f"🗂 {_n} Folge(n) in Pocket Casts archiviert"
-                    + (f", {len(_fertige) - _n} behalten." if len(_fertige) > _n else "."))
-                st.rerun(scope="app")
-            except Exception as _aex:
-                st.error(f"Archivieren fehlgeschlagen: {str(_aex)[:120]} — "
-                         "deine Liste ist unverändert.")
-    with _c2:
-        if st.button("Alle behalten", key="pcarch_keep", use_container_width=True):
-            _pc_archive_frage_schreiben([e for e in _kand if not e.get("fertig")])
-            st.rerun(scope="app")
-
-    # 🔒 Dauerhafte Behalten-Liste — eingeklappt, damit die Folgen vorne stehen.
-    with st.expander("🔒 Behalten-Liste bearbeiten", expanded=False):
-        st.caption("Diese Podcasts hörst du immer selbst ganz — sie kommen hier ohne Haken.")
-        _moegliche = sorted(({_pcf_keep.podcast_aus_titel(_x.get("titel", "")) for _x in _kand}
-                             | set(_behalten_liste)) - {""})
-        _vorbelegt = [n for n in _behalten_liste if n in _moegliche]
-        _neu_liste = st.multiselect("Nie zum Entfernen vorschlagen", options=_moegliche,
-                                    default=_vorbelegt, key="pcarch_behalten_sel",
-                                    label_visibility="collapsed")
-        if st.button("🔒 Behalten-Liste sichern", key="pcarch_behalten_save",
-                     use_container_width=True):
-            # Podcasts, die gerade nicht zur Auswahl stehen, bleiben erhalten.
-            _rest = [n for n in _behalten_liste if n not in _moegliche]
-            _gesichert = _pcf_keep.save_behalten(list(_neu_liste) + _rest)
-            st.session_state["_podcast_inbox_last_msg"] = (
-                f"🔒 Behalten-Liste gesichert ({len(_gesichert)} Podcast(s)).")
-            st.rerun(scope="app")
-
-
-_fragment_pc_archive_frage()
+st.fragment(_fragment_hoerfunk, run_every=(2 if _hf_job_active else None))()
 
 
 with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)", expanded=False):
-    st.caption("Transkript aus Pocket Casts hier reinkopieren (auch mehrere, mit mmm getrennt) → Knopf drücken → die fertige Zusammenfassung landet automatisch unten im Podcast-Feld. Der Riesen-Text verschwindet danach — das Feld unten bleibt schlank. Läuft über Opus/Max-Abo, 0 €. Dauer: ~2-4 Min pro Stunde Podcast, zwei laufen parallel.")
+    st.caption("Transkript hier reinkopieren (auch mehrere, mit mmm getrennt) → Knopf drücken → die fertige Zusammenfassung landet automatisch unten im Podcast-Feld. Der Riesen-Text verschwindet danach — das Feld unten bleibt schlank. Läuft über Opus/Max-Abo, 0 €. Dauer: ~2-4 Min pro Stunde Podcast, zwei laufen parallel.")
     _raw_inbox = st.text_area(
         "Roh-Transkript",
         placeholder="Transkript(e) hier einfügen — mehrere mit mmm trennen. Zeitstempel (SRT/VTT) stören nicht, die werden automatisch entfernt.",
@@ -4807,7 +3953,7 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
                  use_container_width=True, disabled=not _raw_blocks_now):
         # Fließband-Prinzip: Blöcke in den Hintergrund-Pool, Box sofort leeren —
         # Florian kann direkt den nächsten Schwung einfügen. Ergebnisse fügt der
-        # Kollektor automatisch unten an (gleiche Maschinerie wie die Apple-Runde).
+        # Kollektor automatisch unten an (gleiche Maschinerie wie die Hörfunk-Auswahl oben).
         if st.session_state.get("_sum_pool") is None:
             from concurrent.futures import ThreadPoolExecutor as _SumPool4
             st.session_state["_sum_pool"] = _SumPool4(max_workers=2)
@@ -4823,117 +3969,11 @@ with st.expander("🎙️ Roh-Transkript einwerfen (wird sofort zusammengefasst)
             "füge gern direkt weitere ein. Fertige Zusammenfassungen erscheinen automatisch unten."
         )
         st.rerun()
-
-    # 🍎 Apple-Podcasts-Import: Die Podcasts-App cached jedes einmal GEÖFFNETE
-    # Transkript lokal als TTML — von dort holen wir den VOLLEN Text (das manuelle
-    # Kopieren in der App schneidet ab). Workflow: Episode in Apple Podcasts öffnen →
-    # Transkript anzeigen → hier erscheint sie zum Zusammenfassen.
-    st.markdown("---")
-    # 316ms-Glob+SQLite pro Rerun vermeiden: max. alle 20s neu (oder nach 🗑️/Import).
-    import time as _t_ttml
-    _now_ttml = _t_ttml.time()
-    if (_now_ttml - float(st.session_state.get("_ttml_list_ts", 0)) > 20) or st.session_state.get("_ttml_list_dirty"):
-        st.session_state["_ttml_list_cache"] = list_apple_podcast_transcripts(limit=10)
-        st.session_state["_ttml_list_ts"] = _now_ttml
-        st.session_state["_ttml_list_dirty"] = False
-    _ttml_list = st.session_state.get("_ttml_list_cache") or []
-    if _ttml_list:
-        st.caption("🍎 Oder aus Apple Podcasts übernehmen (Transkript dort einmal öffnen, dann taucht es hier auf — voller Text, ohne Abschneiden):")
-        import datetime as _dt_ttml
-        _sel_all_ttml = st.checkbox(f"Alle auswählen ({len(_ttml_list)})", key="apple_ttml_select_all")
-        _ttml_selected = []
-        for _ti, _t in enumerate(_ttml_list):
-            _d = _dt_ttml.datetime.fromtimestamp(_t["mtime"]).strftime("%d.%m. %H:%M")
-            if _t.get("title"):
-                _name = f"**{_t['title']}**"
-            else:
-                _name = f"{(_t['preview'] or '(keine Vorschau)')[:70]}…"
-            _lbl = f"{_d} · {_t['minutes']} Min · {_t['lang']} · {_name}"
-            _tc1, _tc2, _tc3 = st.columns([13, 1, 1])
-            with _tc1:
-                if st.checkbox(_lbl, key=f"apple_ttml_{_ti}") or _sel_all_ttml:
-                    _ttml_selected.append(_t)
-            with _tc2:
-                if _t.get("title") and st.button("🎧", key=f"apple_ttml_open_{_ti}",
-                                                 help="In Apple Podcasts öffnen — kurz reinhören/nachschauen, worum es geht."):
-                    _feed9, _sep9, _ep9 = _t["title"].partition(" — ")
-                    _ou = resolve_apple_episode_url(_feed9.strip(), _ep9.strip() or _feed9.strip())
-                    if _ou and open_in_apple_podcasts(_ou):
-                        st.toast(f"🎧 {_t['title'][:60]} in Apple Podcasts geöffnet")
-                    else:
-                        st.toast("Konnte die Folge nicht automatisch öffnen — in Apple Podcasts suchen.")
-            with _tc3:
-                if st.button("🗑️", key=f"apple_ttml_del_{_ti}",
-                             help="Aus dieser Liste (und der Nachlese) entfernen — z.B. wenn du das Transkript nur versehentlich geöffnet hast. Apples Cache-Datei bleibt unberührt."):
-                    mark_ttml_imported([_t["path"]])
-                    st.session_state["_ttml_list_dirty"] = True
-                    st.session_state["_podcast_inbox_last_msg"] = f"🗑️ Entfernt: {_t.get('title') or (_t['preview'] or '?')[:50]}"
-                    st.rerun()
-        if st.button(f"🍎 Ausgewählte zusammenfassen und unten anfügen ({len(_ttml_selected)})", key="summarize_apple_ttml",
-                     use_container_width=True, disabled=not _ttml_selected):
-            _new_sums = []
-            _ttml_errs = []
-            _prog2 = st.progress(0)
-            _stat2 = st.empty()
-            def _process_ttml(_t):
-                # Worker-Thread: nur Datei+Subprozess, kein st.*
-                _tn = _t.get("title") or (_t.get("preview") or "?")[:50]
-                try:
-                    _txt = apple_ttml_to_text(_t["path"])
-                except Exception as _exc:
-                    return (_t, _tn, None, f"TTML unlesbar ({str(_exc)[:80]})")
-                if _t.get("title"):
-                    _txt = f"Podcast-Episode: {_t['title']}\n\n{_txt}"
-                _r = summarize_podcast_transcript_via_cli(_txt)
-                if _r.get("ok"):
-                    return (_t, _tn, _r["summary"], None,
-                            _r.get("concerns") or [], _r.get("transcript") or "")
-                return (_t, _tn, None, str(_r.get("error", "?"))[:120], [], "")
-
-            from concurrent.futures import ThreadPoolExecutor as _TtmlPool, as_completed as _ttml_done
-            _stat2.caption(f"0/{len(_ttml_selected)} fertig — zwei Folgen laufen parallel (~1-3 Min pro Folge)…")
-            _tdn = 0
-            with _TtmlPool(max_workers=2) as _tpx:
-                _tfuts = {_tpx.submit(_process_ttml, _t): _t for _t in _ttml_selected}
-                for _tf in _ttml_done(_tfuts):
-                    try:
-                        _t, _tn, _sumt, _errt, _tconc, _ttrans = _tf.result()
-                    except Exception as _tex:
-                        _t, _tn, _sumt, _errt, _tconc, _ttrans = _tfuts[_tf], "?", None, str(_tex)[:120], [], ""
-                    _tdn += 1
-                    if _sumt:
-                        _new_sums.append(_sumt)
-                        if _tconc:
-                            _pc = st.session_state.get("_podcast_concerns") or []
-                            _pc.append({"title": _tn, "concerns": _tconc,
-                                        "summary": _sumt, "transcript": _ttrans})
-                            st.session_state["_podcast_concerns"] = _pc
-                        mark_ttml_imported([_t["path"]])
-                    else:
-                        _ttml_errs.append(f"{_tn[:40]}: {_errt}")
-                    _prog2.progress(_tdn / len(_ttml_selected))
-                    _stat2.caption(f"{_tdn}/{len(_ttml_selected)} fertig — zuletzt: {_tn[:50]}")
-            _prog2.empty()
-            _stat2.empty()
-            if _new_sums:
-                st.session_state["podcast_text_pending_value"] = combine_podcast_field(
-                    st.session_state.get("podcast_text"), _new_sums)
-                st.session_state["_podcast_inbox_last_msg"] = (
-                    f"✅ {len(_new_sums)} Apple-Podcasts-Transkript(e) zusammengefasst und unten angefügt."
-                )
-            if _ttml_errs:
-                st.session_state["_podcast_inbox_errors"] = _ttml_errs
-            st.rerun()
-    else:
-        st.caption("🍎 Tipp: Auch Apple Podcasts kann als Quelle dienen — Transkript einer Episode dort einmal öffnen, dann erscheint sie hier zum direkten Zusammenfassen (voller Text, ohne das Abschneide-Problem beim Kopieren).")
-_rjc_active = bool(
-    st.session_state.get("_round_jobs") or st.session_state.get("apple_round")
-    or st.session_state.get("whisper_running") or st.session_state.get("whisper_queue")
-)
+_rjc_active = bool(st.session_state.get("_round_jobs"))
 @st.fragment(run_every=(4 if _rjc_active else None))
 def _round_jobs_collector():
-    """Sammelt fertige Hintergrund-Zusammenfassungen (Apple-Runde) ein — läuft alle 4s
-    als Fragment, ohne die Seite zu blockieren. Erfolg → unten anfügen + aus Inbox."""
+    """Sammelt fertige Hintergrund-Zusammenfassungen (Hörfunk-Auswahl, Roh-Box) ein — läuft alle 4s
+    als Fragment, ohne die Seite zu blockieren. Erfolg → unten anfügen."""
     _jobs = st.session_state.get("_round_jobs") or []
     if not _jobs:
         return
@@ -4958,52 +3998,23 @@ def _round_jobs_collector():
                             "transcript": _r.get("transcript") or "",
                             "hoerfunk_id": _j.get("hoerfunk_id")})
                 st.session_state["_podcast_concerns"] = _pc
-            if _j.get("path"):
-                mark_ttml_imported([_j["path"]])
-            # Jetzt erst als geholt vermerken — die Zusammenfassung liegt vor.
-            if _j.get("episode"):
-                try:
-                    import pocketcasts_fetch as _pcf_ok
-                    _pcf_ok.summarize_selection_mark([_j["episode"]])
-                except Exception:
-                    pass
+            # Jetzt erst Hörfunk melden — die Zusammenfassung liegt vor.
             if _j.get("hoerfunk_id"):
                 try:
-                    import pocketcasts_fetch as _pcf_hf
+                    import hoerfunk_quelle as _hq_ok
                     # 09.10.: Briefing-Text mitschicken (schon faktengeprüft, genau so
                     # landet er im Podcast-Feld) — Hörfunk zeigt ihn bei der Folge an.
-                    try:
-                        _pcf_hf.hoerfunk_verbaut([_j["hoerfunk_id"]],
-                                                 texte={_j["hoerfunk_id"]: _r.get("summary") or ""})
-                    except TypeError:   # Modul noch im alten Stand geladen
-                        _pcf_hf.hoerfunk_verbaut([_j["hoerfunk_id"]])
+                    _hq_ok.hoerfunk_verbaut([_j["hoerfunk_id"]],
+                                            texte={_j["hoerfunk_id"]: _r.get("summary") or ""})
                 except Exception:
                     pass  # nicht schlimm: die Folge bleibt in Hörfunk vorgemerkt
-            if _j.get("guid"):
-                _d7 = st.session_state.get("podcast_inbox_data") or {}
-                _meta7 = [x for x in (_d7.get("episodes") or []) if x.get("guid") == _j["guid"]]
-                podcast_inbox_mark([_j["guid"]], "summarized", eps_meta=_meta7)
-                podcast_inbox_mark([_j["guid"]], "archived", eps_meta=_meta7)
-                _d7["episodes"] = [x for x in (_d7.get("episodes") or []) if x.get("guid") != _j["guid"]]
-                st.session_state["podcast_inbox_data"] = _d7
             _got += 1
             _bgs = st.session_state.get("_bg_status") or []
             _bgs.append({"t": (_j.get("title") or "Podcast")[:55], "s": "✅"})
             st.session_state["_bg_status"] = _bgs
             _round_log_write({"titel": (_j.get("title") or "Podcast")[:70],
                               "status": "ok", "woerter": len((_r.get("summary") or "").split())})
-            if _j.get("episode"):
-                _fr9 = _pc_archive_frage_lesen()
-                for _e in _fr9:
-                    if _e.get("episode") == _j["episode"]:
-                        _e["fertig"] = True
-                _pc_archive_frage_schreiben(_fr9)
         else:
-            # 🗂 Gescheitert → kein Aufraeum-Kandidat, sonst stuende die Folge
-            # ewig als „wird gerade zusammengefasst" im Block.
-            if _j.get("episode"):
-                _pc_archive_frage_schreiben([e for e in _pc_archive_frage_lesen()
-                                             if e.get("episode") != _j["episode"]])
             _bgs = st.session_state.get("_bg_status") or []
             _bgs.append({"t": (_j.get("title") or "Podcast")[:55], "s": "❌"})
             st.session_state["_bg_status"] = _bgs
@@ -5130,7 +4141,7 @@ st.checkbox(
     "🚀 Briefing automatisch starten, sobald ALLE Podcast-Zusammenfassungen fertig sind",
     key="auto_briefing_when_done",
     on_change=_save_draft,
-    help="Für den typischen Schluss-Schritt: Du stößt Runde/✨/Einwurf an, gehst weg — und sobald die letzte Zusammenfassung eingefügt ist (und keine Whisper-Frage offen), startet das Briefing von selbst mit deinen aktuellen Einstellungen. Gilt, solange das Häkchen an ist.",
+    help="Für den typischen Schluss-Schritt: Du stößt die Hörfunk-Auswahl oder den Roh-Einwurf an, gehst weg — und sobald die letzte Zusammenfassung eingefügt ist, startet das Briefing von selbst mit deinen aktuellen Einstellungen. Gilt, solange das Häkchen an ist.",
 )
 podcast_text = st.text_area(
     "Podcast-Zusammenfassungen",
@@ -5240,9 +4251,9 @@ if _pconc:
                     if _ziel.get("hoerfunk_id"):
                         # 09.10.: Hörfunk hat den Text schon — korrigierte Fassung nachreichen.
                         try:
-                            import pocketcasts_fetch as _pcf_hfk
-                            _pcf_hfk.hoerfunk_verbaut([_ziel["hoerfunk_id"]],
-                                                      texte={_ziel["hoerfunk_id"]: _res["text"]})
+                            import hoerfunk_quelle as _hq_fix
+                            _hq_fix.hoerfunk_verbaut([_ziel["hoerfunk_id"]],
+                                                     texte={_ziel["hoerfunk_id"]: _res["text"]})
                         except Exception:
                             pass
                     _ziel["concerns"] = [x for x in _ziel["concerns"] if x != _c_weg]
@@ -9517,7 +8528,6 @@ with st.container(key="side_nav"):
     if st.button("🎙️", key="nav_btn_podcast", help="Zu den Podcast-Zusammenfassungen — mmm-Trenner ist vorbereitet, direkt Strg+V"):
         _nav_prepare("podcast_text", "Podcast-Zusammenfassungen", "mmm")
     st.markdown(
-        '<a class="nav-jump" href="#nav-inbox" title="Episoden-Inbox">📡</a>'
         '<a class="nav-jump" href="#nav-claude" title="Briefing mit Claude erstellen">🦉</a>'
         '<a class="nav-jump" href="#nav-meta" title="Wochen-Meta-Briefing">🗓️</a>',
         unsafe_allow_html=True,
