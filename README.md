@@ -38,13 +38,35 @@ vorauswahl_quelle.py   Feedfunk basket: fetch + mark done
 newsletter_fetch.py    Newsletter feeds
 hoerfunk_quelle.py     Podcast queue + transcripts (Hörfunk, the only podcast source)
 reader_upload.py       ePub build + ElevenReader upload
-wochenbriefing_lauf.py Weekly meta-briefing
+wochenbriefing_lauf.py Weekly meta-briefing (retries + night catch-up, see below)
 briefing_schedule*.py  Scheduled headless runs (launchd)
 wartung.py, fehlerbuch.py  Nightly maintenance + error journal
 prompts/, templates/   Prompt texts
 launchd/               launchd plists
 fonts/                 DejaVu fonts for the PDF (Bitstream Vera license)
 ```
+
+### Weekly meta-briefing: retries and catch-up
+
+`wochenbriefing_lauf.py` (launchd job `de.florian.wochenbriefing`) does not give up after one failure:
+
+- **Sunday 19:10** - up to 3 build attempts in the same run, 10 minutes apart. From attempt 2 on the
+  Claude CLI runs in a local working directory (`~/.briefing_cli_cwd`) instead of the iCloud archive.
+  Every failure writes the tail of the CLI output (stderr, event count, stdin errors, cwd) to
+  `~/Library/Logs/wochenbriefing.log` and, as a critical entry, to the error journal (`fehlerbuch.py`).
+- **Mon/Tue/Wed 03:20** - extra `StartCalendarInterval` entries of the same job catch up a failed
+  Sunday (state in `.wochenbriefing_nachholen.json`, git-ignored). The script decides by itself: if
+  the week's briefing already exists it exits at once without touching anything. After a failed run it
+  sets a `pmset schedule wake` for 03:18 (needs `/etc/sudoers.d/briefing-pmset`; skipped otherwise).
+  Catch-up only applies to Sundays from 2026-10-18 on (`NACHHOLEN_AB_SONNTAG`).
+- **Last night (Wed) fails too** - exactly one Pushfunk push (held back until 08:00) plus a critical
+  journal entry "bitte klaeren". Nothing more after that.
+- **Delivery** - the briefing never goes to people on its own, not even when caught up at night:
+  the pipeline only uploads to ElevenReader and *prepares* the WhatsApp companion text
+  (`wa_runde.nach_briefing(..., auto=False)`); sending happens only via the button in the app.
+
+Tests (offline, dummies only): `python3 -m unittest tests.test_wochenbriefing_nachholen`
+
 
 ## Running it
 

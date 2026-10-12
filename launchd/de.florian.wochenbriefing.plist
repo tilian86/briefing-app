@@ -15,9 +15,19 @@
   <key>WorkingDirectory</key><string>/Users/florian/Projects/apps/briefing-app</string>
   <!-- Weekday 0 = Sonntag. Abends, damit das Tagesbriefing vom Sonntag noch mit
        drin ist. Verschlaeft der Mac den Termin, startet launchd den Lauf beim
-       naechsten Aufwachen nach — die Wochenregel im Skript faengt das ab. -->
+       naechsten Aufwachen nach — die Wochenregel im Skript faengt das ab.
+       12.10.: Zusaetzlich Mo/Di/Mi 03:20 (Weekday 1/2/3) zum NACHHOLEN, falls der
+       Sonntag trotz 3 Versuchen gescheitert ist. Das Skript entscheidet selbst:
+       ist die Woche schon fertig, endet es sofort und tut nichts. Nach einem
+       Fehlschlag stellt es selbst eine pmset-Weckzeit (03:18). Mittwoch ist die
+       letzte Chance; scheitert auch die, gibt es genau eine Push an Florian. -->
   <key>StartCalendarInterval</key>
-  <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>10</integer><key>Weekday</key><integer>0</integer></dict>
+  <array>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>10</integer><key>Weekday</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>20</integer><key>Weekday</key><integer>1</integer></dict>
+    <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>20</integer><key>Weekday</key><integer>2</integer></dict>
+    <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>20</integer><key>Weekday</key><integer>3</integer></dict>
+  </array>
   <key>StandardOutPath</key><string>/Users/florian/Projects/apps/briefing-app/.wochenbriefing_launchd.log</string>
   <key>StandardErrorPath</key><string>/Users/florian/Projects/apps/briefing-app/.wochenbriefing_launchd.log</string>
   <key>RunAtLoad</key><false/>

@@ -7710,8 +7710,10 @@ with st.expander("🗓️ Wochen-Meta-Briefing", expanded=False):
         pass
     st.info("🔄 **Läuft sonntags von allein** um 19:10 — aus den Tagestexten der "
             "letzten 7 Tage, direkt in den ElevenReader. Kostenlos übers Max-Abo. "
-            "Fällt der Sonntag aus (Mac aus), holt der Mac es beim nächsten "
-            "Aufwachen nach." + _wb_stand)
+            "Klappt der Bau nicht, versucht er es bis zu 3× (10 Min. Pause) und holt "
+            "es sonst Mo–Mi um 03:20 nach; nur wenn auch Mittwoch scheitert, gibt es "
+            "eine Push. Fällt der Sonntag aus (Mac aus), startet der Lauf beim "
+            "nächsten Aufwachen." + _wb_stand)
     st.caption("Der Knopf unten baut jederzeit eins von Hand — z. B. für einen "
                "anderen Zeitraum als sieben Tage.")
     # 14.09.: Florians Wunsch. Beim Tagesbriefing fuellt die Websuche

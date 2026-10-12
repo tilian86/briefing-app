@@ -12606,6 +12606,22 @@ def pruefe_claude_anmeldung(timeout_seconds: int = 60, cli_path: Optional[str] =
     return {"ok": False, "meldung": klartext_cli_fehler(roh) or "Claude antwortet nicht wie erwartet."}
 
 
+def cli_ausgabe_ende(text, zeilen: int = 12, zeichen: int = 1200) -> str:
+    """Die letzten Zeilen einer CLI-Ausgabe (stderr/stdout) — für Log und Fehlerbuch.
+
+    12.10.: Beim Wochenbriefing-Abbruch vom 11.10. stand nur "Idle-Abbruch" im Log,
+    was die CLI selbst gesagt hat, ging verloren. Leere Zeilen fallen weg, zu
+    lange Ausgaben werden von hinten gekürzt (das Ende verrät die Ursache)."""
+    roh = str(text or "").replace("\r", "")
+    teile = [z.rstrip() for z in roh.split("\n") if z.strip()]
+    if not teile:
+        return ""
+    ende = "\n".join(teile[-max(1, int(zeilen)):])
+    if len(ende) > zeichen:
+        ende = "…" + ende[-zeichen:]
+    return ende
+
+
 def _run_claude_cli_subprocess_streaming(
     cmd: List[str],
     stdin_text: str,
@@ -12730,9 +12746,17 @@ def _run_claude_cli_subprocess_streaming(
         try:
             if proc.stdin:
                 proc.stdin.write(stdin_text)
-                proc.stdin.close()
         except Exception as e:
             writer_errors.append(str(e))
+        finally:
+            # 12.10.: stdin IMMER schliessen. Scheiterte das Schreiben (Kodierfehler,
+            # geplatzte Pipe), blieb der Kanal offen und die CLI wartete ewig auf das
+            # Ende der Eingabe — still, ohne Ausgabe, bis der Idle-Abbruch nach 300 s kam.
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except Exception as e:
+                writer_errors.append("close: %s" % e)
 
     writer_thread = threading.Thread(target=_writer, daemon=True)
     writer_thread.start()
@@ -12875,10 +12899,17 @@ def _run_claude_cli_subprocess_streaming(
                         f"(nach {int(elapsed)}s Gesamtdauer). Vermutlich Network-Drop "
                         f"oder Mac war in Sleep — Verbindung zu Anthropic ist tot. "
                         f"Bitte erneut starten."
+                        # 12.10.: Beim Wochenbriefing vom 11.10. kam NICHTS von der CLI
+                        # (kein Ereignis, keine Sitzungsdatei) — das ist kein Netz-Abbruch
+                        # mitten im Stream. Die Zahl macht den Unterschied sichtbar.
+                        + (f" [{seen_event_count[0]} Ereignisse empfangen]"
+                           if parse_stream_json else "")
                     ),
                     "returncode": -1,
                     "stdout": stdout_text,
                     "stderr": "".join(stderr_chunks),
+                    "events": seen_event_count[0],
+                    "stdin_fehler": "; ".join(writer_errors),
                     "elapsed": elapsed}
 
         if elapsed > timeout_seconds:
@@ -12897,6 +12928,7 @@ def _run_claude_cli_subprocess_streaming(
                     "returncode": -1,
                     "stdout": stdout_text,
                     "stderr": "".join(stderr_chunks),
+                    "events": seen_event_count[0],
                     "elapsed": elapsed}
 
         # Progress-Callback alle poll_interval_s
@@ -12980,6 +13012,7 @@ def _run_claude_cli_subprocess_streaming(
         "returncode": proc.returncode if not _cli_failed else (proc.returncode or 1),
         "stdout": stdout_text,
         "stderr": err_text,
+        "events": seen_event_count[0],
         "elapsed": elapsed,
         "usage": final_usage[0],  # {input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}
         "cost_usd": final_cost_usd[0],  # bei Max-Abo meist 0.0, bei API der echte $-Wert
@@ -18405,8 +18438,14 @@ def run_meta_briefing_via_claude_cli(
     cli_path: Optional[str] = None,
     read_dir: Optional[str] = None,
     web_recherche: bool = False,
+    cli_cwd: Optional[str] = None,
 ) -> Optional[dict]:
     """Wochen-Meta-Briefing via Claude CLI (Max-Abo, kostenlos).
+
+    `cli_cwd`: Arbeitsordner der CLI. Standard ist archive_dir (iCloud). Der
+    Wochenbriefing-Runner nimmt bei Wiederholungen einen lokalen Ordner, falls
+    der iCloud-Ordner der Grund fuer einen Start-Haenger war (12.10.).
+    Bei Misserfolg steht in "diagnose" (Text), was die CLI zuletzt gesagt hat.
 
     `web_recherche=True` laesst Claude zu den ausgewaehlten Themen selbst
     nachschlagen, was seit dem Tagesbriefing daraus geworden ist (siehe
@@ -18477,15 +18516,34 @@ def run_meta_briefing_via_claude_cli(
         "--append-system-prompt", _CLAUDE_CLI_META_RESPONSE_PROMPT,
     ]
 
+    _diag: List[str] = []
+
+    def _diagnose_text() -> str:
+        return "\n".join(_diag)
+
     def _meta_attempt(att_base: float, att_max: float, label: str):
         """Ein CLI-Versuch → (meta_text|None, stream_result)."""
+        _cwd = cli_cwd or archive_dir or os.getcwd()
         sr = _run_claude_cli_subprocess_streaming(
-            cmd, meta_input, cwd=archive_dir or os.getcwd(),
+            cmd, meta_input, cwd=_cwd,
             timeout_seconds=timeout_seconds, progress_callback=progress_callback,
             base_progress=att_base, max_progress=att_max,
             expected_duration_s=(600.0 if web_recherche else 180.0),
             label=label,
         )
+        # 12.10.: Was die CLI selbst gesagt hat, darf nicht verloren gehen (am 11.10.
+        # stand im Log nur "Idle-Abbruch", die Ursache blieb unbekannt).
+        try:
+            _kopf = (f"CLI-Versuch {len(_diag) + 1} ({label}): "
+                     f"{'ok' if sr.get('ok') else 'FEHLER'}, Exit {sr.get('returncode')}, "
+                     f"{int(sr.get('elapsed') or 0)}s, {sr.get('events', '?')} Ereignisse, "
+                     f"{len(sr.get('stdout') or '')} Zeichen Antwort, Ordner {_cwd}"
+                     + (f", stdin-Fehler: {sr['stdin_fehler']}" if sr.get("stdin_fehler") else ""))
+            _rest = cli_ausgabe_ende(sr.get("stderr"))
+            _diag.append(_kopf + ((" | CLI-Ausgabe: " + _rest.replace("\n", " ⏎ ")) if _rest else
+                                  " | CLI-Ausgabe: (leer)"))
+        except Exception:
+            pass
         if not sr.get("ok") or sr.get("returncode") != 0:
             return None, sr
         return ((sr.get("stdout") or "").strip() or None), sr
@@ -18509,6 +18567,7 @@ def run_meta_briefing_via_claude_cli(
 
     if stream_result is None or not stream_result.get("ok"):
         return {"ok": False, "error": f"Wochen-Meta — {(stream_result or {}).get('error')}",
+                "diagnose": _diagnose_text(),
                 "text": None, "pdf": None, "pdf_path": None,
                 "txt": None, "txt_path": None, "dates": [], "stats": {}}
 
@@ -18522,11 +18581,13 @@ def run_meta_briefing_via_claude_cli(
         out_short = (stdout or "").strip()[:600]
         msg = err_short or out_short or f"CLI-Exit-Code {returncode}"
         return {"ok": False, "error": f"Claude CLI Fehler: {msg}",
+                "diagnose": _diagnose_text(),
                 "text": None, "pdf": None, "pdf_path": None,
                 "txt": None, "txt_path": None, "dates": [], "stats": {}}
 
     if not meta_text:
         return {"ok": False, "error": "Claude hat eine leere Antwort geliefert.",
+                "diagnose": _diagnose_text(),
                 "text": None, "pdf": None, "pdf_path": None,
                 "txt": None, "txt_path": None, "dates": [], "stats": {}}
 

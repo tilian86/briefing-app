@@ -30,3 +30,5 @@ __pycache__/
 WARTUNGSBERICHT.md
 .start_*.sh
 fonts/.legacy-root-copy/
+.wochenbriefing_nachholen.json
+.wochenbriefing_nachholen.json.tmp
