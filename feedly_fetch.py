@@ -132,8 +132,12 @@ PAYWALL_DOMAINS = (
 # hat kein Spiegel-Abo; seine beiden Spiegel-Artikel wurden jedes Mal als
 # "Problem — Login pruefen" gemeldet, obwohl es nichts zu pruefen gab. Solche
 # Treffer werden jetzt ruhig uebersprungen statt als Handlungsbedarf gemeldet.
+# 21.10.2026: Auch bei Sueddeutsche und Investing.com hat Florian kein Abo —
+# ihre Artikel kamen sonst jeden Tag als "Problem" zurueck.
 KEIN_ZUGANG_DOMAINS = (
     "spiegel.de",
+    "sueddeutsche.de",
+    "investing.com",
 )
 
 
@@ -516,6 +520,139 @@ def _fetch_article_text(page, url: str) -> str:
     return (page.evaluate(_EXTRACT_JS) or "").strip()
 
 
+# ── Original-Pressemitteilung statt gesperrter Seite ───────────────────────
+# 21.10.2026: medicalxpress.com antwortet dem Headless-Browser mit HTTP 400 — alle
+# zehn Artikel im Korb kamen als "Teaser" zurueck. Fast jeder Beitrag dort ist aber
+# eine Pressemitteilung (Uni-Newsroom, EurekAlert!, Journal), die frei lesbar ist.
+# Fuer diese Domains laden wir deshalb NICHT die gesperrte Seite (und umgehen
+# nichts), sondern lassen die Claude-CLI (Max-Abo, Sonnet) die Original-Quelle
+# suchen und laden die mit dem normalen Abruf. Klappt das nicht, gilt der Artikel
+# wie "kein Zugang": still uebersprungen und aus dem Korb genommen.
+ORIGINALQUELLE_DOMAINS = ("medicalxpress.com",)
+ORIGINALQUELLE_TIMEOUT_S = 150
+# Kopier-/Zwischenseiten, die selbst NICHT die Original-Pressemitteilung sind.
+_KEINE_ORIGINALQUELLE = (
+    "medicalxpress.com", "phys.org", "sciencex.com", "techxplore.com",
+    "news.google.com", "facebook.com", "twitter.com", "x.com", "linkedin.com",
+    "youtube.com", "reddit.com",
+)
+
+_ORIGINALQUELLE_PROMPT = """Aufgabe: Finde die ORIGINAL-Pressemitteilung zu einem Forschungsbeitrag.
+
+Der Beitrag steht auf medicalxpress.com, das ist aber nur eine Kopie und fuer uns gesperrt. \
+Rufe medicalxpress.com, phys.org und sciencex.com NICHT ab. Suche stattdessen mit WebSearch die frei lesbare \
+Original-Quelle: die Pressemitteilung der Universitaet/Forschungseinrichtung (Newsroom), eine EurekAlert!-Meldung \
+oder die Pressemitteilung des Fachjournals. Bevorzuge die Seite der Einrichtung vor EurekAlert!, und beides vor \
+Nachrichtenseiten. Keine Bezahlschranken, keine PDF-Studien, keine Social-Media-Seiten. \
+Pruefe mit WebFetch kurz, dass die Seite wirklich zu DIESEM Beitrag gehoert (gleiche Studie/Einrichtung) \
+und den Text frei zeigt. Hoechstens 3 bis 4 Suchen.
+
+BEITRAG (deutscher Titel und Anriss aus unserem Feed, die Originalsprache ist meist Englisch):
+Titel: {titel}
+Anriss: {anriss}
+Adresse der gesperrten Kopie (nur zur Orientierung, die Adresse verraet oft den englischen Titel): {url}
+
+AUSGABE: Gib NUR die Adresse(n) aus: bis zu 3, die beste zuerst, je eine pro Zeile, ohne jeden weiteren Text. \
+Findest du keine passende frei lesbare Original-Pressemitteilung, schreibe nur das Wort KEINE."""
+
+
+def _braucht_originalquelle(url: str) -> bool:
+    host = (urllib.parse.urlparse(url or "").hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in ORIGINALQUELLE_DOMAINS)
+
+
+def _originalquelle_urls(antwort: str) -> list:
+    """Zieht die Adressen aus der Antwort der CLI und wirft Kopier-/Social-Seiten raus."""
+    urls = []
+    for roh in re.findall(r"https?://[^\s<>\")\]]+", antwort or ""):
+        u = roh.rstrip(".,;:)*`'")
+        host = (urllib.parse.urlparse(u).hostname or "").lower()
+        if not host or any(host == d or host.endswith("." + d) for d in _KEINE_ORIGINALQUELLE):
+            continue
+        if u.lower().split("?")[0].endswith(".pdf"):
+            continue
+        if u not in urls:
+            urls.append(u)
+    return urls[:3]
+
+
+def _originalquelle_suchen(item: dict, timeout_s: int = ORIGINALQUELLE_TIMEOUT_S) -> list:
+    """Fragt die Claude-CLI (nur WebSearch/WebFetch) nach der Original-Pressemitteilung.
+
+    Gleiche Umgebung wie alle Briefing-Aufrufe (briefing_core): ANTHROPIC_* raus,
+    CLAUDE_CODE_DISABLE_CLAUDE_MDS=1, Max-Abo statt API-Schluessel. Gibt eine Liste
+    von Adressen zurueck, bei jedem Fehler []."""
+    try:
+        import briefing_core as _bc
+        cli = _bc._locate_claude_cli()
+        if not cli:
+            return []
+        prompt = _ORIGINALQUELLE_PROMPT.format(
+            titel=(item.get("title") or "")[:300],
+            anriss=(item.get("feed_text") or "")[:700] or "(kein Anriss)",
+            url=item.get("url") or "")
+        # --tools/--mcp-config selbst setzen: dann laesst _run_claude_cli_subprocess_
+        # streaming den Aufruf unangetastet (keine Connectoren, keine Schreibwerkzeuge).
+        cmd = [cli, "--print", "--output-format", "text", "--model", "sonnet",
+               "--dangerously-skip-permissions", "--effort", _bc.cli_effort("mechanik"),
+               "--tools", "WebSearch,WebFetch",
+               "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
+        sr = _bc._run_claude_cli_subprocess_streaming(
+            cmd, prompt, timeout_seconds=timeout_s, expected_duration_s=45.0,
+            label="Original-Pressemitteilung suchen", use_caffeinate=False,
+            idle_timeout_s=float(timeout_s), parse_stream_json=True)
+        if not sr.get("ok") or sr.get("returncode") not in (0, None):
+            return []
+        return _originalquelle_urls(sr.get("stdout") or "")
+    except Exception as exc:
+        print(f"  ! Original-Quellen-Suche fehlgeschlagen: {exc.__class__.__name__}: {str(exc)[:120]}",
+              file=sys.stderr)
+        return []
+
+
+def _originalquelle_holen(neue_seite, item: dict, say=None):
+    """Holt statt der gesperrten Seite die frei lesbare Original-Pressemitteilung.
+
+    neue_seite: Funktion, die eine frische Browser-Seite liefert (der Browser startet
+    erst dann). Rueckgabe: (text, quell_url) oder None. Wirft nie — der Lauf darf
+    an einem einzelnen Artikel nicht scheitern."""
+    def _sag(msg):
+        if say:
+            try:
+                say(msg)
+            except Exception:
+                pass
+
+    try:
+        kandidaten = _originalquelle_suchen(item)
+        if not kandidaten:
+            return None
+        for quelle in kandidaten:
+            seite = None
+            try:
+                seite = neue_seite()
+                text = _fetch_article_text(seite, quelle)
+            except Exception as exc:
+                _sag(f"   · {_domain(quelle)} nicht ladbar ({exc.__class__.__name__})")
+                continue
+            finally:
+                if seite is not None:
+                    try:
+                        seite.close()
+                    except Exception:
+                        pass
+            grund = _detect_paywall_teaser(text)
+            if grund:
+                _sag(f"   · {_domain(quelle)} unbrauchbar: {grund}")
+                continue
+            kopf = f"Quelle: Pressemitteilung {_domain(quelle)} ({quelle})"
+            return kopf + "\n\n" + text, quelle
+    except Exception as exc:
+        print(f"  ! Original-Quelle fuer '{(item.get('title') or '')[:50]}': "
+              f"{exc.__class__.__name__}", file=sys.stderr)
+    return None
+
+
 def _norm_url(url: str) -> str:
     """URL-Form fuer den Dublettenvergleich: ohne Schema, www, Tracking und Slash."""
     u = (url or "").strip()
@@ -555,6 +692,10 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
             p, ctx = _launch(headless=headless)
             page = _page(ctx)
         return page
+
+    def _neue_seite():
+        _seite()
+        return ctx.new_page()
 
     try:
         vw_doppelt = []
@@ -637,6 +778,17 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
             if len(item["feed_text"]) >= FEED_TEXT_MIN_CHARS:
                 item["text"] = item["feed_text"]
                 item["source"] = "Feed"
+            elif _braucht_originalquelle(item["url"]):
+                # 21.10.2026: gesperrte Seite (medicalxpress) -> Original-Pressemitteilung.
+                say(f"[{idx}/{len(items)}] suche Original-Pressemitteilung: {title}")
+                _orig = _originalquelle_holen(_neue_seite, item, say)
+                if _orig:
+                    item["text"], item["original_url"] = _orig
+                    item["source"] = "Pressemitteilung"
+                else:
+                    item["problem"] = "Original-Pressemitteilung nicht gefunden — übersprungen"
+                    ohne_zugang.append(item)
+                    continue
             else:
                 say(f"[{idx}/{len(items)}] lade: {title}")
                 seite = _seite()   # Startfehler (Profil belegt …) sollen den Abruf abbrechen
@@ -670,7 +822,7 @@ def fetch_all(limit: int = 2000, progress=None, headless: bool = True,
             else:
                 ok.append(item)
 
-        _zusatz = f", {len(ohne_zugang)} ohne Abo übersprungen" if ohne_zugang else ""
+        _zusatz = f", {len(ohne_zugang)} ohne Zugang übersprungen" if ohne_zugang else ""
         say(f"Fertig: {len(ok)} vollständig, {len(problems)} problematisch{_zusatz}.")
         return {"ok": ok, "problems": problems, "skipped": skipped,
                 "ohne_zugang": ohne_zugang, "user_id": user_id}
@@ -780,10 +932,12 @@ def mark_done(entry_ids, user_id: str = "", headless: bool = True) -> int:
 # einen gelegentlich raus). Hinweis: Erwischt der Test zufaellig einen freien
 # Artikel, kann er "ok" melden, obwohl das Login weg ist — deshalb prueft der
 # eigentliche Abruf trotzdem weiterhin jeden einzelnen Artikel.
-# Kontoseiten mit eindeutigem Anmelde-Zeichen. Das ist die VERLAESSLICHE Pruefung:
-# kein Raten an zufaelligen Artikeln, sondern der Kontostatus selbst.
-# 16.08.: SWP zeigt auf /mein-konto ein "Abmelden", wenn die Sitzung gilt. GEA
-# gibt so etwas nicht her — dort bleibt es beim Artikel-Test.
+# Kontoseiten mit Anmelde-Zeichen. 21.10.2026: Nur noch ein ZUSATZ-Hinweis, kein
+# Urteil mehr. Die Kontoseite zeigte "Abmelden", waehrend die Abo-Artikel schon
+# gesperrt waren (Konto-Sitzung und Abo-Freischaltung laufen getrennt ab) — der
+# Test meldete "angemeldet", und das Briefing bekam 350-Woerter-Anrisse. Maßgeblich
+# ist jetzt allein, ob ein ECHTER Abo-Artikel vollstaendig kommt (siehe
+# _zeitung_pruefen).
 KONTO_PROBEN = {
     "SWP/Tagblatt": ("https://www.swp.de/mein-konto", "abmelden"),
 }
@@ -802,6 +956,26 @@ _FIND_ARTICLE_LINKS_JS = """
     const h = a.href || "";
     if ((/_arid,\\d+\\.html/.test(h) || /-\\d{6,}\\.html/.test(h)) && !out.includes(h)) out.push(h);
     if (out.length >= 6) break;
+  }
+  return out;
+}
+"""
+
+# 21.10.2026: Wie oben, aber MIT Bezahl-Kennzeichnung der Karte auf der Listenseite
+# (GEA: Klasse "paywall", SWP: Plus-Symbol "plus--whitemode"/"plus-icon"). Damit prueft
+# der Login-Test gezielt Abo-Artikel statt zufaelliger freier Meldungen.
+_FIND_ARTICLE_CARDS_JS = r"""
+() => {
+  const out = [], seen = new Set();
+  for (const a of document.querySelectorAll('a[href]')) {
+    const h = a.href || "";
+    if (!(/_arid,\d+\.html/.test(h) || /-\d{6,}\.html/.test(h)) || seen.has(h)) continue;
+    seen.add(h);
+    const card = a.closest('article, li, [class*=teaser], [class*=card]')
+      || (a.parentElement && a.parentElement.parentElement);
+    const html = card ? card.outerHTML : "";
+    out.push({url: h, bezahl: /paywall|plus-icon|plus--whitemode/i.test(html)});
+    if (out.length >= 16) break;
   }
   return out;
 }
@@ -836,12 +1010,17 @@ def login_check_cached(max_alter_min: int = 180) -> list:
     except Exception:
         pass
     ergebnis = check_newspaper_logins()
+    _login_check_speichern(ergebnis)
+    return ergebnis
+
+
+def _login_check_speichern(ergebnis: list) -> None:
+    import time as _t
     try:
         with open(LOGIN_CHECK_CACHE, "w", encoding="utf-8") as fh:
             json.dump({"stand": _t.time(), "ergebnis": ergebnis}, fh, ensure_ascii=False)
     except Exception:
         pass
-    return ergebnis
 
 
 def login_check_verwerfen() -> None:
@@ -859,34 +1038,76 @@ LOGIN_ZIELE = {
     "swp": "https://www.swp.de/mein-konto",
 }
 
+# Anzeigename aus dem Login-Test -> Schluessel in LOGIN_ZIELE
+LOGIN_ZIEL_NAMEN = {"Feedly": "feedly", "GEA": "gea", "SWP/Tagblatt": "swp"}
 
-def open_login_window(ziel: str = "") -> None:
+
+def alle_login_ziele() -> list:
+    """Alle Anmelde-Ziele, die diese App braucht (fuer 'Fenster trotzdem oeffnen')."""
+    return (["feedly"] if FEEDLY_AKTIV else []) + ["gea", "swp"]
+
+
+def login_ziele_fuer(eintraege) -> list:
+    """Anmelde-Ziele zu Eintraegen des Login-Tests (z. B. den fehlenden). Ein Eintrag
+    kann ein eigenes "ziel" mitbringen (Schluessel oder URL), sonst gilt sein Name."""
+    ziele = []
+    for e in eintraege or []:
+        z = e.get("ziel") or LOGIN_ZIEL_NAMEN.get(e.get("name"))
+        if z and z not in ziele:
+            ziele.append(z)
+    return ziele
+
+
+def _login_start_url(ziel: str) -> str:
+    standard = "feedly" if FEEDLY_AKTIV else "gea"
+    ziel = ziel or standard
+    return LOGIN_ZIELE.get((ziel or "").lower(),
+                           ziel if "://" in str(ziel) else LOGIN_ZIELE[standard])
+
+
+def _login_seite_laden(page, start: str) -> None:
+    # 14.09.: Florian haengt unterwegs am iPhone-Hotspot. Faellt der genau
+    # beim Oeffnen kurz aus, stand bisher die Chromium-Dino-Seite da und
+    # das Fenster war nutzlos — er hat dreimal vergeblich probiert.
+    # Deshalb: mehrfach versuchen, mit Pausen.
+    for versuch in range(6):
+        try:
+            page.goto(start, wait_until="domcontentloaded", timeout=30000)
+            if "ERR_" not in (page.title() or ""):
+                break
+        except Exception:
+            pass
+        if versuch < 5:
+            page.wait_for_timeout(4000)
+
+
+def open_login_window(ziel="") -> None:
     """Oeffnet das sichtbare Anmeldefenster und wartet, bis Florian es schliesst.
     Passwoerter tippt er selbst — die App speichert und sieht keine Zugangsdaten.
 
-    `ziel`: "feedly" | "gea" | "swp" oder eine komplette URL. Ohne Angabe: Feedly,
+    `ziel`: "feedly" | "gea" | "swp" oder eine komplette URL — oder eine LISTE davon
+    (21.10.2026): dann bekommt jedes Ziel einen eigenen Tab im selben Fenster, und die
+    Funktion kehrt erst zurueck, wenn ALLE Tabs/Fenster zu sind. Ohne Angabe: Feedly,
     seit der Umstellung auf Feedfunk (06.10.2026) GEA.
     """
-    standard = "feedly" if FEEDLY_AKTIV else "gea"
-    ziel = ziel or standard
-    start = LOGIN_ZIELE.get((ziel or "").lower(),
-                            ziel if "://" in str(ziel) else LOGIN_ZIELE[standard])
+    ziele = [ziel] if isinstance(ziel, str) else list(ziel or [""])
+    starts = []
+    for z in ziele:
+        u = _login_start_url(z)
+        if u not in starts:
+            starts.append(u)
     p, ctx = _launch(headless=False)
     try:
-        page = _page(ctx)
-        # 14.09.: Florian haengt unterwegs am iPhone-Hotspot. Faellt der genau
-        # beim Oeffnen kurz aus, stand bisher die Chromium-Dino-Seite da und
-        # das Fenster war nutzlos — er hat dreimal vergeblich probiert.
-        # Deshalb: mehrfach versuchen, mit Pausen.
-        for versuch in range(6):
+        seiten = []
+        for i, start in enumerate(starts):
+            seite = _page(ctx) if i == 0 else ctx.new_page()
+            seiten.append(seite)
+            _login_seite_laden(seite, start)
+        if len(seiten) > 1:
             try:
-                page.goto(start, wait_until="domcontentloaded", timeout=30000)
-                if "ERR_" not in (page.title() or ""):
-                    break
+                seiten[0].bring_to_front()   # der erste Tab liegt oben
             except Exception:
                 pass
-            if versuch < 5:
-                page.wait_for_timeout(4000)
         try:
             # 30.08.: timeout=0 hiess "ewig warten". Blieb das Fenster offen
             # (minimiert, vergessen), hielt Chromium das Profil dauerhaft belegt
@@ -894,11 +1115,18 @@ def open_login_window(ziel: str = "") -> None:
             # App-Neustart. 30 Minuten sind reichlich fuer eine Anmeldung.
             # Waehrend das Fenster offen ist, alle 3 s die Sitzung sichern —
             # beim Schliessen ist der Browser weg, dann kommt man nicht mehr dran.
+            # 21.10.2026: Fertig ist erst, wenn KEIN Tab mehr offen ist (auch nicht
+            # einer, den Florian selbst aufgemacht hat).
             frist = time.time() + 30 * 60
             while time.time() < frist:
                 try:
-                    page.wait_for_event("close", timeout=3000)
+                    offen = [pg for pg in ctx.pages if not pg.is_closed()]
+                except Exception:
+                    break   # Browser ist weg
+                if not offen:
                     break
+                try:
+                    offen[0].wait_for_event("close", timeout=3000)
                 except Exception:
                     pass
                 _sitzung_sichern(ctx, erzwingen=True)
@@ -918,6 +1146,138 @@ def open_login_window(ziel: str = "") -> None:
         except Exception:
             pass
     login_check_verwerfen()
+
+
+def fehlende_logins(headless: bool = True) -> tuple:
+    """Prueft FRISCH (nie aus dem Zwischenspeicher), welche Anmeldungen fehlen.
+
+    Rueckgabe: (ergebnis, fehlende). `ergebnis` ist die volle Liste des Login-Tests,
+    `fehlende` nur die Eintraege mit ok == False. Der Zwischenspeicher wird mit dem
+    frischen Ergebnis aktualisiert. Oeffnet KEIN sichtbares Fenster."""
+    ergebnis = check_newspaper_logins(headless=headless)
+    _login_check_speichern(ergebnis)
+    return ergebnis, [e for e in ergebnis if e.get("ok") is False]
+
+
+# ── Login-Test: echter Abo-Artikel ─────────────────────────────────────────
+# 21.10.2026: Der Test meldete SWP "angemeldet", obwohl die Abo-Artikel schon als
+# 350-Woerter-Anriss kamen ("Sie haben bereits ein Abo? Hier einloggen"). Grund: Die
+# Kontoseite zeigte noch "Abmelden", und der Test hat sich darauf verlassen. Jetzt
+# entscheidet NUR ein echter Abo-Artikel: kommt er mit Anmelde-Hinweis oder Blindtext,
+# ist der Login weg; kommt er vollstaendig (ab VOLLTEXT_AB_WOERTERN Woerter, ohne
+# Hinweis), gilt er als bewiesen. Abo-Artikel erkennt der Test an der Kennzeichnung
+# der Karte auf der Listenseite und am Seitenkopf (isAccessibleForFree: false).
+ABO_ARTIKEL_BEWEISE = 2   # so viele vollstaendig geladene Abo-Artikel genuegen
+ABO_ARTIKEL_MAX = 8       # so viele Artikel werden hoechstens geladen
+_NICHT_FREI_RE = re.compile(r'isAccessibleForFree"?\s*:\s*"?false', re.I)
+
+
+def _kontoseite_zeichen(page, name: str):
+    """Nur ZUSATZ-Hinweis: True = Kontoseite zeigt "Abmelden", False = zeigt nur
+    Anmelden/Einloggen, None = keine Kontoseite bekannt oder nicht lesbar."""
+    konto = KONTO_PROBEN.get(name)
+    if not konto:
+        return None
+    try:
+        page.goto(konto[0], wait_until="domcontentloaded", timeout=40000)
+        page.wait_for_timeout(2500)
+        seite = (page.inner_text("body") or "").lower()
+        if konto[1] in seite:
+            return True
+        if "anmelden" in seite or "einloggen" in seite:
+            return False
+    except Exception:
+        pass
+    return None
+
+
+def _zeitung_pruefen(page, name: str, start_url: str) -> dict:
+    """Login-Test EINER Zeitung. Rueckgabe: {"name", "ok", "detail", "url", "ziel"?}."""
+    eintrag = {"name": name, "ok": None, "detail": "", "url": ""}
+    konto_zeichen = _kontoseite_zeichen(page, name)
+    try:
+        page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(1500)
+        for label in ("Alle ablehnen", "Ablehnen", "Nur notwendige", "Reject all"):
+            try:
+                btn = page.locator(f"text={label}")
+                if btn.count() and btn.first.is_visible():
+                    btn.first.click(timeout=2500)
+                    page.wait_for_timeout(600)
+                    break
+            except Exception:
+                pass
+        try:
+            karten = page.evaluate(_FIND_ARTICLE_CARDS_JS) or []
+        except Exception:
+            karten = []
+        if not karten:
+            karten = [{"url": h, "bezahl": False}
+                      for h in (page.evaluate(_FIND_ARTICLE_LINKS_JS) or [])]
+        if not karten:
+            eintrag["detail"] = "kein Artikel-Link auf der Startseite gefunden"
+            return eintrag
+        # Abo-Artikel zuerst: Freie Meldungen (Polizei, Vereine) kommen auch ohne Login
+        # vollstaendig und beweisen nichts. Beim GEA liefern Plus-Artikel ohne gueltige
+        # Sitzung Blindtext (11.09.), bei der SWP einen Anriss mit Anmelde-Hinweis.
+        reihe = ([k for k in karten if k.get("bezahl")]
+                 + [k for k in karten if not k.get("bezahl")])[:ABO_ARTIKEL_MAX]
+        belege, unklar = [], 0
+        for karte in reihe:
+            href = karte["url"]
+            eintrag["url"] = href
+            try:
+                text = _fetch_article_text(page, href)
+                seite_html = page.content()
+            except Exception:
+                continue
+            unten = text.lower()
+            woerter = len(text.split())
+            aufforderung = next((m for m in LOGIN_AUFFORDERUNG if m in unten), None)
+            if aufforderung or "lorem ipsum dolor sit amet" in unten:
+                eintrag["ok"] = False
+                if aufforderung:
+                    eintrag["detail"] = (f"NICHT angemeldet — Abo-Artikel nur als Anriss "
+                                         f"({woerter} Wörter), „{aufforderung}“ im Text")
+                else:
+                    eintrag["detail"] = ("NICHT angemeldet — Blindtext statt Artikel "
+                                         "(freie Artikel kommen trotzdem durch)")
+                if konto_zeichen:
+                    eintrag["detail"] += (" — die Kontoseite zeigt noch „Abmelden“, aber die "
+                                          "Abo-Freischaltung ist abgelaufen")
+                    # Dort steht der "Hier einloggen"-Link, der sie erneuert. Die
+                    # Kontoseite allein wirkt angemeldet und fuehrt in die Irre.
+                    if aufforderung:
+                        eintrag["ziel"] = href
+                belege = []
+                break
+            ist_abo = bool(karte.get("bezahl")) or bool(_NICHT_FREI_RE.search(seite_html))
+            if not ist_abo:
+                continue   # freie Meldung — sagt nichts ueber das Abo
+            if woerter >= VOLLTEXT_AB_WOERTERN and not _detect_paywall_teaser(text):
+                belege.append(woerter)
+                if len(belege) >= ABO_ARTIKEL_BEWEISE:
+                    break
+            else:
+                unklar += 1
+        if eintrag["ok"] is False:
+            return eintrag
+        if belege:
+            eintrag["ok"] = True
+            eintrag["detail"] = (f"angemeldet — {len(belege)} Abo-Artikel vollständig geladen "
+                                 f"(bis {max(belege)} Wörter)")
+        elif konto_zeichen is False:
+            eintrag["ok"] = False
+            eintrag["detail"] = ("NICHT angemeldet (Kontoseite zeigt Anmelde-Formular, "
+                                 "kein Abo-Artikel zur Gegenprobe)")
+        elif unklar:
+            eintrag["detail"] = (f"nicht eindeutig — {unklar} Abo-Artikel kamen kurz "
+                                 f"(unter {VOLLTEXT_AB_WOERTERN} Wörter), aber ohne Anmelde-Hinweis")
+        else:
+            eintrag["detail"] = "nicht prüfbar — auf der Startseite war kein Abo-Artikel zum Testen"
+    except Exception as exc:
+        eintrag["detail"] = f"nicht prüfbar ({exc.__class__.__name__})"
+    return eintrag
 
 
 def check_newspaper_logins(headless: bool = True) -> list:
@@ -951,89 +1311,7 @@ def check_newspaper_logins(headless: bool = True) -> list:
             results.append(feedly)
 
         for name, start_url in NEWSPAPER_PROBES:
-            eintrag = {"name": name, "ok": None, "detail": "", "url": ""}
-            # Erst die Kontoseite — schnell und eindeutig, wo es sie gibt.
-            konto = KONTO_PROBEN.get(name)
-            if konto:
-                try:
-                    page.goto(konto[0], wait_until="domcontentloaded", timeout=40000)
-                    page.wait_for_timeout(2500)
-                    seite = (page.inner_text("body") or "").lower()
-                    if konto[1] in seite:
-                        eintrag["ok"] = True
-                        eintrag["detail"] = "angemeldet (Kontoseite)"
-                        eintrag["url"] = konto[0]
-                        results.append(eintrag)
-                        continue
-                    if "anmelden" in seite or "einloggen" in seite:
-                        eintrag["ok"] = False
-                        eintrag["detail"] = "NICHT angemeldet (Kontoseite zeigt Anmelde-Formular)"
-                        eintrag["url"] = konto[0]
-                        results.append(eintrag)
-                        continue
-                except Exception:
-                    pass   # Kontoseite nicht erreichbar → Artikel-Test unten
-            try:
-                page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(1500)
-                for label in ("Alle ablehnen", "Ablehnen", "Nur notwendige", "Reject all"):
-                    try:
-                        btn = page.locator(f"text={label}")
-                        if btn.count() and btn.first.is_visible():
-                            btn.first.click(timeout=2500)
-                            page.wait_for_timeout(600)
-                            break
-                    except Exception:
-                        pass
-                hrefs = page.evaluate(_FIND_ARTICLE_LINKS_JS)
-                if not hrefs:
-                    eintrag["detail"] = "kein Artikel-Link auf der Startseite gefunden"
-                    results.append(eintrag)
-                    continue
-                # 14.08.: EIN Artikel reicht nicht — erwischt der Test zufaellig
-                # einen freien, meldet er "angemeldet", waehrend die Bezahl-
-                # Artikel als Anriss zurueckkommen. Genau so passierte es mit
-                # neun SWP-Artikeln. Deshalb bis zu drei pruefen: EIN Treffer
-                # mit Anmelde-Aufforderung genuegt fuer "nicht angemeldet".
-                bester = None
-                # 13.09.: drei Proben waren zu wenig. Beim GEA sind Polizei-
-                # meldungen frei, die eigentlichen Berichte kostenpflichtig —
-                # erwischt der Test drei Polizeimeldungen, meldet er "Volltext",
-                # waehrend jeder Plus-Artikel als Blindtext zurueckkommt.
-                for href in hrefs[:6]:
-                    eintrag["url"] = href
-                    try:
-                        text = _fetch_article_text(page, href)
-                    except Exception:
-                        continue
-                    unten = text.lower()
-                    aufforderung = next((m for m in LOGIN_AUFFORDERUNG if m in unten), None)
-                    if aufforderung:
-                        eintrag["ok"] = False
-                        eintrag["detail"] = f"NICHT angemeldet — „{aufforderung}“ im Artikel"
-                        bester = None
-                        break
-                    # 11.09.: Blindtext ist ein BEWEIS, kein Verdacht. Der GEA
-                    # liefert seit seiner Login-Umstellung (09.09.) "Lorem ipsum"
-                    # statt des Artikels, wenn die Sitzung nicht mehr traegt —
-                    # ohne jede Anmelde-Aufforderung. Weil daneben freie Artikel
-                    # als Volltext durchkommen, meldete der Test faelschlich
-                    # "angemeldet", und zehn Briefing-Eintraege entstanden aus
-                    # 110-Wort-Anrissen. Ein einziger Blindtext genuegt jetzt.
-                    if "lorem ipsum dolor sit amet" in unten:
-                        eintrag["ok"] = False
-                        eintrag["detail"] = ("NICHT angemeldet — Blindtext statt Artikel "
-                                             "(freie Artikel kommen trotzdem durch)")
-                        bester = None
-                        break
-                    if not _detect_paywall_teaser(text):
-                        bester = f"Volltext ({len(text.split())} Wörter, {hrefs.index(href)+1} von {len(hrefs[:6])} geprüft)"
-                if bester:
-                    eintrag["ok"] = True
-                    eintrag["detail"] = bester
-            except Exception as exc:
-                eintrag["detail"] = f"nicht prüfbar ({exc.__class__.__name__})"
-            results.append(eintrag)
+            results.append(_zeitung_pruefen(page, name, start_url))
     finally:
         try:
             _sitzung_sichern(ctx)

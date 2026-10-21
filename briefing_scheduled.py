@@ -348,6 +348,22 @@ def main():
     except Exception as _pvex2:
         _log("Podcast-Merkliste nicht aktualisiert: %s" % _pvex2)
 
+    # 21.10.2026: Verbaute URLs aus dem URL-Feld des Entwurfs nehmen, sonst kämen sie
+    # bei jedem Lauf wieder. Wie in der App nur bei vollem Erfolg: fehlt eine
+    # Artikel-Quelle im Briefing, bleibt das Feld stehen. Die offene App holt sich
+    # den Merker beim nächsten Durchlauf (urls_verbaut.py).
+    try:
+        import urls_verbaut as _uvb
+        _uvb_fehlt = [u for u in (status.get("uncovered_sources") or [])
+                      if (u.get("kind") or "article") in ("article", "newsletter")]
+        if _uvb_fehlt:
+            _log("URL-Feld nicht geleert — %d Quelle(n) fehlen im Briefing." % len(_uvb_fehlt))
+        else:
+            _n_uvb = _uvb.merken(urls, DRAFT_PATH)
+            _log("URL-Feld: %d verbaute URL(s) entfernt." % _n_uvb)
+    except Exception as _uvex:
+        _log("URL-Feld nicht aufgeräumt: %s" % _uvex)
+
     # Newsletter abhaken — bis hierher ist der Bau gelungen, die Ausgaben standen
     # im Material. Jede Ausgabe kommt genau einmal; kein Nachschieben, weil ein
     # Wochen-Newsletter Tage spaeter nichts mehr im Tagesbriefing verloren hat.

@@ -2432,6 +2432,22 @@ def _felder_wiederherstellen():
 
 _felder_wiederherstellen()
 
+# 21.10.2026: Nach einem erfolgreichen Bau gehören die verbauten URLs nicht mehr ins
+# Feld (sonst käme der Substack-Link vom 18.10. in jedes Briefing). Der Bau-Thread und
+# der Zeitplan-Lauf hinterlassen dafür einen Merker (urls_verbaut.py). Die Entwurfsdatei
+# allein reicht nicht — die offene Sitzung schreibt ihren Stand bei jedem Durchlauf
+# zurück. Deshalb nimmt die Sitzung die URLs hier selbst aus dem Feld. Muss VOR dem
+# Textfeld "urls_text" stehen (danach ließe Streamlit die Änderung nicht mehr zu).
+try:
+    import urls_verbaut as _uvb
+    _uvb_neu = _uvb.im_feld_abraeumen(st.session_state.get("urls_text") or "")
+    if _uvb_neu is not None:
+        st.session_state["urls_text"] = _uvb_neu
+        _save_draft()
+        st.toast("🧹 Verbaute Artikel-URLs aus dem Feld entfernt.")
+except Exception:
+    pass
+
 # Nach dem Ergänzen des Zeilenumbruchs den Sprung nachholen (siehe _jump_to_end).
 if st.session_state.get("_focus_end"):
     _scroll_textarea(st.session_state.pop("_focus_end"))
@@ -2665,10 +2681,14 @@ _fl_col1, _fl_col2 = st.columns([1, 2.4])
 with _fl_col1:
     _fl_job_now = st.session_state.get("_feedly_job")
     _fl_busy = bool(_fl_job_now) and not _fl_job_now.get("done")
+    # 21.10.2026: Der Anmelde-Auftrag (frische Pruefung + Fenster) haelt das Browser-
+    # Profil exklusiv — solange er laeuft, sind Abruf und Login-Test gesperrt.
+    _lf_job = st.session_state.get("_login_fenster_job")
+    _lf_busy = bool(_lf_job) and not _lf_job.get("done")
     _fl_clicked = st.button(
         "📥 Läuft im Hintergrund…" if _fl_busy else f"📥 Aus {_QUELLE} holen",
         use_container_width=True,
-        disabled=_fl_busy,
+        disabled=_fl_busy or _lf_busy,
         help=("Holt alle im Feedly mit Lesezeichen markierten Artikel samt Volltext "
               if _FEEDLY_AKTIV else
               "Holt alle Artikel aus dem Feedfunk-Korb (angehakt oder per Link hinzugefügt) samt Volltext ")
@@ -2679,21 +2699,23 @@ with _fl_col1:
         "🔐 Alle Logins testen (Feedly · GEA · SWP)" if _FEEDLY_AKTIV
         else "🔐 Zeitungs-Logins testen (GEA · SWP)",
         use_container_width=True,
+        disabled=_lf_busy,
         help=("Prüft alle drei Anmeldungen: Feedly (sonst keine Merkliste) sowie "
               if _FEEDLY_AKTIV else "Prüft die Zeitungs-Anmeldungen ")
              + "GEA und SWP/Tagblatt (sonst nur Anrisse statt Volltext). "
              "Dauert ~25 Sekunden.",
     )
-    _lf_job = st.session_state.get("_login_fenster_job")
-    _lf_busy = bool(_lf_job) and not _lf_job.get("done")
     _lf_clicked = st.button(
-        "🪟 Fenster ist offen — dort anmelden" if _lf_busy else "🔓 Anmeldefenster öffnen",
+        ("🪟 Fenster ist offen — dort anmelden" if (_lf_job or {}).get("fenster_offen")
+         else "🔎 Prüfe Anmeldungen…") if _lf_busy else "🔓 Anmeldefenster öffnen",
         use_container_width=True,
         disabled=_lf_busy or _fl_busy,
-        help="Öffnet ein sichtbares Browser-Fenster mit deinem Nachrichten-Profil. "
-             f"Dort meldest du dich bei {_LOGINS} an — die Anmeldung bleibt "
-             "im Profil gespeichert, die App sieht dein Passwort nie. "
-             "Fenster einfach zumachen, wenn du fertig bist.",
+        help="Prüft zuerst frisch, welche Zeitungs-Logins fehlen, und öffnet dann EIN "
+             "sichtbares Browser-Fenster mit deinem Nachrichten-Profil — mit je einem "
+             f"Tab pro fehlender Anmeldung ({_LOGINS}). Dort meldest du dich an — die "
+             "Anmeldung bleibt im Profil gespeichert, die App sieht dein Passwort nie. "
+             "Fenster einfach zumachen, wenn du fertig bist. Sind alle angemeldet, "
+             "meldet die App das und bietet das Fenster trotzdem an.",
     )
 if _login_check_clicked:
     with st.spinner(("Teste Feedly, GEA und SWP/Tagblatt" if _FEEDLY_AKTIV else "Teste GEA und SWP/Tagblatt")
@@ -2708,34 +2730,96 @@ if _login_check_clicked:
     _lc_kaputt = [r for r in _lc if r["ok"] is False]
     for _r in _lc:
         _sym = {True: "✅", False: "⛔"}.get(_r["ok"], "❓")
-        st.caption(f"{_sym} {_r['name']}: {_r['detail'][:90]}")
+        st.caption(f"{_sym} {_r['name']}: {_r['detail'][:220]}")
     if _lc_kaputt:
         st.error(f"⛔ {len(_lc_kaputt)} Login(s) abgelaufen — unten das Anmeldefenster öffnen.")
         st.session_state["_login_fenster_anbieten"] = True
     elif _lc and all(_r["ok"] for _r in _lc):
         st.success("✅ Beide Zeitungs-Logins tragen — freie Fahrt.")
 
-if _lf_clicked and not _lf_busy:
-    def _lf_worker(job):
-        try:
-            import feedly_fetch as _FL
-            _FL.open_login_window()
-        except Exception as exc:
-            job["error"] = str(exc)
-        finally:
-            job["done"] = True
-    _lfj = {"done": False, "error": None}
-    st.session_state["_login_fenster_job"] = _lfj
+def _lf_worker(job, erzwingen):
+    """Anmelde-Auftrag im Hintergrund (ruehrt kein st.* an, schreibt nur in `job`).
+    21.10.2026: Erst FRISCH pruefen (nie aus dem Zwischenspeicher), welche Zeitungs-
+    Logins fehlen, dann EIN Fenster mit je einem Tab pro fehlender Anmeldung. Fehlt
+    nichts, bleibt das Fenster zu — `erzwingen` oeffnet es trotzdem (alle Ziele)."""
+    try:
+        import feedly_fetch as _FL
+        if erzwingen:
+            ziele = _FL.alle_login_ziele()
+            job["namen"] = [z.upper() for z in ziele]
+        else:
+            _erg, _fehlende = _FL.fehlende_logins()
+            job["ergebnis"] = _erg
+            ziele = _FL.login_ziele_fuer(_fehlende)
+            job["namen"] = [r["name"] for r in _fehlende]
+        if not ziele:
+            job["keine_fehlenden"] = True
+            return
+        job["step"] = "Fenster ist offen — dort anmelden"
+        job["fenster_offen"] = True
+        _FL.open_login_window(ziele)   # kehrt zurueck, wenn ALLE Tabs zu sind; verwirft den Zwischenspeicher
+    except Exception as exc:
+        job["error"] = str(exc)
+    finally:
+        import time as _lf_t
+        job["stand"] = _lf_t.time()
+        job["done"] = True
+
+
+def _lf_starten(erzwingen=False):
+    _job = {"done": False, "error": None, "step": "Prüfe Anmeldungen…",
+            "fenster_offen": False, "keine_fehlenden": False}
+    st.session_state["_login_fenster_job"] = _job
     import threading as _lf_threading
-    _lf_threading.Thread(target=_lf_worker, args=(_lfj,), daemon=True).start()
+    _lf_threading.Thread(target=_lf_worker, args=(_job, erzwingen), daemon=True).start()
     st.rerun()
 
+
+if _lf_clicked and not _lf_busy:
+    _lf_starten(False)
+
+if _lf_busy:
+    # Waehrend die Pruefung laeuft bzw. das Fenster offen ist: alle 3 s nachsehen und,
+    # sobald der Auftrag fertig ist, die Seite neu zeichnen (Ergebnis anzeigen).
+    @st.fragment(run_every=3)
+    def _lf_beobachter():
+        _j = st.session_state.get("_login_fenster_job")
+        if not _j or _j.get("done"):
+            st.rerun(scope="app")
+        else:
+            st.info(f"🔐 {_j.get('step', '…')}"
+                    + (f" — fehlend: {', '.join(_j['namen'])}" if _j.get("namen") else ""))
+    _lf_beobachter()
+
 if _lf_job and _lf_job.get("done"):
+    _lf_alt_s = 600   # Ergebnis "alles angemeldet" nach 10 Minuten nicht mehr zeigen
     if _lf_job.get("error"):
-        st.error(f"Anmeldefenster: {str(_lf_job['error'])[:160]}")
+        st.error(f"Anmeldefenster: {str(_lf_job['error'])[:200]}")
+        st.session_state.pop("_login_fenster_job", None)
+    elif _lf_job.get("keine_fehlenden"):
+        import time as _lf_tt
+        if _lf_tt.time() - _lf_job.get("stand", 0) > _lf_alt_s:
+            st.session_state.pop("_login_fenster_job", None)
+        else:
+            _lf_erg = _lf_job.get("ergebnis") or []
+            if _lf_erg and all(_r.get("ok") for _r in _lf_erg):
+                st.success("✅ Alle Zeitungs-Logins tragen (" +
+                           ", ".join(_r["name"] for _r in _lf_erg) + ") — kein Anmelden nötig.")
+            else:
+                st.warning("Kein abgelaufener Login erkannt, aber nicht alles ließ sich eindeutig prüfen.")
+            for _r in _lf_erg:
+                _sym = {True: "✅", False: "⛔"}.get(_r.get("ok"), "❓")
+                st.caption(f"{_sym} {_r['name']}: {str(_r.get('detail', ''))[:220]}")
+            if st.button("🪟 Fenster trotzdem öffnen (alle Zeitungen)", key="_lf_trotzdem",
+                         disabled=_fl_busy,
+                         help="Öffnet das Anmeldefenster mit je einem Tab für GEA und SWP/Tagblatt — "
+                              "z. B. um sich dort selbst abzumelden oder neu einzuloggen."):
+                _lf_starten(True)
     else:
-        st.info("Fenster geschlossen — der nächste Login-Test prüft neu.")
-    st.session_state.pop("_login_fenster_job", None)
+        _lf_namen = ", ".join(_lf_job.get("namen") or [])
+        st.info("Fenster geschlossen" + (f" ({_lf_namen})" if _lf_namen else "")
+                + " — der nächste Login-Test prüft neu.")
+        st.session_state.pop("_login_fenster_job", None)
 
 # Letzter bekannter Login-Stand — damit man VOR dem Abruf sieht, woran man ist.
 try:
@@ -3006,11 +3090,13 @@ def _fragment_feedly_status():
             st.warning(f"⏳ {txt}")
         elif "nicht angemeldet" in txt.lower():
             st.error(f"⛔ {txt}")
-            st.caption("Oben „🔓 Anmeldefenster öffnen“ — dort anmelden, Fenster zu, "
+            st.caption("Oben „🔓 Anmeldefenster öffnen“ — prüft frisch und öffnet für jede "
+                       "fehlende Zeitung einen Tab; dort anmelden, Fenster zu, "
                        f"dann noch mal „📥 Aus {_QUELLE} holen“. Der {_LISTE} bleibt "
                        "unangetastet, es geht nichts verloren."
                        if not _FEEDLY_AKTIV else
-                       "Oben „🔓 Anmeldefenster öffnen“ — dort anmelden, Fenster zu, "
+                       "Oben „🔓 Anmeldefenster öffnen“ — prüft frisch und öffnet für jede "
+                       "fehlende Anmeldung einen Tab; dort anmelden, Fenster zu, "
                        "dann noch mal „📥 Aus Feedly holen“. Die Merkliste bleibt "
                        "unangetastet, es geht nichts verloren.")
         else:
@@ -3030,15 +3116,20 @@ def _fragment_feedly_status():
         alt = (st.session_state.get("paywall_text") or "").rstrip()
         st.session_state["paywall_text_pending_value"] = (
             (alt + "\n\nmmm\n\n" + neu_text) if alt else neu_text)
-        # 26.08.: Artikel von Zeitungen ohne Abo (z. B. Spiegel) kommen zwangs-
-        # laeufig nur als Anriss. Sie wandern mit auf die Aufraeumliste, sonst
-        # stehen sie bis in alle Ewigkeit in der Merkliste und werden jedes Mal
-        # neu geladen.
-        _F.add_pending([i["entry_id"] for i in ok if i.get("entry_id")]
-                       + [i["entry_id"] for i in skipped if i.get("entry_id")]
-                       + [i["entry_id"] for i in (res.get("ohne_zugang") or [])
-                          if i.get("entry_id")],
-                       res.get("user_id") or "")
+    # 26.08.: Artikel von Zeitungen ohne Abo (z. B. Spiegel) kommen zwangs-
+    # laeufig nur als Anriss. Sie wandern mit auf die Aufraeumliste, sonst
+    # stehen sie bis in alle Ewigkeit in der Merkliste und werden jedes Mal
+    # neu geladen.
+    # 21.10.2026: Auch wenn sonst NICHTS geholt wurde (ok leer) — sonst kaemen
+    # reine Kein-Zugang-Laeufe (SZ, investing.com, medicalxpress ohne Original-
+    # quelle) mit denselben Artikeln jeden Tag wieder, und die Original-Suche
+    # lief jedes Mal umsonst.
+    _pend_ids = ([i["entry_id"] for i in ok if i.get("entry_id")]
+                 + [i["entry_id"] for i in skipped if i.get("entry_id")]
+                 + [i["entry_id"] for i in (res.get("ohne_zugang") or [])
+                    if i.get("entry_id")])
+    if _pend_ids:
+        _F.add_pending(_pend_ids, res.get("user_id") or "")
 
     _free, _walled = _F.split_free_and_paywall(ok)
     msg = (f"✅ {len(ok)} Artikel ins Paywall-Feld geholt (davon {len(_walled)} hinter Bezahlschranke)."
@@ -3047,7 +3138,7 @@ def _fragment_feedly_status():
         msg += f" ⏭️ {len(skipped)} schon im Briefing — übersprungen."
     _oz = res.get("ohne_zugang") or []
     if _oz:
-        msg += f" 🔒 {len(_oz)} von Zeitungen ohne Abo — übersprungen."
+        msg += f" 🔒 {len(_oz)} ohne Zugang (kein Abo oder keine freie Original-Quelle) — übersprungen."
     if problems:
         msg += (f" ⚠️ {len(problems)} unvollständig — bleiben "
                 + ("in der Merkliste." if _FEEDLY_AKTIV else "im Feedfunk-Korb."))
@@ -3581,6 +3672,23 @@ def _briefing_worker(cfg: dict, status: dict):
             try:
                 import podcast_verbaut as _pv_ok
                 _pv_ok.merken(split_podcast_summaries(cfg.get("podcast") or ""))
+            except Exception:
+                pass
+
+        # 🔗 21.10.2026: Verbaute URLs aus dem URL-Feld nehmen (Merker für die offene
+        # Sitzung + Entwurfsdatei). Nur bei vollständigem Erfolg: fehlt eine Quelle im
+        # Briefing, bleiben die URLs stehen — dann lässt sich nachbessern, und ein
+        # Ausfall lässt sich nicht einer URL zuordnen (uncovered_sources hat nur Titel).
+        if any(_e.get("ok") for _e in results) and not _cancelled():
+            try:
+                import urls_verbaut as _uvb_ok
+                _uvb_fehlt = [u for u in (status.get("uncovered_sources") or [])
+                              if (u.get("kind") or "article") in ("article", "newsletter")]
+                if _uvb_fehlt:
+                    status["urls_hinweis"] = (f"URL-Feld nicht geleert — {len(_uvb_fehlt)} Quelle(n) "
+                                              "fehlen im Briefing.")
+                else:
+                    status["urls_abgeraeumt"] = _uvb_ok.merken(cfg.get("urls") or "", _DRAFT_PATH)
             except Exception:
                 pass
 
