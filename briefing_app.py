@@ -4,7 +4,7 @@ Audio-Briefing Web-App
 Streamlit-basierte Web-Oberfläche für den Audio-Briefing-Generator.
 
 Starten mit:
-    streamlit run briefing_app.py --server.address 0.0.0.0 --server.port 8501
+    streamlit run briefing_app.py --server.address 127.0.0.1 --server.port 8501
 """
 
 import streamlit as st

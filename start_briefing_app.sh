@@ -19,7 +19,7 @@ if [ -f "$APP_DIR/.env" ]; then
 fi
 
 exec "$STREAMLIT_BIN" run "$APP_DIR/briefing_app.py" \
-  --server.address 0.0.0.0 \
+  --server.address 127.0.0.1 \
   --server.port "$PORT" \
   --server.headless true \
   --browser.gatherUsageStats false
