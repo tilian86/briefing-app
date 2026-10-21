@@ -2462,6 +2462,16 @@ if st.session_state.get("_focus_end"):
 # Ausfall wieder unsichtbar, und genau das war zwei Wochen lang das Problem.
 def _wochen_erinnerung():
     _lm = st.session_state.get("last_meta_created_iso") or ""
+    # Der Sonntagslauf (wochenbriefing_lauf.py) kennt die Sitzung nicht und
+    # schreibt nur .wochenbriefing_status.json — sonst meldet die App ein
+    # gebautes Wochenbriefing als ueberfaellig (21.10.: „vor 17 Tagen“, gebaut am 18.10.).
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".wochenbriefing_status.json"), encoding="utf-8") as _f:
+            _ws = json.load(_f) or {}
+        if _ws.get("gebaut") and str(_ws.get("stand") or "") > _lm:
+            _lm = str(_ws["stand"])
+    except Exception:
+        pass
     try:
         _alter = (datetime.datetime.now() - datetime.datetime.fromisoformat(_lm)).days if _lm else 999
     except Exception:
