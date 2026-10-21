@@ -12719,6 +12719,9 @@ def _run_claude_cli_subprocess_streaming(
     for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
                 "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"):
         safe_env.pop(var, None)
+    # Florians ~/.claude/CLAUDE.md (Chat-Regeln wie „📌 Offen“ am Antwortende) gehört nicht
+    # in Briefing-Texte – am 21.10.2026 hingen sie an 19 von 21 Podcast-Zusammenfassungen.
+    safe_env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
 
     try:
         proc = subprocess.Popen(
