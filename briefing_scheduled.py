@@ -64,6 +64,26 @@ def _cleanup():
         _log("Cleanup-Fehler: %s" % e)
 
 
+def _logins_pflegen():
+    """21.10.2026: Selbst-Anmeldung. Dieser Lauf holt selbst keine Zeitungsartikel (die
+    liegen schon im Entwurf), aber er ist der einzige sichere Moment, in dem das Profil
+    frei ist: Fehlt ein Zeitungs-Login, meldet sich die App mit den Zugangsdaten aus dem
+    Schluesselbund neu an, damit der naechste Abruf nicht an Anrissen haengt. Bleibt etwas
+    fehlend, geht hoechstens 1 Push je Zeitung und Tag raus. Nie ein Grund zum Abbruch;
+    Nachhol-Laeufe (BRIEFING_MANUELL) und Probelaeufe mit fremdem Entwurf lassen es aus."""
+    if MANUELL or os.environ.get("BRIEFING_ENTWURF"):
+        return
+    try:
+        import selbst_anmeldung
+        res = selbst_anmeldung.logins_sicherstellen(progress=_log)
+        for zeile in selbst_anmeldung.kurzbericht(res):
+            _log("Logins: " + zeile)
+        if res.get("push"):
+            _log("Logins: Push gesendet für " + ", ".join(res["push"]))
+    except Exception as e:
+        _log("Login-Pflege übersprungen: %s: %s" % (e.__class__.__name__, str(e)[:160]))
+
+
 def main():
     _log("=== Terminierter Lauf gestartet ===")
     # 30.08.: Der Status wurde erst NACH dem Laden des Entwurfs geschrieben.
@@ -456,6 +476,7 @@ def main():
     status.update({"active": True, "done": True, "step": _schluss, "ratio": 1.0, "results": [entry]})
     _write_status(status)
     _log("=== Fertig: %s Beiträge, Upload=%s ===" % (entry.get("sections"), entry.get("upload")))
+    _logins_pflegen()
     _cleanup()
 
 

@@ -995,10 +995,10 @@ LOGIN_AUFFORDERUNG = (
 LOGIN_CHECK_CACHE = os.path.expanduser("~/.briefing_login_check.json")
 
 
-def login_check_cached(max_alter_min: int = 180) -> list:
-    """Login-Ergebnis mit Zwischenspeicher — damit der Abruf nicht jedes Mal
-    25 Sekunden extra braucht. 16.08.: Florian soll VOR dem Holen erfahren,
-    dass ein Login weg ist, statt hinterher Anrisse im Feld zu finden."""
+def login_check_zwischenstand(max_alter_min: int = 180):
+    """Gespeichertes Login-Ergebnis, wenn es noch frisch genug ist — sonst None.
+    Startet KEINEN Browser. (21.10.2026: aus login_check_cached herausgeloest, damit die
+    Selbst-Anmeldung selbst entscheidet, ob sie frisch pruefen muss.)"""
     import time as _t
     try:
         daten = json.loads(open(LOGIN_CHECK_CACHE, encoding="utf-8").read())
@@ -1009,6 +1009,16 @@ def login_check_cached(max_alter_min: int = 180) -> list:
             return erg
     except Exception:
         pass
+    return None
+
+
+def login_check_cached(max_alter_min: int = 180) -> list:
+    """Login-Ergebnis mit Zwischenspeicher — damit der Abruf nicht jedes Mal
+    25 Sekunden extra braucht. 16.08.: Florian soll VOR dem Holen erfahren,
+    dass ein Login weg ist, statt hinterher Anrisse im Feld zu finden."""
+    erg = login_check_zwischenstand(max_alter_min)
+    if erg is not None:
+        return erg
     ergebnis = check_newspaper_logins()
     _login_check_speichern(ergebnis)
     return ergebnis

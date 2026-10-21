@@ -2695,10 +2695,13 @@ with _fl_col1:
     # Profil exklusiv — solange er laeuft, sind Abruf und Login-Test gesperrt.
     _lf_job = st.session_state.get("_login_fenster_job")
     _lf_busy = bool(_lf_job) and not _lf_job.get("done")
+    # 21.10.2026: Auch der Selbst-Anmeldungs-Test haelt das Profil exklusiv.
+    _sa_job = st.session_state.get("_selbst_anm_job")
+    _sa_busy = bool(_sa_job) and not _sa_job.get("done")
     _fl_clicked = st.button(
         "📥 Läuft im Hintergrund…" if _fl_busy else f"📥 Aus {_QUELLE} holen",
         use_container_width=True,
-        disabled=_fl_busy or _lf_busy,
+        disabled=_fl_busy or _lf_busy or _sa_busy,
         help=("Holt alle im Feedly mit Lesezeichen markierten Artikel samt Volltext "
               if _FEEDLY_AKTIV else
               "Holt alle Artikel aus dem Feedfunk-Korb (angehakt oder per Link hinzugefügt) samt Volltext ")
@@ -2709,7 +2712,7 @@ with _fl_col1:
         "🔐 Alle Logins testen (Feedly · GEA · SWP)" if _FEEDLY_AKTIV
         else "🔐 Zeitungs-Logins testen (GEA · SWP)",
         use_container_width=True,
-        disabled=_lf_busy,
+        disabled=_lf_busy or _sa_busy,
         help=("Prüft alle drei Anmeldungen: Feedly (sonst keine Merkliste) sowie "
               if _FEEDLY_AKTIV else "Prüft die Zeitungs-Anmeldungen ")
              + "GEA und SWP/Tagblatt (sonst nur Anrisse statt Volltext). "
@@ -2719,13 +2722,23 @@ with _fl_col1:
         ("🪟 Fenster ist offen — dort anmelden" if (_lf_job or {}).get("fenster_offen")
          else "🔎 Prüfe Anmeldungen…") if _lf_busy else "🔓 Anmeldefenster öffnen",
         use_container_width=True,
-        disabled=_lf_busy or _fl_busy,
+        disabled=_lf_busy or _fl_busy or _sa_busy,
         help="Prüft zuerst frisch, welche Zeitungs-Logins fehlen, und öffnet dann EIN "
              "sichtbares Browser-Fenster mit deinem Nachrichten-Profil — mit je einem "
              f"Tab pro fehlender Anmeldung ({_LOGINS}). Dort meldest du dich an — die "
              "Anmeldung bleibt im Profil gespeichert, die App sieht dein Passwort nie. "
              "Fenster einfach zumachen, wenn du fertig bist. Sind alle angemeldet, "
              "meldet die App das und bietet das Fenster trotzdem an.",
+    )
+    _sa_clicked = st.button(
+        "🔑 Selbst-Anmeldung läuft…" if _sa_busy else "🔑 Selbst-Anmeldung jetzt testen",
+        use_container_width=True,
+        disabled=_sa_busy or _lf_busy or _fl_busy,
+        help="Probe mit echten Seiten: meldet SWP und GEA im Profil ab und mit den Zugangsdaten "
+             "aus dem Schlüsselbund selbst wieder an, dann Gegenprobe an echten Abo-Artikeln. "
+             "Klappt es nicht, werden die bisherigen Anmeldungen zurückgesetzt. Dauert ein bis "
+             "zwei Minuten, läuft im Hintergrund. Sperre nach abgelehntem Passwort wird dabei "
+             "aufgehoben. Einrichten der Schlüsselbund-Einträge: siehe README.",
     )
 if _login_check_clicked:
     with st.spinner(("Teste Feedly, GEA und SWP/Tagblatt" if _FEEDLY_AKTIV else "Teste GEA und SWP/Tagblatt")
@@ -2848,6 +2861,88 @@ try:
         st.caption(f"✅ Logins geprüft {_lc_wann} — alle tragen.")
 except Exception:
     pass
+
+
+# ── Selbst-Anmeldung (21.10.2026) ──────────────────────────────────────────
+# Zugangsdaten legt Florian selbst im macOS-Schluesselbund ab (README). Die App liest sie
+# nur, wenn sie sich anmelden muss (selbst_anmeldung.py) — nie im Log, nie in der Oberflaeche.
+def _sa_worker(job):
+    """Selbst-Anmeldungs-Test im Hintergrund (ruehrt kein st.* an, schreibt nur in `job`).
+    Meldet SWP und GEA im Profil ab und wieder an; bei Misserfolg Rollback der Cookies."""
+    _wach = _wachhalter_start()
+    try:
+        import selbst_anmeldung as _SA
+        job["res"] = _SA.logins_sicherstellen(
+            progress=lambda m: job.__setitem__("step", m),
+            erzwingen=True, neu_anmelden=True, push=False)
+        job["zeilen"] = _SA.kurzbericht(job["res"])
+    except Exception as exc:
+        job["error"] = str(exc)
+    finally:
+        _wachhalter_stop(_wach)
+        import time as _sa_t
+        job["stand"] = _sa_t.time()
+        job["done"] = True
+
+
+if _sa_clicked and not (_sa_busy or _lf_busy or _fl_busy):
+    _sa_neu = {"done": False, "error": None, "step": "Starte…"}
+    st.session_state["_selbst_anm_job"] = _sa_neu
+    import threading as _sa_threading
+    _sa_threading.Thread(target=_sa_worker, args=(_sa_neu,), daemon=True).start()
+    st.rerun()
+
+if _sa_busy:
+    @st.fragment(run_every=3)
+    def _sa_beobachter():
+        _j = st.session_state.get("_selbst_anm_job")
+        if not _j or _j.get("done"):
+            st.rerun(scope="app")
+        else:
+            st.info(f"🔑 Selbst-Anmeldung: {_j.get('step', '…')}")
+    _sa_beobachter()
+
+if _sa_job and _sa_job.get("done"):
+    import time as _sa_tt
+    if _sa_tt.time() - _sa_job.get("stand", 0) > 600:   # nach 10 Minuten ausblenden
+        st.session_state.pop("_selbst_anm_job", None)
+    elif _sa_job.get("error"):
+        st.error(f"Selbst-Anmeldung: {str(_sa_job['error'])[:200]}")
+    else:
+        _sa_res = _sa_job.get("res") or {}
+        _sa_stat = {_z: _r.get("status") for _z, _r in (_sa_res.get("selbst") or {}).items()}
+        _sa_ok = [_z.upper() for _z, _s in _sa_stat.items() if _s == "ok"]
+        if not _sa_stat or all(_s == "kein_eintrag" for _s in _sa_stat.values()):
+            st.warning("Selbst-Anmeldung: nichts zu testen — kein Schlüsselbund-Eintrag lesbar "
+                       "(einrichten: siehe README).")
+        elif any(_s in ("fehlgeschlagen", "captcha") for _s in _sa_stat.values()):
+            st.error("⛔ Selbst-Anmeldung nicht überall erfolgreich — die bisherigen Anmeldungen "
+                     "der betroffenen Zeitung sind zurückgesetzt, dein Login im Profil bleibt wie vorher.")
+        elif any(_s == "kein_eintrag" for _s in _sa_stat.values()):
+            st.warning("Teilweise getestet: " + ", ".join(_sa_ok) + " klappt; für die andere Zeitung "
+                       "fehlt der Schlüsselbund-Eintrag.")
+        else:
+            st.success("✅ Selbst-Anmeldung klappt — " + " und ".join(_sa_ok) + " tragen.")
+        for _z in (_sa_job.get("zeilen") or []):
+            st.caption(str(_z)[:300])
+
+try:
+    import selbst_anmeldung as _SAU
+    _sa_st = _SAU.status_anzeige()
+    _sa_teile = [(f"{_SAU.ZEITUNGEN[_z]['kurz']} ✓" if _sa_st.get(_z)
+                  else f"{_SAU.ZEITUNGEN[_z]['kurz']} fehlt")
+                 for _z in _SAU.ZEITUNGEN]
+    if all(_sa_st.get(_z) for _z in _SAU.ZEITUNGEN):
+        st.caption("🔑 Selbst-Anmeldung: " + " / ".join(_sa_teile) + " (Schlüsselbund)")
+    else:
+        st.caption("🔑 Selbst-Anmeldung: " + " / ".join(_sa_teile)
+                   + " – einrichten: siehe README, Abschnitt „Selbst-Anmeldung“")
+    for _z, _l in (_sa_st.get("letzter") or {}).items():
+        if _z in _SAU.ZEITUNGEN and _l.get("status") not in ("ok", "kein_eintrag"):
+            st.caption(f"↳ {_SAU.ZEITUNGEN[_z]['kurz']} zuletzt {str(_l.get('zeit', ''))[5:16].replace('T', ' ')}: "
+                       f"{str(_l.get('grund', ''))[:160]}")
+except Exception:
+    pass
 with _fl_col2:
     st.checkbox(
         "🔗 In die Auto-Kette: nach den Podcasts automatisch holen, dann Briefing",
@@ -2875,6 +2970,11 @@ if not st.session_state.get("_kette_geprueft"):
         st.session_state["_auto_run_briefing"] = True
 
 _fl_auto = bool(st.session_state.pop("_auto_feedly_pending", False))
+if _fl_auto and _sa_busy:
+    # Der Selbst-Anmeldungs-Test haelt das Profil — Kettenschritt nicht verlieren, sondern
+    # nach dessen Ende (Beobachter zeichnet die Seite dann neu) nachholen.
+    st.session_state["_auto_feedly_pending"] = True
+    _fl_auto = False
 
 
 PODCAST_ROUND_LOG = _APP_DIR / ".briefing_podcast_round.json"
@@ -3029,13 +3129,27 @@ def _feedly_worker(job: dict, skip_urls, skip_ids):
             pass
         if _pruefen:
             job["step"] = "Prüfe Anmeldungen…"
-            _lc = _F.login_check_cached()
+            # 21.10.2026: Selbst-Anmeldung. Fehlt ein Login, meldet sich die App mit den
+            # Zugangsdaten aus dem Schlüsselbund selbst neu an (selbst_anmeldung.py);
+            # ohne Schlüsselbund-Eintrag bleibt es beim alten Weg (Hinweis + Anmeldefenster).
+            _sa_zeilen = []
+            try:
+                import selbst_anmeldung as _SA
+                _sa = _SA.logins_sicherstellen(
+                    progress=lambda m: job.__setitem__("step", m))
+                _lc = _sa["ergebnis"]
+                # Nur die Zeilen zu Zeitungen, bei denen die Selbst-Anmeldung gebraucht wurde
+                _sa_zeilen = [z for z in _SA.kurzbericht(_sa) if not z.startswith("✅")]
+                job["selbst_anmeldung"] = _SA.kurzbericht(_sa)
+            except Exception:
+                _lc = _F.login_check_cached()
             _kaputt = [r for r in _lc if r["ok"] is False]
             if _kaputt:
                 job["login_kaputt"] = _kaputt
                 job["error"] = ("Abbruch vor dem Holen: " +
                                 ", ".join(r["name"] for r in _kaputt) +
-                                " nicht angemeldet. Sonst kämen nur Anrisse.")
+                                " nicht angemeldet. Sonst kämen nur Anrisse." +
+                                ((" Selbst-Anmeldung: " + " | ".join(_sa_zeilen)[:400]) if _sa_zeilen else ""))
                 return
         res = _F.fetch_all(progress=lambda m: job.__setitem__("step", m),
                            skip_urls=skip_urls, skip_ids=skip_ids)

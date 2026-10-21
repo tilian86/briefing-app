@@ -34,6 +34,7 @@ is configurable at the top of `briefing_core.py`.
 briefing_app.py        Streamlit UI and job orchestration
 briefing_core.py       Pipeline: fetching, condensing, quality check, rendering
 feedly_fetch.py        Full text + paywall check (Playwright); Feedly path off
+selbst_anmeldung.py    Self-login for SWP/GEA from the macOS keychain (see "Selbst-Anmeldung")
 vorauswahl_quelle.py   Feedfunk basket: fetch + mark done
 newsletter_fetch.py    Newsletter feeds
 hoerfunk_quelle.py     Podcast queue + transcripts (Hörfunk, the only podcast source)
@@ -67,6 +68,57 @@ fonts/                 DejaVu fonts for the PDF (Bitstream Vera license)
 
 Tests (offline, dummies only): `python3 -m unittest tests.test_wochenbriefing_nachholen`
 
+
+## Selbst-Anmeldung
+
+*(Deutsch, weil es nur die Einrichtung auf Florians Mac betrifft.)*
+
+Die App meldet sich bei **SWP/Tagblatt** (swp.de) und **GEA** (gea.de) selbst an, wenn ein
+Zeitungs-Login abgelaufen ist. Vor jedem Artikel-Abruf (Knopf „Aus Feedfunk holen“, Auto-Kette)
+prüft sie kurz an echten Abo-Artikeln, ob die Logins tragen, und meldet sich bei Bedarf im
+selben Browser-Profil (`~/.briefing_news_profile`) neu an. Auch der terminierte Lauf pflegt die
+Logins am Ende (`briefing_scheduled.py`, nicht bei Nachhol-Läufen). Das Passwort liegt **nur im
+macOS-Schlüsselbund** — nie im Code, in Dateien, Logs oder Commits.
+
+**Einmal einrichten** (im Terminal; `-w` ganz am Ende ohne Wert, dann fragt macOS nach dem
+Passwort — es erscheint nicht in der Befehlshistorie):
+
+```bash
+security add-generic-password -U -s briefing-login-swp -a 'E-MAIL' -w
+security add-generic-password -U -s briefing-login-gea -a 'E-MAIL' -w
+```
+
+`E-MAIL` ist die Anmelde-Adresse der jeweiligen Zeitung. Fehlt ein Eintrag, ist das kein Fehler:
+die App bleibt beim alten Weg (Hinweis + „🔓 Anmeldefenster öffnen“).
+
+**Prüfen und ausprobieren**
+
+- In der App zeigt die Zeile unter den Knöpfen „🔑 Selbst-Anmeldung: SWP ✓ / GEA ✓ (Schlüsselbund)“
+  oder „fehlt – einrichten“.
+- Knopf **„🔑 Selbst-Anmeldung jetzt testen“**: meldet beide Zeitungen im Profil ab (Zustimmungs-
+  Cookies bleiben), mit den Schlüsselbund-Daten wieder an und prüft mit echten Abo-Artikeln. Klappt es
+  nicht, werden die bisherigen Cookies zurückgesetzt. Beim ersten Zugriff fragt macOS evtl. nach dem
+  Schlüsselbund-Zugriff für „security“/„Python“ — „Immer erlauben“.
+- Im Terminal: `python3 selbst_anmeldung.py` (Status der Einträge), `--pruefen` (wie vor dem Abruf),
+  `--testen swp` bzw. `--testen gea` (Probe: abmelden, selbst anmelden, nachprüfen, bei Misserfolg
+  Rollback). `--sichtbar` zeigt dabei das Browser-Fenster (zum Zuschauen beim ersten Mal); eine Push
+  kommt vom Terminal aus nur mit `--push` (oder `--dry` = nur ausgeben). Das Profil muss frei sein
+  (App-Abruf und Anmeldefenster dürfen nicht laufen).
+
+**Schutz und Grenzen**
+
+- Bot-Schutz (Captcha, Turnstile, reCAPTCHA …) wird **nicht umgangen**: erkannt → Abbruch, Meldung.
+- Zustimmungsbanner: nur „ablehnen“/„nur notwendige“ wird geklickt, nie „akzeptieren“. Hat das Banner
+  keine solche Wahl (SWP im frischen Profil), meldet die App das; du entscheidest dann einmal im
+  Anmeldefenster.
+- Nach einem abgelehnten Passwort **keine automatischen Versuche für 6 Stunden**, höchstens 4 Anläufe
+  je Zeitung und Tag (der Test-Knopf hebt das auf).
+- Bleibt ein Login fehlend: **eine** Push „🔐 Briefing: SWP-Login klappt nicht – bitte anmelden“ je
+  Zeitung und Tag (Merkdatei `.briefing_selbst_anmeldung.json`, git-ignored).
+- Notschalter: Umgebungsvariable `BRIEFING_SELBST_ANMELDUNG=0` schaltet alles ab (alter Weg).
+  Log: `~/Library/Logs/briefing-selbst-anmeldung.log` (enthält nie Konto oder Passwort).
+
+Tests (offline, gegen nachgebaute lokale Seiten): `python3 -m unittest tests.test_selbst_anmeldung`
 
 ## Running it
 
