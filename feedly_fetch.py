@@ -1045,7 +1045,7 @@ def login_check_verwerfen() -> None:
 LOGIN_ZIELE = {
     "feedly": FEEDLY_URL,
     "gea": "https://www.gea.de/login.html",
-    "swp": "https://www.swp.de/mein-konto",
+    "swp": "https://www.swp.de/",
 }
 
 # Anzeigename aus dem Login-Test -> Schluessel in LOGIN_ZIELE
