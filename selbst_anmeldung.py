@@ -78,6 +78,7 @@ SPERRE_STUNDEN = 6          # nach abgelehnten Zugangsdaten so lange NICHT autom
 MAX_VERSUCHE_PRO_TAG = 4    # Anmelde-Anlaeufe je Zeitung und Tag (ohne erzwingen)
 NACH_ABSENDEN_S = 25        # so lange auf die Antwort der Seite warten
 FORMULAR_SUCHE_S = 14       # so lange auf das Anmeldeformular warten
+FRUEHWARNUNG_TAGE = 3       # Push, wenn die Sitzung einer Zeitung nur noch so lange haelt
 
 # Reihenfolge = Anzeigereihenfolge. "name" ist der Name im Login-Test
 # (feedly_fetch.NEWSPAPER_PROBES), "domains" werden beim Test-Rollback angefasst.
@@ -87,6 +88,9 @@ ZEITUNGEN = {
         "login_url": "https://www.swp.de/",
         "oeffnen": ("#header-login-button",),
         "domains": r"(^|\.)swp\.de$",
+        # SWP laedt abgemeldet Googles reCAPTCHA -> Selbst-Anmeldung bricht dort ab. Darum
+        # warnt die App vorher, wenn diese Sitzungs-Cookies (10 Tage) bald ablaufen.
+        "sitzung_cookies": ("plenigoSession", "appSession"),
     },
     "gea": {
         "name": "GEA", "kurz": "GEA", "dienst": "briefing-login-gea",
@@ -980,6 +984,76 @@ def _push_wenn_neu(ziel: str, grund: str) -> bool:
     return False
 
 
+# ── Fruehwarnung: Sitzung laeuft bald ab ───────────────────────────────────
+
+def sitzung_rest_tage(ziel: str):
+    """Tage, die die Sitzungs-Cookies der Zeitung noch gelten (das kleinste der genannten),
+    oder None (keine Angabe / nicht angemeldet). Liest nur Name und Ablauf aus einer Kopie
+    der Cookie-Datenbank des Profils — nie die (verschluesselten) Werte."""
+    cfg = ZEITUNGEN.get(ziel) or {}
+    namen = cfg.get("sitzung_cookies")
+    db = os.path.join(ff.PROFILE_DIR, "Default", "Cookies")
+    if not namen or not os.path.exists(db):
+        return None
+    import shutil
+    import sqlite3
+    import tempfile
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        shutil.copyfile(db, tmp)
+        con = sqlite3.connect(tmp)
+        try:
+            zeilen = con.execute(
+                "SELECT host_key, expires_utc FROM cookies WHERE name IN (%s)"
+                % ",".join("?" * len(namen)), tuple(namen)).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return None
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+    dom = re.compile(cfg["domains"])
+    # expires_utc: Mikrosekunden seit 1601-01-01; 0 = Sitzungs-Cookie ohne Ablaufdatum
+    enden = [int(e) / 1e6 - 11644473600 for h, e in zeilen
+             if dom.search((h or "").lstrip(".")) and int(e or 0) > 0]
+    if not enden:
+        return None
+    return (min(enden) - time.time()) / 86400
+
+
+def _fruehwarnung(res: dict, push: bool) -> None:
+    """Haelt die Sitzung einer Zeitung nur noch < FRUEHWARNUNG_TAGE und ist sie gerade noch
+    angemeldet: eine Push je Zeitung und Tag, damit Florian sich in Ruhe von Hand anmeldet,
+    bevor ein Briefing ohne sie entsteht. Ergebnis in res["fruehwarnung"] = {ziel: tage}."""
+    for z, cfg in ZEITUNGEN.items():
+        if not cfg.get("sitzung_cookies"):
+            continue
+        tage = sitzung_rest_tage(z)
+        if tage is None or tage <= 0 or tage >= FRUEHWARNUNG_TAGE:
+            continue
+        res.setdefault("fruehwarnung", {})[z] = round(tage, 1)
+        if not push:
+            continue
+        stand = _zustand_laden().get("fruehwarnung") or {}
+        if stand.get(z) == _heute():
+            continue
+        wann = "heute" if tage < 1 else ("morgen" if tage < 2 else "in %d Tagen" % int(tage))
+        titel = "⏳ Briefing: %s-Anmeldung läuft %s ab" % (cfg["kurz"], wann)
+        text = ("%s hat einen Bot-Schutz, dort kann die App sich nicht selbst anmelden. "
+                "Bitte einmal in der Briefing-App „🔓 Anmeldefenster öffnen“ und anmelden "
+                "(Bitwarden füllt aus)." % cfg["kurz"])
+        if _push_senden(titel, text, APP_URL):
+            _log("%s: Frühwarnung gesendet (Sitzung noch %.1f Tage)" % (cfg["kurz"], tage))
+            if os.environ.get("BRIEFING_PUSH_DRY", "").strip() in ("", "0"):
+                _zustand_aendern(lambda zu: zu.setdefault("fruehwarnung", {}).__setitem__(z, _heute()))
+
+
 # ── Alles zusammen: vor jedem Abruf ────────────────────────────────────────
 
 def logins_sicherstellen(progress=None, headless: bool = True, max_alter_min: int = 180,
@@ -1010,6 +1084,10 @@ def logins_sicherstellen(progress=None, headless: bool = True, max_alter_min: in
     def abschluss(erg):
         res["ergebnis"] = erg
         res["fehlende"] = [e for e in erg if e.get("ok") is False]
+        try:
+            _fruehwarnung(res, push)
+        except Exception as exc:   # die Warnung darf den Abruf nie aufhalten
+            _log("Frühwarnung: %s" % str(exc)[:160])
         return res
 
     if _abgeschaltet():   # Notschalter BRIEFING_SELBST_ANMELDUNG=0: alter Weg
@@ -1111,6 +1189,9 @@ def kurzbericht(res: dict) -> list:
         elif eintrag is not None:
             sym = {True: "✅", False: "⛔"}.get(eintrag.get("ok"), "❓")
             zeilen.append("%s %s: %s" % (sym, cfg["kurz"], eintrag.get("detail", "")))
+    for z, tage in (res.get("fruehwarnung") or {}).items():
+        zeilen.append("⏳ %s: Anmeldung läuft in %.1f Tagen ab – bitte von Hand erneuern"
+                      % (ZEITUNGEN[z]["kurz"], tage))
     if res.get("fehler"):
         zeilen.append("⚠️ %s" % res["fehler"])
     return zeilen

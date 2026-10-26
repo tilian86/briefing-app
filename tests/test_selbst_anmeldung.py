@@ -436,7 +436,7 @@ class KeinEintrag(Basis):
             r = SA.selbst_anmelden("swp")
         self.assertEqual(r["status"], SA.KEIN_EINTRAG)
         self.assertIn("briefing-login-swp", r["grund"])
-        self.assertIn("README", r["grund"])
+        self.assertIn("briefing-logins", r["grund"])
 
     def test_eintrag_da_aber_nicht_lesbar(self):
         with mock.patch.object(SA, "zugangsdaten_lesen", return_value=None), \
