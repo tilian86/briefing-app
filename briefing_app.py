@@ -2738,7 +2738,7 @@ with _fl_col1:
              "aus dem Schlüsselbund selbst wieder an, dann Gegenprobe an echten Abo-Artikeln. "
              "Klappt es nicht, werden die bisherigen Anmeldungen zurückgesetzt. Dauert ein bis "
              "zwei Minuten, läuft im Hintergrund. Sperre nach abgelehntem Passwort wird dabei "
-             "aufgehoben. Einrichten der Schlüsselbund-Einträge: siehe README.",
+             "aufgehoben. Einrichten der Schlüsselbund-Einträge: im Terminal `briefing-logins`.",
     )
 if _login_check_clicked:
     with st.spinner(("Teste Feedly, GEA und SWP/Tagblatt" if _FEEDLY_AKTIV else "Teste GEA und SWP/Tagblatt")
@@ -2914,7 +2914,7 @@ if _sa_job and _sa_job.get("done"):
         _sa_ok = [_z.upper() for _z, _s in _sa_stat.items() if _s == "ok"]
         if not _sa_stat or all(_s == "kein_eintrag" for _s in _sa_stat.values()):
             st.warning("Selbst-Anmeldung: nichts zu testen — kein Schlüsselbund-Eintrag lesbar "
-                       "(einrichten: siehe README).")
+                       "(einrichten: im Terminal `briefing-logins`).")
         elif any(_s in ("fehlgeschlagen", "captcha") for _s in _sa_stat.values()):
             st.error("⛔ Selbst-Anmeldung nicht überall erfolgreich — die bisherigen Anmeldungen "
                      "der betroffenen Zeitung sind zurückgesetzt, dein Login im Profil bleibt wie vorher.")
@@ -2936,7 +2936,7 @@ try:
         st.caption("🔑 Selbst-Anmeldung: " + " / ".join(_sa_teile) + " (Schlüsselbund)")
     else:
         st.caption("🔑 Selbst-Anmeldung: " + " / ".join(_sa_teile)
-                   + " – einrichten: siehe README, Abschnitt „Selbst-Anmeldung“")
+                   + " – einrichten: im Terminal `briefing-logins`")
     for _z, _l in (_sa_st.get("letzter") or {}).items():
         if _z in _SAU.ZEITUNGEN and _l.get("status") not in ("ok", "kein_eintrag"):
             st.caption(f"↳ {_SAU.ZEITUNGEN[_z]['kurz']} zuletzt {str(_l.get('zeit', ''))[5:16].replace('T', ' ')}: "

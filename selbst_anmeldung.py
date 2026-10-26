@@ -215,8 +215,8 @@ def _kein_eintrag_grund(ziel: str) -> str:
     if eintrag_vorhanden(ziel):
         return ("Schlüsselbund-Eintrag „%s“ ist da, aber nicht lesbar (Schlüsselbund gesperrt "
                 "oder Zugriff verweigert)" % cfg["dienst"])
-    return ("kein Schlüsselbund-Eintrag „%s“ — einrichten: siehe README, Abschnitt "
-            "Selbst-Anmeldung" % cfg["dienst"])
+    return ("kein Schlüsselbund-Eintrag „%s“ — einrichten: im Terminal `briefing-logins`"
+            % cfg["dienst"])
 
 
 _status_cache = {"zeit": 0.0, "wert": None}

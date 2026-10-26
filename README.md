@@ -80,8 +80,9 @@ selben Browser-Profil (`~/.briefing_news_profile`) neu an. Auch der terminierte 
 Logins am Ende (`briefing_scheduled.py`, nicht bei Nachhol-Läufen). Das Passwort liegt **nur im
 macOS-Schlüsselbund** — nie im Code, in Dateien, Logs oder Commits.
 
-**Einmal einrichten** (im Terminal; `-w` ganz am Ende ohne Wert, dann fragt macOS nach dem
-Passwort — es erscheint nicht in der Befehlshistorie):
+**Einmal einrichten:** im Terminal `briefing-logins` (= `./logins_einrichten.sh`). Der Helfer fragt
+je Zeitung die E-Mail und verdeckt das Passwort ab, ersetzt alte Einträge und bietet danach einen
+echten Test an. Von Hand geht es auch (`-w` ganz am Ende ohne Wert, dann fragt macOS):
 
 ```bash
 security add-generic-password -U -s briefing-login-swp -a 'E-MAIL' -w
