@@ -96,10 +96,17 @@ def _dismiss_overlays(page) -> None:
     """Toasts + Promo-Banner (Dismiss-Button) wegklicken — legen sich sonst über
     Buttons und fangen Klicks ab (Fehlerquelle 03.07.; erneut 16.07.: Banner
     erschien VERZÖGERT nach dem frühen Sweep und blockte den Import-Klick —
-    deshalb vor jedem kritischen Klick erneut aufrufen)."""
+    deshalb vor jedem kritischen Klick erneut aufrufen).
+    28.10.2026: Werbe-Dialog („Frankenstein, brought to life“) mit Knopf
+    „Close“ statt „Dismiss“ blockierte den Import-Klick → beide Namen. „Close“ nur in
+    Dialogen OHNE Datei-Feld, sonst schließt es den eigenen Upload-Dialog."""
     for _ in range(5):
         try:
             d = page.get_by_role("button", name="Dismiss")
+            if d.count() == 0:
+                d = (page.get_by_role("dialog")
+                     .filter(has_not=page.locator('input[type="file"]'))
+                     .get_by_role("button", name="Close", exact=True))
             if d.count() == 0:
                 break
             d.first.click(timeout=2000)
