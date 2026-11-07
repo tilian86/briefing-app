@@ -11654,9 +11654,9 @@ def build_claude_handoff_package(
                 parts.append(f"QUELLE: {payload.get('source_label', 'unbekannt')}\n")
                 parts.append(f"URL: {url}\n")
                 text = payload.get("source_text", "")
-                # Auf 6000 Zeichen kürzen damit Context nicht explodiert
-                if len(text) > 6000:
-                    text = text[:6000] + "\n\n[…Text gekürzt zur Übersicht…]"
+                # Deckel, damit der Context nicht explodiert (07.11.2026: 6000 → _QUELLE_MAX_ZEICHEN)
+                if len(text) > _QUELLE_MAX_ZEICHEN:
+                    text = text[:_QUELLE_MAX_ZEICHEN] + "\n\n[…Text gekürzt zur Übersicht…]"
                 parts.append(f"\n{text}\n\n")
             else:
                 parts.append(f"URL: {url}\n")
@@ -11673,7 +11673,7 @@ def build_claude_handoff_package(
             parts.append(f"### Paywall {i}\n")
             inferred = source_label_from_text(chunk[:1500])
             parts.append(f"QUELLE (vermutet): {inferred}\n\n")
-            text = chunk if len(chunk) <= 6000 else chunk[:6000] + "\n\n[…gekürzt…]"
+            text = chunk if len(chunk) <= _QUELLE_MAX_ZEICHEN else chunk[:_QUELLE_MAX_ZEICHEN] + "\n\n[…gekürzt…]"
             parts.append(f"{text}\n\n")
 
     # 4. Podcasts
@@ -13709,6 +13709,7 @@ SO GEHST DU VOR:
 - Widersprechen sich Quellen, benenne das explizit und fair.
 - Unterscheide belegte Fakten von Einschätzungen und Meinungen.
 - Nichts erfinden, nichts aus eigenem Wissen ergänzen.
+- Endet eine Quelle mitten im Satz oder mit „[…gekürzt…]“, erzähle einfach bis dorthin. Erwähne NIE, dass ein Text abbricht, gekürzt ist oder dir etwas nicht vorliegt.
 - Hohe Informationsdichte, aktive Sprache, roter Faden mit Spannungsbogen.
 
 FORMAT (exakt einhalten):
@@ -14050,8 +14051,11 @@ def _synthesize_topics_from_items(items, weather_text=None, compact_mode=True, u
         src_parts = []
         for m_ in t["members"]:
             it = items[m_ - 1]
-            _cap = _NEWSLETTER_MAX_ZEICHEN if it.get("kind") == "newsletter" else 6500
-            src_parts.append(f"--- QUELLE {m_} ({it.get('label', '?')}, {it.get('kind', 'article')}) ---\n\n{(it.get('body') or '')[:_cap]}")
+            _cap = _NEWSLETTER_MAX_ZEICHEN if it.get("kind") == "newsletter" else _QUELLE_MAX_ZEICHEN
+            _body = it.get('body') or ''
+            if len(_body) > _cap:
+                _body = _body[:_cap] + "\n\n[…gekürzt…]"
+            src_parts.append(f"--- QUELLE {m_} ({it.get('label', '?')}, {it.get('kind', 'article')}) ---\n\n{_body}")
         pl = prompt + "\n\n=== QUELLEN ZU DIESEM THEMA ===\n\n" + "\n\n".join(src_parts)
         # MODELL-MIX: Mehrquellen-Verwebung, schwere Themen (Gewicht ≥4) und Web-Recherche
         # brauchen Opus. Einzelquellen-Themen mit geringem Gewicht sind Umschreiben/Verdichten
@@ -14847,8 +14851,8 @@ def _collect_briefing_raw_items(urls_text, paywall_text, podcast_text, include_w
             if len(_clean) < 180:
                 weak_fetches.append({"url": url, "chars": len(_clean), "preview": _clean[:80].replace("\n", " ")})
                 print(f"[fetch-weak] kaum Inhalt ({len(_clean)} Z.): {url} — '{_clean[:60]}'", file=sys.stderr)
-            if len(text) > 6000:
-                text = text[:6000] + "\n\n[…gekürzt…]"
+            if len(text) > _QUELLE_MAX_ZEICHEN:
+                text = text[:_QUELLE_MAX_ZEICHEN] + "\n\n[…gekürzt…]"
             items.append({
                 "kind": "article",
                 "label": p.get("source_label", "unbekannt"),
@@ -14859,7 +14863,7 @@ def _collect_briefing_raw_items(urls_text, paywall_text, podcast_text, include_w
     for chunk in paywall_chunks:
         chunk = _strip_paywall_navigation(chunk)
         inferred = source_label_from_text(chunk[:1500])
-        text = chunk if len(chunk) <= 6000 else chunk[:6000] + "\n\n[…gekürzt…]"
+        text = chunk if len(chunk) <= _QUELLE_MAX_ZEICHEN else chunk[:_QUELLE_MAX_ZEICHEN] + "\n\n[…gekürzt…]"
         items.append({
             "kind": "paywall",
             "label": inferred or "Paywall",
@@ -14892,6 +14896,10 @@ def _collect_briefing_raw_items(urls_text, paywall_text, podcast_text, include_w
 
 
 _NEWSLETTER_MAX_ZEICHEN = 24000  # ganze Ausgabe inkl. Empfehlungen (Hotel Matze ~6-8k)
+# 07.11.2026: Quellen-Deckel für Artikel/Paywall/Podcast. Vorher 6000 (Einsammeln) bzw.
+# 6500 (Synthese) → lange Artikel (GEA-Halloween 16k) und Podcast-Zusammenfassungen (7-8k)
+# wurden mitten im Text abgeschnitten, das Modell schrieb dann „das Material bricht hier ab“.
+_QUELLE_MAX_ZEICHEN = 24000
 
 _NEWSLETTER_REGEL = """
 
